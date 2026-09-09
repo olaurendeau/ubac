@@ -1,0 +1,6 @@
+// Fixture volontairement fautive : lit l'horloge systeme et tire de l'aleatoire.
+export function impure(): number {
+  const stamp = Date.now();
+  const today = new Date();
+  return stamp + today.getTime() + Math.random();
+}
