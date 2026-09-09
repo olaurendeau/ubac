@@ -1,0 +1,10 @@
+// Fixture volontairement fautive : joint l'exterieur et l'horloge sans aucun
+// import. C'est l'angle mort d'une liste blanche de modules : `fetch` et
+// `crypto` ne s'importent pas, ils sont deja la.
+export async function impure(): Promise<unknown> {
+  const key = process.env.COINBASE_KEY;
+  const at = performance.now() + globalThis.Date.now();
+  const id = crypto.randomUUID();
+  console.log(id, at);
+  return fetch(`https://example.test/prices?key=${key}`);
+}

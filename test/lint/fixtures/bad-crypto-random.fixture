@@ -1,0 +1,10 @@
+// Fixture volontairement fautive : node:crypto est admis dans core pour le
+// hachage, qui est pur. Le meme module exporte aussi de l'aleatoire, qui ne
+// l'est pas. Autoriser le module entier rouvrirait la porte que C2 ferme.
+import { createHash, randomUUID } from 'node:crypto';
+
+export function id(seed: string): string {
+  return createHash('sha256')
+    .update(seed + randomUUID())
+    .digest('hex');
+}
