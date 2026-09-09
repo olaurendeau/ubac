@@ -1,0 +1,6 @@
+// Fixture volontairement fautive : franchit la frontiere de couche.
+// Extension .fixture pour rester invisible de tsc et de vitest.
+import { placeOrder } from '../adapters/coinbase.js';
+import { runDaily } from '../../jobs/daily.js';
+
+export const forbidden = [placeOrder, runDaily];

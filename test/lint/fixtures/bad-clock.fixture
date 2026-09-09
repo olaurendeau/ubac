@@ -1,0 +1,9 @@
+// Fixture volontairement fautive : lit l'horloge systeme et tire de l'aleatoire,
+// y compris par acces calcule, qui contourne un selecteur pose sur le seul nom
+// de propriete.
+export function impure(): number {
+  const stamp = Date.now();
+  const today = new Date();
+  const detour = Date['now']() + Math['random']();
+  return stamp + today.getTime() + Math.random() + detour;
+}

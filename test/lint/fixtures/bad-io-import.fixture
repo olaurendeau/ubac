@@ -1,0 +1,6 @@
+// Fixture volontairement fautive : importe des modules d'IO dans core.
+import { readFileSync } from 'node:fs';
+import { request } from 'node:https';
+import ccxt from 'ccxt';
+
+export const forbidden = [readFileSync, request, ccxt];

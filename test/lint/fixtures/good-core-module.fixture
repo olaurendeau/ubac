@@ -1,0 +1,16 @@
+// Fixture volontairement saine. Sans elle, une regle qui se declencherait sur
+// tout satisferait les trois fixtures fautives sans que rien ne le revele.
+import { Decimal } from 'decimal.js';
+import { createHash } from 'node:crypto';
+
+import { totalValue } from './portfolio.js';
+
+// new Date(iso) est autorise : c'est l'absence d'argument qui trahit une
+// lecture de l'horloge systeme.
+export function stamp(iso: string): string {
+  const at = new Date(iso);
+  return createHash('sha256').update(String(at.getTime())).digest('hex').slice(0, 16);
+}
+
+export const one = new Decimal(1);
+export const reexport = totalValue;

@@ -1,0 +1,14 @@
+// Fixture volontairement fautive : fait entrer un module sans passer par une
+// ImportDeclaration. Une liste blanche posee sur le seul `import ... from`
+// laisse passer ces quatre formes, qui chargent pourtant le meme module.
+import fs = require('node:fs');
+
+export * from 'node:https';
+export { readFileSync } from 'node:fs';
+export { placeOrder } from '../adapters/coinbase.js';
+
+export const readSync = fs.readFileSync;
+
+export async function late(): Promise<unknown> {
+  return import('node:child_process');
+}
