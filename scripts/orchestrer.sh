@@ -47,7 +47,7 @@ notify() {  # notify <titre> <corps> [priorite] [url]
 
 # --- lecture du plan -------------------------------------------------------
 
-declare -A TITLE DEPS FILES STATE PID
+declare -A TITLE=() DEPS=() FILES=() STATE=() PID=()
 ORDER=()
 
 while IFS=$'\t' read -r n title deps files; do
