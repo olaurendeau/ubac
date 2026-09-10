@@ -1,7 +1,11 @@
 /**
- * Rapport : production + determinisme (C29–C31).
+ * Rapport : production + determinisme + oracles C29 (C29–C31).
  * C31 : aucune assertion ne compare une strategie a une autre.
  */
+import { execFileSync } from 'node:child_process';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { Decimal } from 'decimal.js';
 import { describe, expect, it } from 'vitest';
 
@@ -10,6 +14,8 @@ import type { UsdcAmount } from '../../src/core/types.js';
 import type { ReplayResult, SeriesMetrics } from '../../src/replay/engine.js';
 import { SERIES_NAMES, replay } from '../../src/replay/engine.js';
 import { formatReport, loadReplayInput, renderReplay } from '../../src/replay/report.js';
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 const asUsdc = (v: string): UsdcAmount => new Decimal(v) as UsdcAmount;
 const asReturn = (v: string): Return => new Decimal(v) as Return;
@@ -23,6 +29,28 @@ const fake = (name: (typeof SERIES_NAMES)[number], n: number): SeriesMetrics => 
   maxDrawdown: asReturn('-0.200000'),
   triggerCount: n,
 });
+
+/** Rapport ASCII fige pour la fixture (toFixed 2/6) — oracle de contenu, pas de classement (C31). */
+const EXPECTED_REPORT = [
+  'Ubac phase 0 — rejeu historique',
+  'serie           valeur_finale     twr           sharpe_90j    max_drawdown    declenchements',
+  '--------------  ----------------  ------------  ------------  --------------  --------------',
+  'rebalance               23368.54      0.446203      2.181820       -0.457047              12',
+  'rebalance_ab            23430.45      0.449910      2.181752       -0.451144              14',
+  'ladder                  20985.00      0.068455      2.181232       -0.048270              27',
+  'dca                     20064.33      0.060182      2.141429       -0.503161              32',
+  'hold_btc                25099.90      0.776602      1.916047       -0.530758               0',
+  'hold_50_50              22152.77      0.412641      2.085464       -0.586363               0',
+  '',
+].join('\n');
+
+function replayInSubprocess(): string {
+  return execFileSync(process.execPath, ['--import', 'tsx', resolve(ROOT, 'src/replay/report.ts')], {
+    cwd: ROOT,
+    encoding: 'utf8',
+    env: process.env,
+  });
+}
 
 describe('formatReport', () => {
   it('affiche les six series dans l ordre fige', () => {
@@ -44,12 +72,18 @@ describe('formatReport', () => {
 });
 
 describe('renderReplay', () => {
-  it('deux executions identiques octet pour octet', async () => {
+  it('fige les six series C29 et reste identique octet pour octet', async () => {
     const first = await renderReplay();
     const second = await renderReplay();
-    expect(first.length).toBeGreaterThan(100);
-    expect(first).toBe(second);
-    for (const name of SERIES_NAMES) expect(first).toContain(name);
+    expect(first).toBe(EXPECTED_REPORT);
+    expect(second).toBe(EXPECTED_REPORT);
+  });
+
+  it('deux processus distincts produisent la meme sortie (C30)', () => {
+    const a = replayInSubprocess();
+    const b = replayInSubprocess();
+    expect(a).toBe(EXPECTED_REPORT);
+    expect(b).toBe(EXPECTED_REPORT);
   });
 
   it('separe le capital initial des apports', async () => {
