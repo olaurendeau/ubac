@@ -119,7 +119,7 @@ collision_avec_running() {
 eligibles() {
   local n
   for n in "${ORDER[@]}"; do
-    [[ "${STATE[$n]}" == "pending" ]] || continue
+    [[ "${STATE[$n]}" == "pending" || "${STATE[$n]}" == "relecture_ko" ]] || continue
     [[ -z "${ONLY}" || "${ONLY}" == "${n}" ]] || continue
     deps_satisfaites "${n}" || continue
     echo "${n}"
@@ -137,7 +137,7 @@ if [[ ${DRY_RUN} -eq 1 ]]; then
   while :; do
     prets=()
     for n in "${ORDER[@]}"; do
-      [[ "${SIM[$n]}" == "pending" ]] || continue
+      [[ "${SIM[$n]}" == "pending" || "${SIM[$n]}" == "relecture_ko" ]] || continue
       ok=1; for d in ${DEPS[$n]}; do [[ "${SIM[$d]}" == "merged" ]] || ok=0; done
       [[ ${ok} -eq 1 ]] && prets+=("$n")
     done
@@ -201,9 +201,13 @@ run_step() {
         || ( cd "${wt}" && npm ci --silent )
     fi
 
-    echo "building" > "${etat}"
-    ( cd "${wt}" && claude -p "/construire ${SLUG} E${n}" "${CLAUDE_ARGS[@]}" )
-    echo "--- fin construire, code $?"
+    if [[ "$(cat "${etat}" 2>/dev/null)" == "relecture_ko" && -s "${RUN_DIR}/E${n}.pr" ]]; then
+      echo "--- reprise : construction deja faite, on relance la relecture seule"
+    else
+      echo "building" > "${etat}"
+      ( cd "${wt}" && claude -p "/construire ${SLUG} E${n}" "${CLAUDE_ARGS[@]}" )
+      echo "--- fin construire, code $?"
+    fi
 
     local pr
     pr="$(cd "${wt}" && gh pr view --json number -q .number 2>/dev/null)"
@@ -238,9 +242,15 @@ run_step() {
         echo "bloque" > "${etat}"
         notify "E${n} merge impossible" "Verdict PASSE mais le merge de la PR ${pr} a echoue. Conflit probable." "high" "${url}"
       fi
-    else
+    elif [[ "${verdict}" == "BLOQUE" ]]; then
       echo "bloque" > "${etat}"
       notify "E${n} BLOQUE" "$(jq -r '.result' <<<"${out}" 2>/dev/null | jq -r '.bloquants[]?' 2>/dev/null | head -5)" "high" "${url}"
+    else
+      # Pas de verdict : panne reseau, budget epuise, session tuee. Ce n'est
+      # pas un refus du relecteur et ca ne doit pas condamner l'etape. La
+      # relecture seule sera rejouee au prochain passage.
+      echo "relecture_ko" > "${etat}"
+      notify "E${n} relecture impossible" "Aucun verdict lisible sur la PR ${pr}. Etape reprenable en relançant l'orchestrateur." "high" "${url}"
     fi
 
     git -C "${REPO}" worktree remove --force "${wt_relire}" 2>/dev/null
@@ -286,24 +296,29 @@ done
 
 # --- rapport ---------------------------------------------------------------
 
-merged=(); bloques=(); restants=()
+merged=(); bloques=(); a_rejouer=(); restants=()
 for n in "${ORDER[@]}"; do
   case "${STATE[$n]}" in
-    merged) merged+=("E$n") ;;
-    bloque) bloques+=("E$n") ;;
-    *)      restants+=("E$n") ;;
+    merged)        merged+=("E$n") ;;
+    bloque)        bloques+=("E$n") ;;
+    relecture_ko)  a_rejouer+=("E$n") ;;
+    *)             restants+=("E$n") ;;
   esac
 done
 
 {
   echo "Fait : ${#merged[@]} etapes mergees sur ${#ORDER[@]} pour ${SLUG}."
   if [[ ${#bloques[@]} -gt 0 ]]; then
-    echo "Bloque : ${bloques[*]} (voir .claude/runs/${SLUG}/)."
+    echo "Bloque : ${bloques[*]} sur verdict du relecteur${a_rejouer:+, ${a_rejouer[*]} sans verdict lisible}."
+  elif [[ ${#a_rejouer[@]} -gt 0 ]]; then
+    echo "Bloque : ${a_rejouer[*]}, relecture sans verdict lisible, reprenable en relançant."
   else
     echo "Bloque : rien"
   fi
   if [[ ${#bloques[@]} -gt 0 ]]; then
     echo "Decision attendue : trancher ${bloques[0]}, ${#restants[@]} etapes attendent derriere."
+  elif [[ ${#a_rejouer[@]} -gt 0 ]]; then
+    echo "Decision attendue : aucune, relancer l'orchestrateur suffit."
   else
     echo "Decision attendue : aucune"
   fi
