@@ -27,6 +27,29 @@ revues comprises. Aucun sous-agent hors Orca pour remplacer un worker supervisé
 
 ## Relais Claude → Cursor → Mistral
 
+### Plafond de consommation à 80 %
+
+Le crédit Claude n'est jamais consommé en entier. Avant chaque dispatch, le
+coordinateur lit les quotas réels :
+
+```sh
+orca account list --json   # result.rateLimits.<provider>.session|weekly.usedPercent
+```
+
+Règle : si `session.usedPercent` ou `weekly.usedPercent` d'un moteur atteint
+**80 %**, ce moteur ne reçoit plus de nouveau dispatch. Le coordinateur relaie
+vers le moteur suivant autorisé, ou attend le `resetsAt` annoncé. Un worker déjà
+lancé n'est pas interrompu par le franchissement du seuil : il termine son lot,
+et le seuil bloque seulement le dispatch suivant.
+
+Le seuil s'applique moteur par moteur, Codex compris : une session de revue à
+100 % ne se contourne pas, elle attend son reset ou un moteur de revue de repli.
+Le coordinateur consomme lui aussi du quota ; en compter la part avant d'ouvrir
+un troisième worker. Ce plafond est une réserve délibérée, pas une panne : il
+autorise le relais sans nouvelle validation humaine, au même titre qu'une
+indisponibilité, et le motif enregistré est « plafond 80 % ».
+
+
 Claude est le constructeur par défaut. Si son quota, son service ou son accès
 est indisponible, le coordinateur peut reprendre le lot avec Cursor, sans nouvelle
 validation humaine : ce relais est autorisé pour ce projet. Si Cursor est à son

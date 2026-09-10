@@ -95,6 +95,9 @@ Codex reçoit directement le rôle et les arguments dans sa tâche Orca.
 - La spec est la référence de vérité ; le plan est une hypothèse. Un ajustement
   technique nécessaire au même objectif peut être documenté sans nouveau cadrage.
   Un changement de besoin ou d'invariant passe par une décision dans Orca.
+- Plafond de consommation : aucun moteur ne reçoit de dispatch au-delà de 80 %
+  de sa fenêtre de quota (`orca account list --json`). Relais vers le moteur
+  suivant ou attente du reset, motif « plafond 80 % ».
 - Les résultats et blocages sont rapportés dans Orca. Aucun hook de notification
   ni fichier de rapport local n'est requis.
 
