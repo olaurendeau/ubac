@@ -18,15 +18,33 @@ import type { Decimal } from 'decimal.js';
  */
 type Branded<B extends string> = Decimal & { readonly __brand: B };
 
-/** Prix unitaire d'un actif, exprime en devise de cotation. */
+/**
+ * Les quatre grandeurs sont dimensionnellement distinctes :
+ *
+ *     UsdcAmount = Price x Quantity
+ *
+ * `Price` est un nombre d'USDC **par unite d'actif**, `Quantity` un nombre
+ * d'unites d'actif, `UsdcAmount` un nombre d'USDC. `Weight` est sans dimension.
+ *
+ * Donner la meme marque au montant en USDC d'une jambe et a la quantite d'actif
+ * d'un ordre — les deux sont des `Decimal` positifs, la confusion est naturelle —
+ * rend **compilable** une conversion intention vers ordre qui oublie la division
+ * par le prix limite. L'ordre part alors plusieurs ordres de grandeur trop gros.
+ * C'est exactement le bug que le marquage doit rendre impossible ; si les quatre
+ * marques ne sont pas distinctes, le marquage ne sert a rien.
+ */
+
+/** Prix unitaire : nombre d'USDC par unite d'actif. */
 export type Price = Branded<'Price'>;
 
 /**
- * Quantite d'un actif. Les montants en USDC en font partie : USDC est un actif
- * de la liste blanche, une somme en USDC est donc une quantite d'USDC et non
- * une unite a part.
+ * Quantite d'un actif, en unites de cet actif : 0.35 BTC, 4.2 ETH. Jamais une
+ * somme d'argent, meme quand l'actif est USDC — c'est `UsdcAmount` qui la porte.
  */
 export type Quantity = Branded<'Quantity'>;
+
+/** Somme d'argent, en USDC. Une jambe, une valeur de portefeuille, un apport. */
+export type UsdcAmount = Branded<'UsdcAmount'>;
 
 /** Poids d'une ligne dans le portefeuille, en fraction de 1 — jamais en pourcent. */
 export type Weight = Branded<'Weight'>;
@@ -84,7 +102,7 @@ export interface Candle {
 /** Apport (montant positif) ou retrait (montant negatif). */
 export interface CashFlow {
   readonly occurredOn: IsoDate;
-  readonly amountUsdc: Quantity;
+  readonly amount: UsdcAmount;
   readonly note?: string;
 }
 
@@ -95,13 +113,18 @@ export interface CashFlow {
  * rendrait `ASSET_NOT_ALLOWED` et `QUOTE_NOT_ALLOWED` inatteignables : la couche
  * risque s'applique a toute intention quelle que soit son origine, elle doit
  * pouvoir en recevoir une invalide.
+ *
+ * Une jambe est libellee en USDC, pas en unites d'actif : c'est la forme dont
+ * raisonnent C19 (jambe sous 200 USDC ignoree) et C20 (somme des jambes sur la
+ * valeur totale). La quantite d'actif n'apparait qu'a la conversion en `Order`,
+ * ou elle vaut `amount / limitPrice`.
  */
 export interface IntentLeg {
   readonly asset: string;
   readonly quote: string;
   readonly side: Side;
   /** Toujours positif : le sens est porte par `side`. */
-  readonly amountUsdc: Quantity;
+  readonly amount: UsdcAmount;
   readonly limitPrice: Price;
 }
 
@@ -117,7 +140,12 @@ export interface Intent {
   readonly legs: readonly IntentLeg[];
 }
 
-/** Jambe validee par la couche risque. `asset` y est ferme, `quote` fige a USDC. */
+/**
+ * Jambe validee par la couche risque. `asset` y est ferme, `quote` fige a USDC.
+ * `quantity` est en unites d'actif : la conversion depuis l'`UsdcAmount` de la
+ * jambe est le seul endroit du systeme ou la division par le prix a lieu, et le
+ * changement de marque est ce qui interdit de l'oublier.
+ */
 export interface Order {
   readonly clientOrderId: string;
   readonly asset: AllowedAsset;
