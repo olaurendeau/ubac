@@ -1,11 +1,10 @@
 # Base de données
 
 Lot Q2. Schéma Postgres du §4 de la spec, base de développement locale,
-commande de migration, puis l'adapter qui lit et écrit.
+commande de migration, et l'adapter qui lit et écrit.
 
-Le lot est livré en deux fois : **Q2a** pose le schéma et la base — ce document
-en l'état — et **Q2b** ajoute `src/adapters/db.ts`, ses opérations et les
-preuves d'aller-retour, avec les sections de ce document qui les décrivent.
+Livré en deux fois : **Q2a** a posé le schéma et la base, **Q2b** ajoute
+`src/adapters/db.ts` et ses opérations.
 
 Références : `docs/specs/ubac-rebalance.md` §3, §4 et §10 ;
 `docs/plans/ubac-phase-1.md`, lot Q2 ; décision préalable **D5**.
@@ -57,8 +56,9 @@ reste ouvert à une autre stratégie et au shadow. Une démonstration qui
 emprunterait l'adapter ne prouverait que l'adapter.
 
 Le nom de l'index est figé et exporté par `schema.ts`, parce que c'est lui que
-Postgres renvoie dans le champ `constraint` : l'adapter de Q2b s'en sert pour
-distinguer « déjà enregistré » de n'importe quelle autre erreur d'écriture.
+Postgres renvoie dans le champ `constraint` : l'adapter s'en sert pour
+distinguer « déjà enregistré » de n'importe quelle autre erreur d'écriture
+(§6).
 
 ### Divergence assumée avec l'exemple du §4 : les grandeurs `jsonb`
 
@@ -108,10 +108,31 @@ laissé à la colonne, qui en est la définition ; ce qui dépasse
 `numeric(20,8)` fait échouer l'insertion côté base plutôt que d'être arrondi en
 silence.
 
-**Ce qui l'établit** — l'aller-retour contre la vraie base, la relecture du
-`jsonb` en texte brut, le balayage du code livré — arrive avec l'adapter, en
-Q2b : ce sont ses opérations qui font le trajet complet. Ici, la frontière est
-posée et décrite ; elle n'est pas encore empruntée.
+**Comment on l'établit**, et pas seulement on l'affirme :
+
+1. **Aller-retour contre la vraie base** avec des valeurs qu'aucun double ne
+   porte : `12345678901.12345678` vaut `12345678901.123457` en IEEE-754, et
+   `0.00000001` est le dernier chiffre significatif de la colonne. Le test
+   compare les chaînes, pas les valeurs approchées. Un flottant n'importe où sur
+   le trajet change les chiffres et le test tombe.
+2. **Le driver est interrogé directement**, hors adapter : un `SELECT` par un
+   client `pg` nu vérifie que `total_value_usdc` arrive en `string`.
+3. **Le contenu `jsonb` est relu en texte brut** (`weights::text`) et comparé
+   caractère pour caractère : les feuilles sont des chaînes entre guillemets, pas
+   des nombres JSON.
+4. **La forme de la spec est rejouée et refusée** : un `UPDATE` qui repose
+   `{"BTC":0.47}` dans la colonne fait échouer `latestSnapshot()`. La frontière
+   mord sur des données qu'elle n'a pas écrites elle-même.
+5. **Un `number` passé à `decimalFromText` est refusé**, y compris exact.
+6. **Un balayage du code livré** interdit `parseFloat`, `parseInt`, `Number(`,
+   `.toNumber(`, `.valueOf(`, `z.number` et `mode: 'number'` dans
+   `src/adapters/*.ts`. Contrôle de noms, du même statut que le garde-fou C32 :
+   utile, tenu, et explicitement pas une démonstration — ce sont les points 1 à 5
+   qui démontrent.
+
+Les points 1 à 4 demandent la base et tournent dans `make test-db`. Les points 5
+et 6 tournent dans `make test`, sans base : la règle non négociable ne doit pas
+dépendre d'une suite qu'on peut oublier de lancer.
 
 ### Ce qui reste en `Date` et en `number`, volontairement
 
@@ -161,6 +182,20 @@ partout et laisser les tests échouer sans base ; ou séparer les commandes.
 Les tests qui ont besoin de la base sont ignorés — pas en échec — tant que
 `UBAC_TEST_DATABASE_URL` n'est pas posée. `make test` les affiche comme
 `skipped`, ce qui est visible plutôt que silencieux.
+
+### Pourquoi les cibles de base passent `--no-file-parallelism`
+
+Deux fichiers de test parlent à la base — le schéma d'un côté, l'adapter de
+l'autre — et **ils partagent une seule base**, que chacun vide dans son
+`beforeEach`. Lancés en parallèle, ils se tronquent mutuellement les tables sous
+les pieds : des échecs intermittents, jamais les mêmes, qui n'ont rien à voir
+avec ce que les tests vérifient.
+
+`--no-file-parallelism` sérialise les fichiers pour ces cibles seulement.
+Vitest garde son parallélisme partout ailleurs : `make test` et `make coverage`
+ne sont pas ralentis. C'est le prix d'une base unique, et il se paie en
+millisecondes ; isoler chaque fichier dans son propre schéma Postgres coûterait
+plus de machinerie que la suite n'en vaut aujourd'hui.
 
 ### Pourquoi `UBAC_TEST_DATABASE_URL` et pas `DATABASE_URL`
 
@@ -228,11 +263,62 @@ exclusif sur la base réelle.
 
 **L'espace n'est donc pas une coquette de formatage, et le retirer n'est pas un
 nettoyage.** `src/adapters/schema.ts` l'écrit tel quel dans `dataType()`, et un
-test sans base verrouille la chaîne exacte (il arrive avec Q2b).
+test sans base verrouille la chaîne exacte.
 
 ---
 
-## 6. Ce qui changera en phase 2 avec Neon
+## 6. L'adapter : des opérations, pas un client
+
+`src/adapters/db.ts` n'expose jamais le client. `openDatabase(secrets)` rend une
+`UbacDatabase` dont la surface est la liste complète de ce que le programme sait
+faire de sa base :
+
+| Opération | Ce qu'elle fait |
+|---|---|
+| `recordDecision(input)` | journalise la décision du jour ; `ALREADY_RECORDED` si la base la refuse |
+| `recordSnapshot(input)` | pose la photo du jour ; rejouer le même jour la **remplace** |
+| `latestSnapshot()` | la photo la plus récente, ou `undefined` |
+| `recentCashFlows(since)` | les flux depuis un instant, du plus ancien au plus récent |
+| `pendingOrders()` | les ordres non dénoués, ordonnés par date de création |
+| `close()` | ferme le pool |
+
+Les noms disent l'usage, pas la table. Ajouter une opération est une décision ;
+ouvrir un client brut n'en serait pas une.
+
+`openDatabase` prend `Pick<Secrets, 'databaseUrl'>` : le type dit d'où la valeur
+vient. **L'adapter ne lit jamais l'environnement** — `src/config/env.ts` reste le
+seul point de lecture du code qui tourne, et le job passe la valeur déjà validée.
+
+Décision immuable, photo remplaçable : c'est la seule asymétrie du module. Une
+décision engagée ne se réécrit pas ; une photo du jour, recalculée avec les prix
+du moment, si.
+
+### Le refus de la base, traduit une fois et une seule
+
+`recordDecision()` insère sans lecture préalable. Postgres lève `23505`,
+l'adapter le traduit en `ALREADY_RECORDED`, qui n'est pas une erreur mais le cas
+nominal d'un second run. Que la base refuse est établi en §2, sans passer par du
+code à nous ; ce qui se joue ici est la traduction.
+
+Elle est **étroite**, et c'est ce que le test contrôle : le nom de l'index est
+vérifié, pas seulement le code. Un `23505` sur une autre contrainte remonte, et
+une erreur d'écriture d'une autre nature aussi — la rendre en `ALREADY_RECORDED`
+ferait croire au job que sa décision est enregistrée alors qu'aucune ligne
+n'existe.
+
+### Ce que ce lot n'écrit pas
+
+**Aucune écriture de `cash_flows` ni d'`orders`.** Les ordres ne sont pas écrits
+parce que la phase 1 n'en place aucun. Les flux de trésorerie n'ont pas encore
+de source : ils viendront de l'exchange, avec l'identifiant de transfert qui
+servira de clé naturelle. Un `recordCashFlow()` écrit maintenant serait sans clé
+naturelle, donc non idempotent — un second run le même jour doublerait l'apport
+et fausserait le time-weighted return, exactement ce que la table est censée
+empêcher. Les tests alimentent ces deux tables en SQL direct.
+
+---
+
+## 7. Ce qui changera en phase 2 avec Neon
 
 - **Création du projet Neon** en AWS eu-central-1 (Francfort) — la région par
   défaut est aux États-Unis — et chaîne *pooled* posée en variable secrète
