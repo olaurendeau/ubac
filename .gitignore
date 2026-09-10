@@ -4,6 +4,7 @@ coverage/
 *.tsbuildinfo
 .env
 .env.*
+!.env.example
 .claude/last-report.md
 *.log
 .claude/runs/

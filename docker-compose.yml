@@ -1,0 +1,16 @@
+services:
+  dev:
+    build: .
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+      # Isoler node_modules du host : pas de Node/npm locaux, binaries Linux only.
+      - ubac_node_modules:/workspace/node_modules
+    environment:
+      npm_config_fund: "false"
+      npm_config_audit: "false"
+    stdin_open: true
+    tty: true
+
+volumes:
+  ubac_node_modules:
