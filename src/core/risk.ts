@@ -196,11 +196,14 @@ function runStateRules(
   }
   const rejections: Rejection[] = [];
   const total = totalValue(context.holdings, context.prices);
-  const notional = kept.reduce<Decimal>((acc, { leg }) => acc.add(leg.amount), new Decimal(0));
+  const notional = kept.reduce<Decimal>(
+    (acc, { leg }) => acc.add(leg.amount.abs()),
+    new Decimal(0),
+  );
   if (notional.div(total).gt(REBALANCE_TOO_LARGE_PCT)) {
     rejections.push({
       code: 'REBALANCE_TOO_LARGE',
-      reason: `somme des jambes ${notional.toString()} USDC soit ${notional.div(total).times(100).toFixed(4)} % de ${total.toString()}, au-dela de ${REBALANCE_TOO_LARGE_PCT.times(100).toString()} %`,
+      reason: `somme des |jambes| ${notional.toString()} USDC soit ${notional.div(total).times(100).toFixed(4)} % de ${total.toString()}, au-dela de ${REBALANCE_TOO_LARGE_PCT.times(100).toString()} %`,
     });
   }
   const projected = projectHoldings(context.holdings, kept);
@@ -263,7 +266,7 @@ function screenLeg(leg: IntentLeg, legIndex: number): Screening {
 function tooSmall(leg: IntentLeg, legIndex: number): Rejection {
   return {
     code: 'LEG_TOO_SMALL',
-    reason: `jambe a ${leg.amount.toString()} USDC, sous le minimum de ${MIN_LEG_USDC.toString()} USDC`,
+    reason: `jambe a ${leg.amount.abs().toString()} USDC, sous le minimum de ${MIN_LEG_USDC.toString()} USDC`,
     legIndex,
   };
 }
@@ -339,7 +342,7 @@ export function validate(intent: Intent, context: RiskContext): Verdict {
       rejections.push(aberrant);
       continue;
     }
-    if (leg.amount.lt(MIN_LEG_USDC)) {
+    if (leg.amount.abs().lt(MIN_LEG_USDC)) {
       ignored.push(tooSmall(leg, legIndex));
       continue;
     }

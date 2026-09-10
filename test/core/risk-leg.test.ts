@@ -210,6 +210,19 @@ describe('LEG_TOO_SMALL (C19)', () => {
     expect(verdict.ignored).toEqual([]);
   });
 
+  it('juge LEG_TOO_SMALL sur la valeur absolue', () => {
+    // Sans `.abs()`, -1500 < 200 et la jambe serait ignoree en silence.
+    const kept = accepted(intent([leg({ amount: usdc('-1500'), side: 'SELL' })]));
+    expect(kept.orders).toHaveLength(1);
+    expect(kept.ignored).toEqual([]);
+
+    const dropped = accepted(intent([leg({ amount: usdc('-12') })]));
+    expect(dropped.orders).toHaveLength(0);
+    expect(dropped.ignored).toEqual([
+      expect.objectContaining({ code: 'LEG_TOO_SMALL', legIndex: 0 }),
+    ]);
+  });
+
   it('n\'apparait jamais dans les rejets bloquants', () => {
     // C19 distingue "ignoree" de "rejetee". Un run qui ne contient qu'une
     // jambe residuelle reste accepte, avec zero ordre.

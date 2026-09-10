@@ -174,6 +174,22 @@ describe('REBALANCE_TOO_LARGE (C20)', () => {
       ).status,
     ).toBe('ACCEPTED');
   });
+  /**
+   * C20 exige la somme des |jambes|. Sans `.abs()`, +13000 et -13000 se
+   * compensent (somme signee 0) et le run passe a tort alors que 26 % > 25 %.
+   * Les deux jambes sont en BUY pour garder un cash projete neutre : seule
+   * l'ampleur notional doit declencher le rejet.
+   */
+  it('rejette quand la somme des |jambes| depasse 25 % meme si la somme signee reste sous le seuil', () => {
+    expect(
+      codes(
+        intent([
+          leg({ asset: 'ETH', side: 'BUY', amount: usdc('13000') }),
+          leg({ asset: 'BTC', side: 'BUY', amount: usdc('-13000') }),
+        ]),
+      ),
+    ).toEqual(['REBALANCE_TOO_LARGE']);
+  });
 });
 
 describe('portefeuille non valorisable', () => {
