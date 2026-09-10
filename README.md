@@ -13,6 +13,7 @@ Ubac : le versant à l'ombre, celui qui garde la neige. Le système conserve tou
 | `docs/specs/ubac-rebalance.md` | spécification de l'agent : stratégie, couche risque, exécution, infra, fiscalité |
 | `docs/plans/ubac-phase-0.md` | sept lots restants et reprise des PR existantes |
 | `docs/workflow-phases.md` | instructions communes de cadrage, plan, construction et revue |
+| `docs/base-de-donnees.md` | schéma Postgres, base locale Compose, migration depuis le poste |
 | `docs/workflow-dev.md` | expérimentation du workflow de dev piloté au téléphone |
 | `Makefile` | raccourcis `make test`, `make check`, etc. via Compose |
 | `Dockerfile` / `docker-compose.yml` | env de build/test Node 22 (pas de Node sur le host) |
