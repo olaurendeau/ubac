@@ -5,12 +5,13 @@ import type { Holdings, Prices, ValuationIssue } from './portfolio.js';
 import type { CashFlow, IsoDate, Price, Quantity, UsdcAmount, Weight, Weights } from './types.js';
 
 /**
- * Benchmarks passifs et rendement pondere par le temps. Pur, sans horloge, sans
- * IO : la serie des jours et les flux sont des parametres.
+ * Benchmarks passifs et metriques de performance. Pur, sans horloge, sans IO :
+ * la serie des jours et les flux sont des parametres.
  *
- * Cette etape livre les deux benchmarks hold et le TWR. Le Sharpe glissant 90 j
- * et le max drawdown viennent a l'etape suivante et se greffent sur la meme
- * `ValueSeries`.
+ * Deux benchmarks hold construisent une `ValueSeries` ; trois metriques s'y
+ * lisent — TWR, max drawdown et Sharpe glissant. Les trois passent par la meme
+ * decomposition en sous-periodes bornees par les flux, ce qui les rend toutes
+ * les trois insensibles au calendrier des apports.
  */
 
 // --- Grandeurs --------------------------------------------------------------
@@ -25,8 +26,8 @@ export type Return = Decimal & { readonly __brand: 'Return' };
 
 /**
  * Les operations de decimal.js rendent un `Decimal` nu : la marque se perd a
- * chaque calcul et doit etre reposee explicitement. Ces trois fonctions sont les
- * seuls endroits du module ou cela arrive.
+ * chaque calcul et doit etre reposee explicitement. Ces fonctions, plus
+ * `asSharpe` plus bas, sont les seuls endroits du module ou cela arrive.
  */
 const asUsdc = (value: Decimal): UsdcAmount => value as UsdcAmount;
 const asQuantity = (value: Decimal): Quantity => value as Quantity;
@@ -311,21 +312,36 @@ export function holdSeries(allocation: Weights, input: HoldInput): SeriesResult 
   return { status: 'VALUED', series, finalValue };
 }
 
-// --- Rendement pondere par le temps -----------------------------------------
-
-export type TwrIssue = 'NO_SUB_PERIOD' | 'UNDEFINED_SUB_PERIOD' | 'NON_FINITE_VALUE';
-
-export type TwrResult =
-  | { readonly status: 'COMPUTED'; readonly twr: Return }
-  | { readonly status: 'REJECTED'; readonly code: TwrIssue; readonly reason: string };
-
-type ReturnsResult =
-  | { readonly status: 'COMPUTED'; readonly returns: readonly Return[] }
-  | { readonly status: 'REJECTED'; readonly code: TwrIssue; readonly reason: string };
+// --- Decomposition en sous-periodes -----------------------------------------
 
 /**
- * Rendements par sous-periode. Une sous-periode va de la cloture apres flux d'un
- * jour a la cloture avant flux du jour suivant :
+ * Les trois metriques de ce module — TWR, max drawdown, Sharpe glissant — se
+ * lisent sur la meme decomposition de la serie en sous-periodes bornees par les
+ * flux, et partagent donc ses motifs de refus.
+ */
+export type SubPeriodIssue = 'NO_SUB_PERIOD' | 'UNDEFINED_SUB_PERIOD' | 'NON_FINITE_VALUE';
+
+/** Un rendement de sous-periode, et les deux clotures qui le bornent. */
+interface SubPeriod {
+  /** Cloture apres flux qui ouvre la sous-periode. */
+  readonly from: IsoDate;
+  /** Cloture avant flux qui la ferme. */
+  readonly to: IsoDate;
+  readonly value: Return;
+}
+
+type Decomposition =
+  | {
+      readonly status: 'COMPUTED';
+      /** Premier jour de la serie : origine de l'indice de croissance. */
+      readonly startDate: IsoDate;
+      readonly periods: readonly SubPeriod[];
+    }
+  | { readonly status: 'REJECTED'; readonly code: SubPeriodIssue; readonly reason: string };
+
+/**
+ * Decoupe la serie en sous-periodes. Une sous-periode va de la cloture apres
+ * flux d'un jour a la cloture avant flux du jour suivant :
  *
  *     r(t) = valueBeforeFlow(t) / valueAfterFlow(t-1) - 1
  *
@@ -337,8 +353,9 @@ type ReturnsResult =
  * dans le denominateur rendrait 264 000 / 252 000 - 1, soit 4,76 % — l'apport
  * diluerait un gain qu'il n'a pas subi.
  */
-function subPeriodReturns(series: ValueSeries): ReturnsResult {
-  if (series.length < 2) {
+function decompose(series: ValueSeries): Decomposition {
+  const first = series[0];
+  if (first === undefined || series.length < 2) {
     return {
       status: 'REJECTED',
       code: 'NO_SUB_PERIOD',
@@ -351,7 +368,7 @@ function subPeriodReturns(series: ValueSeries): ReturnsResult {
     };
   }
 
-  const returns: Return[] = [];
+  const periods: SubPeriod[] = [];
   let previous: DailyValue | undefined;
 
   for (const day of series) {
@@ -372,14 +389,24 @@ function subPeriodReturns(series: ValueSeries): ReturnsResult {
           reason: `sous-periode ${previous.date} -> ${day.date} partant de ${start.toString()} USDC : rendement indefini`,
         };
       }
-      returns.push(asReturn(day.valueBeforeFlow.div(start).minus(1)));
+      periods.push({
+        from: previous.date,
+        to: day.date,
+        value: asReturn(day.valueBeforeFlow.div(start).minus(1)),
+      });
     }
 
     previous = day;
   }
 
-  return { status: 'COMPUTED', returns };
+  return { status: 'COMPUTED', startDate: first.date, periods };
 }
+
+// --- Rendement pondere par le temps -----------------------------------------
+
+export type TwrResult =
+  | { readonly status: 'COMPUTED'; readonly twr: Return }
+  | { readonly status: 'REJECTED'; readonly code: SubPeriodIssue; readonly reason: string };
 
 /**
  * Rendement pondere par le temps : produit des rendements de sous-periode,
@@ -387,13 +414,197 @@ function subPeriodReturns(series: ValueSeries): ReturnsResult {
  * leur calendrier et leur taille n'influencent pas le resultat (C27).
  */
 export function timeWeightedReturn(series: ValueSeries): TwrResult {
-  const subPeriods = subPeriodReturns(series);
-  if (subPeriods.status === 'REJECTED') return subPeriods;
+  const decomposed = decompose(series);
+  if (decomposed.status === 'REJECTED') return decomposed;
 
-  const growth = subPeriods.returns.reduce<Decimal>(
-    (acc, periodReturn) => acc.mul(periodReturn.plus(1)),
+  const growth = decomposed.periods.reduce<Decimal>(
+    (acc, period) => acc.mul(period.value.plus(1)),
     new Decimal(1),
   );
 
   return { status: 'COMPUTED', twr: asReturn(growth.minus(1)) };
+}
+
+// --- Max drawdown -----------------------------------------------------------
+
+export type DrawdownResult =
+  | {
+      readonly status: 'COMPUTED';
+      /**
+       * Rendement du pic au creux, donc **negatif ou nul** : -0.4 se lit
+       * "quarante pour cent perdus depuis le plus haut".
+       */
+      readonly maxDrawdown: Return;
+      readonly peakDate: IsoDate;
+      readonly troughDate: IsoDate;
+    }
+  | { readonly status: 'REJECTED'; readonly code: SubPeriodIssue; readonly reason: string };
+
+/**
+ * Plus forte baisse d'un plus haut a un plus bas ulterieur.
+ *
+ * Mesuree sur l'indice de croissance, pas sur la valeur en USDC. Un retrait de
+ * la moitie du portefeuille creuse la valeur de 50 % sans qu'aucun prix n'ait
+ * bouge : lu sur la valeur, le tableau de rejeu classerait des calendriers
+ * d'apports plutot que des strategies. L'indice part de 1 au premier jour et ne
+ * bouge que des rendements de sous-periode.
+ *
+ * Signe : negatif ou nul. Une serie qui ne baisse jamais rend 0, avec pic et
+ * creux au premier jour — cela se lit "aucune baisse", pas "baisse nulle ce
+ * jour-la".
+ */
+export function maxDrawdown(series: ValueSeries): DrawdownResult {
+  const decomposed = decompose(series);
+  if (decomposed.status === 'REJECTED') return decomposed;
+
+  let index = new Decimal(1);
+  let peak = new Decimal(1);
+  let peakDate = decomposed.startDate;
+  let worst = new Decimal(0);
+  let worstPeakDate = decomposed.startDate;
+  let worstTroughDate = decomposed.startDate;
+
+  for (const period of decomposed.periods) {
+    index = index.mul(period.value.plus(1));
+
+    /* Un nouveau plus haut deplace le pic et ne peut pas etre un creux. */
+    if (index.gt(peak)) {
+      peak = index;
+      peakDate = period.to;
+      continue;
+    }
+
+    const drawdown = index.div(peak).minus(1);
+    if (drawdown.lt(worst)) {
+      worst = drawdown;
+      worstPeakDate = peakDate;
+      worstTroughDate = period.to;
+    }
+  }
+
+  return {
+    status: 'COMPUTED',
+    maxDrawdown: asReturn(worst),
+    peakDate: worstPeakDate,
+    troughDate: worstTroughDate,
+  };
+}
+
+// --- Sharpe glissant --------------------------------------------------------
+
+/**
+ * Ratio de Sharpe annualise. Marque distincte de `Return` : les deux sont sans
+ * dimension et portes par un `Decimal`, mais un Sharpe de 1.2 n'est pas un gain
+ * de 120 % et les additionner n'a aucun sens.
+ */
+export type Sharpe = Decimal & { readonly __brand: 'Sharpe' };
+
+const asSharpe = (value: Decimal): Sharpe => value as Sharpe;
+
+/** Fenetre demandee par la spec : 90 rendements journaliers. */
+export const SHARPE_WINDOW = 90;
+
+/**
+ * Annualisation, convention choisie ici : 365 periodes par an. La spec ne
+ * tranche pas. Le marche crypto ne ferme ni le week-end ni les jours feries et
+ * la fixture porte une bougie par jour calendaire ; prendre 252, la convention
+ * des actions, sous-estimerait le facteur d'annualisation de 17 %.
+ */
+const PERIODS_PER_YEAR = new Decimal(365);
+
+/**
+ * Taux sans risque, convention choisie ici : 0. La spec ne le mentionne pas, et
+ * le rejeu compare des strategies entre elles sur la meme periode — un taux
+ * commun non nul deplacerait tous les Sharpe du meme cote sans changer leur
+ * ordre. Le poser a 0 evite d'inventer une courbe de taux 2024-2026.
+ */
+const RISK_FREE_PER_PERIOD = new Decimal(0);
+
+export type SharpeGap = 'WINDOW_INCOMPLETE' | 'ZERO_VOLATILITY';
+
+/**
+ * Un point de la serie glissante, un par jour de la serie de valeurs — le
+ * premier compris, qui n'a aucun rendement derriere lui.
+ *
+ * Quand le ratio n'est pas defini, il n'y a pas de nombre du tout : `status`
+ * vaut `UNDEFINED` et `code` dit pourquoi. Rendre 0 tant que la fenetre n'est
+ * pas pleine ferait lire une performance neutre reellement constatee sur les
+ * trois premiers mois de chaque strategie.
+ */
+export type SharpePoint =
+  | { readonly date: IsoDate; readonly status: 'DEFINED'; readonly sharpe: Sharpe }
+  | { readonly date: IsoDate; readonly status: 'UNDEFINED'; readonly code: SharpeGap };
+
+export type SharpeIssue = SubPeriodIssue | 'INVALID_WINDOW';
+
+export type RollingSharpeResult =
+  | { readonly status: 'COMPUTED'; readonly points: readonly SharpePoint[] }
+  | { readonly status: 'REJECTED'; readonly code: SharpeIssue; readonly reason: string };
+
+/**
+ * Sharpe annualise d'une fenetre, ou `undefined` si sa volatilite est nulle.
+ *
+ * L'ecart-type est celui d'un echantillon, en n-1 : la fenetre est un
+ * echantillon de rendements, pas la population complete des rendements
+ * possibles. En n il serait biaise a la baisse, donc le ratio biaise a la
+ * hausse — d'autant plus que la fenetre est courte.
+ */
+function windowSharpe(window: readonly SubPeriod[]): Decimal | undefined {
+  const count = new Decimal(window.length);
+  const mean = window
+    .reduce<Decimal>((acc, period) => acc.plus(period.value), new Decimal(0))
+    .div(count);
+  const variance = window
+    .reduce<Decimal>((acc, period) => acc.plus(period.value.minus(mean).pow(2)), new Decimal(0))
+    .div(count.minus(1));
+  const deviation = variance.sqrt();
+
+  /* Une fenetre plate n'a pas un Sharpe infini : elle n'en a pas. */
+  if (deviation.isZero()) return undefined;
+
+  return mean.minus(RISK_FREE_PER_PERIOD).div(deviation).mul(PERIODS_PER_YEAR.sqrt());
+}
+
+/**
+ * Serie glissante du ratio de Sharpe, un point par jour de la serie de valeurs.
+ *
+ * Le point du jour t regarde les `window` derniers rendements de sous-periode.
+ * Une fenetre de 90 rendements exige 91 clotures : le premier point defini est
+ * donc le 91e, et les 90 premiers sont `WINDOW_INCOMPLETE`.
+ */
+export function rollingSharpe(
+  series: ValueSeries,
+  window: number = SHARPE_WINDOW,
+): RollingSharpeResult {
+  if (!Number.isInteger(window) || window < 2) {
+    return {
+      status: 'REJECTED',
+      code: 'INVALID_WINDOW',
+      reason: `fenetre de ${String(window)} : il faut au moins deux rendements pour un ecart-type d'echantillon`,
+    };
+  }
+
+  const decomposed = decompose(series);
+  if (decomposed.status === 'REJECTED') return decomposed;
+
+  const points: SharpePoint[] = [
+    { date: decomposed.startDate, status: 'UNDEFINED', code: 'WINDOW_INCOMPLETE' },
+  ];
+
+  for (const [index, period] of decomposed.periods.entries()) {
+    const available = index + 1;
+    if (available < window) {
+      points.push({ date: period.to, status: 'UNDEFINED', code: 'WINDOW_INCOMPLETE' });
+      continue;
+    }
+
+    const sharpe = windowSharpe(decomposed.periods.slice(available - window, available));
+    points.push(
+      sharpe === undefined
+        ? { date: period.to, status: 'UNDEFINED', code: 'ZERO_VOLATILITY' }
+        : { date: period.to, status: 'DEFINED', sharpe: asSharpe(sharpe) },
+    );
+  }
+
+  return { status: 'COMPUTED', points };
 }
