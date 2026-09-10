@@ -3,6 +3,7 @@ import { Decimal } from 'decimal.js';
 import type { Holdings, PricedAsset, Prices, ValuationIssue } from '../portfolio.js';
 import { ASSETS, valuate } from '../portfolio.js';
 import type {
+  CashFlow,
   Clock,
   Intent,
   IntentLeg,
@@ -35,6 +36,17 @@ import type {
  * `core/risk.ts` : la v2.0 n'en donnait aucun a B, qui pouvait donc tirer tous
  * les jours tant que la bande de ratio restait franchie. Le cadrage a comble ce
  * trou.
+ *
+ * Carence sur apport (§5.4) : un virement d'argent frais deplace les poids et
+ * ferait tirer A le jour meme, ce qui revient a investir la totalite de l'apport
+ * au prix du jour. Un apport gele donc A pendant sept jours. Il ne gele que A —
+ * B arbitre BTC contre ETH a ligne cash inchangee, donc il ne peut pas investir
+ * l'apport et rien ne justifie de l'arreter (C26).
+ *
+ * D'ou la lecture exacte de la priorite : B est evalue des que **A ne tire
+ * pas**, et pas seulement quand le poids de cash est dans sa bande. Les deux
+ * formulations coincident partout sauf pendant une carence, ou seule la
+ * premiere reste vraie. C'est celle du cadrage.
  *
  * Module pur : ni horloge propre, ni IO. La date de run vient du `Clock`
  * injecte, que le rejeu alimente ligne a ligne depuis la fixture.
@@ -77,6 +89,17 @@ export interface RebalanceParams {
   /** Ou se pose le run une fois qu'il a tire : sur la cible, ou sur le bord. */
   readonly rebalanceMode: RebalanceMode;
   /**
+   * Jours calendaires pendant lesquels un apport gele le declencheur A (§5.4).
+   * Meme unite et meme forme que `ratioCooldownDays` : un compte de dates, pas
+   * une grandeur de marche.
+   *
+   * `0` desarme franchement la carence, ce qui redonne la politique `immediate`
+   * de la v2.0 sans une enumeration a trois valeurs dont la phase 0 n'aurait
+   * teste qu'une branche. La politique `manual`, elle, suppose une intervention
+   * humaine : elle n'a pas de sens dans un module pur et sort du perimetre.
+   */
+  readonly newCashFreezeDays: number;
+  /**
    * Declencheur B. Faux par defaut, et ce defaut est le sujet de C13 : un
    * defaut a vrai ferait entrer B en production par omission, ce que le cadrage
    * a explicitement refuse en le renvoyant en shadow.
@@ -102,6 +125,7 @@ export const DEFAULT_REBALANCE_PARAMS: RebalanceParams = {
   },
   cashBandRelative: new Decimal('0.20'),
   rebalanceMode: 'target',
+  newCashFreezeDays: 7,
   ratioBandEnabled: false,
   ratioBandRelative: new Decimal('0.30'),
   ratioCooldownDays: 7,
@@ -124,6 +148,19 @@ function paramsIssue(params: RebalanceParams): string | null {
     return (
       `bande relative de cash a ${params.cashBandRelative.toString()}` +
       ' : attendue finie et positive ou nulle'
+    );
+  }
+
+  /*
+   * Meme forme que le cooldown de B, mais controle sur toutes les
+   * configurations et non derriere un drapeau : la carence porte sur A, que
+   * toute configuration de ce module evalue. Un seuil fractionnaire ou negatif
+   * ne se compare a rien de sense — `0` est la facon franche de la desarmer.
+   */
+  if (!Number.isInteger(params.newCashFreezeDays) || params.newCashFreezeDays < 0) {
+    return (
+      `carence sur apport a ${String(params.newCashFreezeDays)} jours` +
+      ' : attendu un entier positif ou nul'
     );
   }
 
@@ -336,7 +373,7 @@ function ratioWeights(current: Weights, ratio: Decimal): Weights {
   };
 }
 
-// --- Cooldown propre au declencheur B ---------------------------------------
+// --- Delais dates : cooldown de B, carence sur apport de A -------------------
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -385,89 +422,174 @@ function dayNumber(date: IsoDate): number | null {
   return days + day;
 }
 
+/** Une date deja lue au calendrier : la chaine journalisee et son numero de jour. */
+interface ReadDate {
+  readonly date: IsoDate;
+  readonly day: number;
+}
+
+function readDate(date: IsoDate): ReadDate | null {
+  const day = dayNumber(date);
+
+  return day === null ? null : { date, day };
+}
+
 /**
- * L'etat du cooldown de B au jour du run, resolu par `decide` avant d'entrer
- * dans les declencheurs. `NEVER` n'est pas « zero jour ecoule » : B n'a jamais
- * arbitre, donc rien ne peut le bloquer, alors que zero jour ecoule bloque.
+ * L'etat, au jour du run, de l'un des deux delais que ce module tient : le
+ * cooldown propre a B (C12) et la carence sur apport qui gele A (C25). `NEVER`
+ * n'est pas « zero jour ecoule » : rien ne s'est produit, donc rien ne peut
+ * bloquer, alors que zero jour ecoule bloque.
+ *
+ * Les deux delais partagent ce type, la soustraction qui le remplit et la
+ * comparaison qui le lit. Ils ne partagent pas leur libelle. C'est voulu : la
+ * borne exclusive de C12 et celle de C25 sont exactement la meme comparaison, et
+ * deux implementations separees, ce serait deux fois l'occasion de decaler le
+ * degel d'un jour.
  */
-type RatioCooldown =
+type Delay =
   | { readonly state: 'NEVER' }
   | { readonly state: 'SINCE'; readonly since: IsoDate; readonly elapsed: number }
   | { readonly state: 'UNREADABLE'; readonly reason: string };
 
 /** Ce qu'un declencheur peut recevoir : une date illisible n'arrive jamais jusqu'a lui. */
-type ResolvedCooldown = Exclude<RatioCooldown, { readonly state: 'UNREADABLE' }>;
+type ResolvedDelay = Exclude<Delay, { readonly state: 'UNREADABLE' }>;
 
-/** Un cooldown qui court : B a deja arbitre, a une date lisible. */
-type ArmedCooldown = Extract<RatioCooldown, { readonly state: 'SINCE' }>;
+/** Un delai qui court : l'evenement a eu lieu, a une date lisible. */
+type ArmedDelay = Extract<Delay, { readonly state: 'SINCE' }>;
 
-const NEVER_ARBITRAGED: ResolvedCooldown = { state: 'NEVER' };
+const NOTHING_YET: ResolvedDelay = { state: 'NEVER' };
 
 /**
- * Les jours ecoules depuis le dernier arbitrage de B, au jour du run.
- *
- * La date de run est controlee pour toutes les configurations, y compris celles
- * qui n'evaluent jamais le ratio : elle est journalisee dans `decisions` et
- * ordonne le rejeu, donc une date qui n'existe pas est un etat illisible, pas
- * une etiquette anodine. Meme raison pour la date du dernier arbitrage, qui est
- * refusee drapeau baisse : la remonter seulement quand elle est lue ferait
- * dependre la validite d'un etat de la configuration qui le regarde.
+ * Les jours ecoules depuis un evenement deja lu au calendrier. Seul endroit du
+ * module ou cette soustraction est ecrite, pour les deux delais.
  */
-function ratioCooldownAt(runDate: IsoDate, since: IsoDate | null): RatioCooldown {
-  const runDay = dayNumber(runDate);
+function delayFrom(runDay: number, since: ReadDate | null): ResolvedDelay {
+  if (since === null) return NOTHING_YET;
 
-  if (runDay === null) {
-    return {
-      state: 'UNREADABLE',
-      reason: `date de run inexistante au calendrier : « ${runDate} »`,
-    };
-  }
+  return { state: 'SINCE', since: since.date, elapsed: runDay - since.day };
+}
 
-  if (since === null) return NEVER_ARBITRAGED;
+/**
+ * Le cooldown de B au jour du run. La date du dernier arbitrage est refusee
+ * drapeau baisse, y compris sur une configuration qui n'evalue jamais le
+ * ratio : la remonter seulement quand elle est lue ferait dependre la validite
+ * d'un etat de la configuration qui le regarde.
+ */
+function ratioCooldown(runDay: number, since: IsoDate | null): Delay {
+  if (since === null) return NOTHING_YET;
 
-  const sinceDay = dayNumber(since);
+  const read = readDate(since);
 
-  if (sinceDay === null) {
+  if (read === null) {
     return {
       state: 'UNREADABLE',
       reason: `date du dernier arbitrage de ratio inexistante au calendrier : « ${since} »`,
     };
   }
 
-  return { state: 'SINCE', since, elapsed: runDay - sinceDay };
+  return delayFrom(runDay, read);
 }
 
 /**
- * Le cooldown qui bloque ce run, ou `null` s'il n'y en a pas. Une seule
- * fonction repond a la fois pour la decision et pour le motif : deux fonctions
- * separees permettraient d'afficher un constat de cooldown sur un run qui n'a
- * pas ete bloque, et de bloquer sans le dire.
+ * Le delai qui bloque ce run, ou `null` s'il n'y en a pas. Une seule fonction
+ * repond a la fois pour la decision et pour le motif : deux fonctions separees
+ * permettraient d'afficher un constat sur un run qui n'a pas ete bloque, et de
+ * bloquer sans le dire.
  *
- * Sept jours d'intervalle passent, six ne passent pas (C12) : le seuil est
- * atteint, donc `>=`. Un `>` decalerait le degel d'un jour et seul le test a
- * exactement sept jours le verrait.
+ * Sept jours d'intervalle passent, six ne passent pas — le cooldown de C12 et la
+ * carence de C25, dont la borne J+7 est exclue, disent la meme chose. Le seuil
+ * est atteint, donc `>=`. Un `>` decalerait le degel d'un jour, et seuls les
+ * deux tests a exactement sept jours le verraient.
  *
- * Un `elapsed` negatif — un dernier arbitrage date dans le futur du run — bloque
- * par la meme comparaison. C'est un etat incoherent que ce module ne sait pas
- * arbitrer ; ne pas trader est la reponse conservatrice.
+ * Un `elapsed` negatif — un evenement date dans le futur du run — bloque par la
+ * meme comparaison. C'est un etat incoherent que ce module ne sait pas arbitrer ;
+ * ne pas trader est la reponse conservatrice.
  */
-function blockingCooldown(
-  cooldown: ResolvedCooldown,
-  requiredDays: number,
-): ArmedCooldown | null {
-  if (cooldown.state === 'NEVER' || cooldown.elapsed >= requiredDays) return null;
+function blockingDelay(delay: ResolvedDelay, requiredDays: number): ArmedDelay | null {
+  if (delay.state === 'NEVER' || delay.elapsed >= requiredDays) return null;
 
-  return cooldown;
+  return delay;
 }
 
-function cooldownConstat(
-  blocking: ArmedCooldown,
-  requiredDays: number,
-): string {
+function cooldownConstat(blocking: ArmedDelay, requiredDays: number): string {
   return (
     `dernier arbitrage de ratio le ${blocking.since}` +
     `, ${String(blocking.elapsed)} jours ecoules sur les ${String(requiredDays)} du cooldown`
   );
+}
+
+/**
+ * Le constat de carence. Il nomme un apport, pas « le dernier flux » : un
+ * retrait ne gele rien, et ce motif part dans `decisions`, ou il doit se lire
+ * sans avoir a deviner quel flux a compte.
+ */
+function freezeConstat(blocking: ArmedDelay, requiredDays: number): string {
+  return (
+    `apport du ${blocking.since}` +
+    `, ${String(blocking.elapsed)} jours ecoules sur les ${String(requiredDays)} de carence`
+  );
+}
+
+// --- Apports d'argent frais (carence du declencheur A) -----------------------
+
+/**
+ * Le dernier apport connu, ou l'etat illisible qui empeche de le designer.
+ *
+ * C'est le module qui filtre, et non l'appelant : « un `cash_flow` positif » est
+ * la regle de C25, elle appartient a `core` et a sa couverture. Un retrait ne
+ * gele rien — il retire du cash, il n'en pose pas a investir — et un flux nul
+ * n'est pas un apport. D'ou `gt(ZERO)` plutot que `isPositive()`, qui repond
+ * vrai sur zero dans decimal.js.
+ *
+ * Le balayage retient le jour le plus grand, donc son resultat ne depend pas de
+ * l'ordre de la liste : l'appelant passe l'historique tel qu'il le tient, sans
+ * avoir a le trier ni a le filtrer, et C23 tient quel que soit cet ordre. Un
+ * retrait plus recent qu'un apport ne raccourcit rien, puisqu'il n'entre jamais
+ * dans la comparaison.
+ *
+ * Un flux illisible arrete le run plutot que d'etre saute : le sauter en silence
+ * ferait tirer A au lendemain d'un apport, ce qui est exactement le run que la
+ * carence existe pour empecher.
+ */
+type FundingScan =
+  | { readonly status: 'SCANNED'; readonly last: ReadDate | null }
+  | {
+      readonly status: 'UNREADABLE';
+      readonly code: Extract<UndecidableCode, 'INVALID_DATE' | 'INVALID_CASH_FLOW'>;
+      readonly reason: string;
+    };
+
+function lastFunding(flows: readonly CashFlow[]): FundingScan {
+  let last: ReadDate | null = null;
+
+  for (const flow of flows) {
+    const read = readDate(flow.occurredOn);
+
+    if (read === null) {
+      return {
+        status: 'UNREADABLE',
+        code: 'INVALID_DATE',
+        reason: `date de flux de tresorerie inexistante au calendrier : « ${flow.occurredOn} »`,
+      };
+    }
+
+    /*
+     * Un montant non fini n'a pas de signe : `gt` repond false sur un NaN, donc
+     * le flux passerait pour un retrait et ne gelerait rien. Le refuser est la
+     * meme parade que celle des cibles non finies.
+     */
+    if (!flow.amount.isFinite()) {
+      return {
+        status: 'UNREADABLE',
+        code: 'INVALID_CASH_FLOW',
+        reason: `montant du flux du ${read.date} non fini : « ${flow.amount.toString()} »`,
+      };
+    }
+
+    if (flow.amount.gt(ZERO) && (last === null || read.day > last.day)) last = read;
+  }
+
+  return { status: 'SCANNED', last };
 }
 
 // --- Cible visee par le run -------------------------------------------------
@@ -588,15 +710,35 @@ export interface RebalanceState {
    * independants : c'est exactement ce que demande C12.
    */
   readonly lastRatioRebalanceOn?: IsoDate | null;
+  /**
+   * Les apports et retraits connus, dans l'ordre ou l'appelant les tient.
+   * Absent quand il n'y en a aucun.
+   *
+   * La liste entiere, et non la date du dernier apport : c'est `decide` qui doit
+   * dire ce qui compte comme apport, sinon la regle de C25 se retrouverait chez
+   * l'appelant, hors de `core` et hors de sa couverture. Le cout est un
+   * balayage par run sur une liste qui compte quelques dizaines de lignes.
+   *
+   * Rien n'y est consomme : contrairement au cooldown de B, dont l'appelant
+   * avance la date a chaque arbitrage, la carence se lit sur un historique que
+   * `decide` ne modifie pas — elle est pure comme le reste du module.
+   */
+  readonly cashFlows?: readonly CashFlow[];
 }
 
 /**
  * `INVALID_PARAMS` couvre une configuration incoherente, pas un etat de marche.
- * `INVALID_DATE` couvre une date de run ou de dernier arbitrage qui n'existe
- * pas au calendrier : depuis que le cooldown de B se compte en jours, la date
- * n'est plus une simple etiquette journalisee.
+ * `INVALID_DATE` couvre une date de run, de dernier arbitrage ou de flux de
+ * tresorerie qui n'existe pas au calendrier : depuis que deux delais se comptent
+ * en jours, une date n'est plus une simple etiquette journalisee.
+ * `INVALID_CASH_FLOW` couvre un montant de flux non fini, qui n'a pas de signe
+ * et ne peut donc ni geler ni laisser passer.
  */
-export type UndecidableCode = ValuationIssue | 'INVALID_PARAMS' | 'INVALID_DATE';
+export type UndecidableCode =
+  | ValuationIssue
+  | 'INVALID_PARAMS'
+  | 'INVALID_DATE'
+  | 'INVALID_CASH_FLOW';
 
 /**
  * Un portefeuille de valeur nulle n'a pas de poids : il n'y a pas de decision a
@@ -679,35 +821,55 @@ interface Aim {
  * deux bandes sont franchies a la fois : c'est le seul endroit ou l'ordre des
  * deux blocs ci-dessous se voit.
  *
- * Le cooldown de B est le dernier gardien, apres la bande de ratio et non avant
- * elle : un ratio dans sa bande n'a rien a dire d'un cooldown, et l'annoncer
- * dans `reason` ferait lire une occasion manquee la ou il n'y en avait aucune.
+ * La carence s'intercale entre les deux, et elle ne fait pas sortir du bloc :
+ * quand la bande de cash est franchie mais qu'un apport recent gele A, le run
+ * continue vers B au lieu de tirer. C'est le fond de C26 — B ne touche pas a la
+ * ligne cash, donc il ne peut pas investir l'apport que la carence protege — et
+ * c'est ce qui donne a C11 sa lecture exacte : B est evalue des que A ne tire
+ * pas. Le sauter aussi pendant une carence rendrait le gel de A contagieux.
+ *
+ * Chaque delai est le dernier gardien de son declencheur, apres sa bande et non
+ * avant elle : une bande non franchie n'a rien a dire d'un compteur, et
+ * l'annoncer dans `reason` ferait lire une occasion manquee la ou il n'y en
+ * avait aucune.
  */
-function aimOf(params: RebalanceParams, weights: Weights, cooldown: ResolvedCooldown): Aim {
+function aimOf(
+  params: RebalanceParams,
+  weights: Weights,
+  cooldown: ResolvedDelay,
+  freeze: ResolvedDelay,
+): Aim {
   const band = cashBand(params);
   const position = locate(weights.USDC, band);
-  const cash = cashConstat(weights.USDC, band, position);
+  const constats = [cashConstat(weights.USDC, band, position)];
 
   if (position.side !== 'INSIDE') {
-    return {
-      trigger: 'CASH_BAND',
-      weights: aimedWeights(params, position),
-      reason: explain([cash], true, params.rebalanceMode),
-    };
+    const frozen = blockingDelay(freeze, params.newCashFreezeDays);
+
+    if (frozen === null) {
+      return {
+        trigger: 'CASH_BAND',
+        weights: aimedWeights(params, position),
+        reason: explain(constats, true, params.rebalanceMode),
+      };
+    }
+
+    constats.push(freezeConstat(frozen, params.newCashFreezeDays));
   }
 
   if (!params.ratioBandEnabled) {
     return {
       trigger: 'NONE',
       weights: params.targets,
-      reason: explain([cash], false, params.rebalanceMode),
+      reason: explain(constats, false, params.rebalanceMode),
     };
   }
 
   const rBand = ratioBand(params);
   const ratio = weights.BTC.div(weights.ETH);
   const rPosition = locateRatio(ratio, rBand);
-  const constats = [cash, ratioConstat(ratio, rBand, rPosition)];
+
+  constats.push(ratioConstat(ratio, rBand, rPosition));
 
   if (rPosition.side === 'INSIDE' || rPosition.side === 'UNDEFINED') {
     return {
@@ -717,17 +879,15 @@ function aimOf(params: RebalanceParams, weights: Weights, cooldown: ResolvedCool
     };
   }
 
-  const blocking = blockingCooldown(cooldown, params.ratioCooldownDays);
+  const blocking = blockingDelay(cooldown, params.ratioCooldownDays);
 
   if (blocking !== null) {
+    constats.push(cooldownConstat(blocking, params.ratioCooldownDays));
+
     return {
       trigger: 'NONE',
       weights: params.targets,
-      reason: explain(
-        [...constats, cooldownConstat(blocking, params.ratioCooldownDays)],
-        false,
-        params.rebalanceMode,
-      ),
+      reason: explain(constats, false, params.rebalanceMode),
     };
   }
 
@@ -754,10 +914,33 @@ export function decide(state: RebalanceState, clock: Clock, params: RebalancePar
   }
 
   const runDate = clock.today();
-  const cooldown = ratioCooldownAt(runDate, state.lastRatioRebalanceOn ?? null);
+
+  /*
+   * La date de run est controlee pour toutes les configurations : elle est
+   * journalisee dans `decisions`, elle ordonne le rejeu, et les deux delais du
+   * module se comptent a partir d'elle. Une date qui n'existe pas au calendrier
+   * est un etat illisible, pas une etiquette anodine.
+   */
+  const run = readDate(runDate);
+
+  if (run === null) {
+    return {
+      status: 'UNDECIDABLE',
+      code: 'INVALID_DATE',
+      reason: `date de run inexistante au calendrier : « ${runDate} »`,
+    };
+  }
+
+  const cooldown = ratioCooldown(run.day, state.lastRatioRebalanceOn ?? null);
 
   if (cooldown.state === 'UNREADABLE') {
     return { status: 'UNDECIDABLE', code: 'INVALID_DATE', reason: cooldown.reason };
+  }
+
+  const funding = lastFunding(state.cashFlows ?? []);
+
+  if (funding.status === 'UNREADABLE') {
+    return { status: 'UNDECIDABLE', code: funding.code, reason: funding.reason };
   }
 
   const valuation = valuate(state.holdings, state.prices);
@@ -766,7 +949,7 @@ export function decide(state: RebalanceState, clock: Clock, params: RebalancePar
     return { status: 'UNDECIDABLE', code: valuation.code, reason: valuation.reason };
   }
 
-  const aim = aimOf(params, valuation.weights, cooldown);
+  const aim = aimOf(params, valuation.weights, cooldown, delayFrom(run.day, funding.last));
   const triggered = aim.trigger !== 'NONE';
 
   return {
