@@ -6,6 +6,7 @@ import type {
   Clock,
   Intent,
   IntentLeg,
+  IsoDate,
   StrategyName,
   Trigger,
   UsdcAmount,
@@ -27,6 +28,13 @@ import type {
  * production et mis en shadow : c'est un pari que la v2.0 qualifie elle-meme de
  * moins fonde et plus bruyant, et a 1 a 3 evenements par an son P&L n'est pas
  * attribuable. D'ou `ratioBandEnabled`, faux par defaut.
+ *
+ * A l'emporte sur B : quand la bande de cash est franchie, le reequilibrage
+ * complet remet deja le ratio sur sa cible, donc B n'est meme pas evalue. Et B
+ * porte son propre cooldown de 7 jours, distinct de celui de A qu'applique
+ * `core/risk.ts` : la v2.0 n'en donnait aucun a B, qui pouvait donc tirer tous
+ * les jours tant que la bande de ratio restait franchie. Le cadrage a comble ce
+ * trou.
  *
  * Module pur : ni horloge propre, ni IO. La date de run vient du `Clock`
  * injecte, que le rejeu alimente ligne a ligne depuis la fixture.
@@ -76,6 +84,12 @@ export interface RebalanceParams {
   readonly ratioBandEnabled: boolean;
   /** Ecart relatif tolere sur le ratio BTC/ETH : 0.30 donne `[0.93, 1.73]`. */
   readonly ratioBandRelative: Decimal;
+  /**
+   * Jours calendaires entre deux arbitrages de ratio. Entier positif ou nul, et
+   * en jours et non en `Decimal` : c'est un compte de dates, pas une grandeur de
+   * marche. Distinct du cooldown de A, que `core/risk.ts` applique de son cote.
+   */
+  readonly ratioCooldownDays: number;
 }
 
 /** Les defauts de l'annexe de `ubac-rebalance.md`, en decimal exact. */
@@ -90,6 +104,7 @@ export const DEFAULT_REBALANCE_PARAMS: RebalanceParams = {
   rebalanceMode: 'target',
   ratioBandEnabled: false,
   ratioBandRelative: new Decimal('0.30'),
+  ratioCooldownDays: 7,
 };
 
 /**
@@ -146,6 +161,18 @@ function paramsIssue(params: RebalanceParams): string | null {
    * refusee sur des parametres qu'elle n'utilise pas.
    */
   if (params.ratioBandEnabled) {
+    /*
+     * Un cooldown fractionnaire ou negatif ne se compare a rien de sense : les
+     * jours ecoules sont des entiers, et un seuil negatif rendrait la regle
+     * morte au lieu de la desarmer franchement — ce que `0` fait, lui.
+     */
+    if (!Number.isInteger(params.ratioCooldownDays) || params.ratioCooldownDays < 0) {
+      return (
+        `cooldown de ratio a ${String(params.ratioCooldownDays)} jours` +
+        ' : attendu un entier positif ou nul'
+      );
+    }
+
     if (!params.ratioBandRelative.isFinite() || params.ratioBandRelative.isNegative()) {
       return (
         `bande relative de ratio a ${params.ratioBandRelative.toString()}` +
@@ -309,6 +336,140 @@ function ratioWeights(current: Weights, ratio: Decimal): Weights {
   };
 }
 
+// --- Cooldown propre au declencheur B ---------------------------------------
+
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+const MONTH_LENGTHS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31] as const;
+
+/** Regle gregorienne complete : 2000 est bissextile, 2100 ne l'est pas. */
+function isLeapYear(year: number): boolean {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+}
+
+function daysInMonth(year: number, month: number): number {
+  const length = MONTH_LENGTHS[month - 1];
+  if (length === undefined) throw new RangeError(`mois hors calendrier : ${String(month)}`);
+  return month === 2 && isLeapYear(year) ? 29 : length;
+}
+
+/**
+ * Numero de jour absolu d'une date ISO, ou `null` si la date n'existe pas.
+ * L'origine n'a aucune importance : seule la difference de deux numeros est
+ * lue, et c'est elle qui donne les jours calendaires ecoules.
+ *
+ * L'arithmetique est faite a la main, sans passer par `Date` : `Date.parse` et
+ * `Date.UTC` reportent le 2026-02-30 au 2 mars au lieu de le refuser, et un
+ * cooldown compte a partir d'une date silencieusement decalee laisse tirer B
+ * un jour trop tot sans qu'aucune assertion ne bronche. Le meme choix, pour la
+ * meme raison, est fait dans `strategy/dca.ts` — les deux modules portent
+ * chacun leur calendrier faute d'un `core/calendar.ts`, que le plan n'ouvre
+ * dans le perimetre d'aucune etape.
+ */
+function dayNumber(date: IsoDate): number | null {
+  if (!ISO_DATE.test(date)) return null;
+
+  const year = Number(date.slice(0, 4));
+  const month = Number(date.slice(5, 7));
+  const day = Number(date.slice(8, 10));
+
+  if (month < 1 || month > 12) return null;
+  if (day < 1 || day > daysInMonth(year, month)) return null;
+
+  /* Jours des annees pleines precedentes, regle gregorienne comprise. */
+  const past = year - 1;
+  let days = past * 365 + Math.floor(past / 4) - Math.floor(past / 100) + Math.floor(past / 400);
+
+  for (let m = 1; m < month; m += 1) days += daysInMonth(year, m);
+
+  return days + day;
+}
+
+/**
+ * L'etat du cooldown de B au jour du run, resolu par `decide` avant d'entrer
+ * dans les declencheurs. `NEVER` n'est pas « zero jour ecoule » : B n'a jamais
+ * arbitre, donc rien ne peut le bloquer, alors que zero jour ecoule bloque.
+ */
+type RatioCooldown =
+  | { readonly state: 'NEVER' }
+  | { readonly state: 'SINCE'; readonly since: IsoDate; readonly elapsed: number }
+  | { readonly state: 'UNREADABLE'; readonly reason: string };
+
+/** Ce qu'un declencheur peut recevoir : une date illisible n'arrive jamais jusqu'a lui. */
+type ResolvedCooldown = Exclude<RatioCooldown, { readonly state: 'UNREADABLE' }>;
+
+/** Un cooldown qui court : B a deja arbitre, a une date lisible. */
+type ArmedCooldown = Extract<RatioCooldown, { readonly state: 'SINCE' }>;
+
+const NEVER_ARBITRAGED: ResolvedCooldown = { state: 'NEVER' };
+
+/**
+ * Les jours ecoules depuis le dernier arbitrage de B, au jour du run.
+ *
+ * La date de run est controlee pour toutes les configurations, y compris celles
+ * qui n'evaluent jamais le ratio : elle est journalisee dans `decisions` et
+ * ordonne le rejeu, donc une date qui n'existe pas est un etat illisible, pas
+ * une etiquette anodine. Meme raison pour la date du dernier arbitrage, qui est
+ * refusee drapeau baisse : la remonter seulement quand elle est lue ferait
+ * dependre la validite d'un etat de la configuration qui le regarde.
+ */
+function ratioCooldownAt(runDate: IsoDate, since: IsoDate | null): RatioCooldown {
+  const runDay = dayNumber(runDate);
+
+  if (runDay === null) {
+    return {
+      state: 'UNREADABLE',
+      reason: `date de run inexistante au calendrier : « ${runDate} »`,
+    };
+  }
+
+  if (since === null) return NEVER_ARBITRAGED;
+
+  const sinceDay = dayNumber(since);
+
+  if (sinceDay === null) {
+    return {
+      state: 'UNREADABLE',
+      reason: `date du dernier arbitrage de ratio inexistante au calendrier : « ${since} »`,
+    };
+  }
+
+  return { state: 'SINCE', since, elapsed: runDay - sinceDay };
+}
+
+/**
+ * Le cooldown qui bloque ce run, ou `null` s'il n'y en a pas. Une seule
+ * fonction repond a la fois pour la decision et pour le motif : deux fonctions
+ * separees permettraient d'afficher un constat de cooldown sur un run qui n'a
+ * pas ete bloque, et de bloquer sans le dire.
+ *
+ * Sept jours d'intervalle passent, six ne passent pas (C12) : le seuil est
+ * atteint, donc `>=`. Un `>` decalerait le degel d'un jour et seul le test a
+ * exactement sept jours le verrait.
+ *
+ * Un `elapsed` negatif — un dernier arbitrage date dans le futur du run — bloque
+ * par la meme comparaison. C'est un etat incoherent que ce module ne sait pas
+ * arbitrer ; ne pas trader est la reponse conservatrice.
+ */
+function blockingCooldown(
+  cooldown: ResolvedCooldown,
+  requiredDays: number,
+): ArmedCooldown | null {
+  if (cooldown.state === 'NEVER' || cooldown.elapsed >= requiredDays) return null;
+
+  return cooldown;
+}
+
+function cooldownConstat(
+  blocking: ArmedCooldown,
+  requiredDays: number,
+): string {
+  return (
+    `dernier arbitrage de ratio le ${blocking.since}` +
+    `, ${String(blocking.elapsed)} jours ecoules sur les ${String(requiredDays)} du cooldown`
+  );
+}
+
 // --- Cible visee par le run -------------------------------------------------
 
 /** Poids cible cumule des lignes qui ont un prix de marche, soit `1 - USDC`. */
@@ -416,10 +577,26 @@ function legsToward(
 export interface RebalanceState {
   readonly holdings: Holdings;
   readonly prices: Prices;
+  /**
+   * Date du dernier arbitrage de ratio effectivement passe, ou absente s'il n'y
+   * en a jamais eu. C'est l'appelant qui la tient — le rejeu en phase 0, le job
+   * quotidien ensuite — parce que `decide` est pure : elle n'a aucune memoire
+   * d'un appel a l'autre et ne peut pas armer son propre compteur.
+   *
+   * Elle ne porte que les runs de B. La date du dernier reequilibrage de A vit
+   * ailleurs, dans le `COOLDOWN` de `core/risk.ts`, et les deux compteurs sont
+   * independants : c'est exactement ce que demande C12.
+   */
+  readonly lastRatioRebalanceOn?: IsoDate | null;
 }
 
-/** `INVALID_PARAMS` couvre une configuration incoherente, pas un etat de marche. */
-export type UndecidableCode = ValuationIssue | 'INVALID_PARAMS';
+/**
+ * `INVALID_PARAMS` couvre une configuration incoherente, pas un etat de marche.
+ * `INVALID_DATE` couvre une date de run ou de dernier arbitrage qui n'existe
+ * pas au calendrier : depuis que le cooldown de B se compte en jours, la date
+ * n'est plus une simple etiquette journalisee.
+ */
+export type UndecidableCode = ValuationIssue | 'INVALID_PARAMS' | 'INVALID_DATE';
 
 /**
  * Un portefeuille de valeur nulle n'a pas de poids : il n'y a pas de decision a
@@ -498,12 +675,15 @@ interface Aim {
  * oubli, alors qu'il est journalise dans `decisions` et sert a compter les
  * declenchements du rejeu.
  *
- * Cette priorite est mesuree par la section C10 de `rebalance-b.test.ts`, sur
- * des etats dont les deux bandes sont franchies a la fois : c'est le seul
- * endroit ou l'ordre des deux blocs ci-dessous se voit. L'etape 13 ajoutera le
- * cooldown propre a B.
+ * Cette priorite est mesuree par `rebalance-ab.test.ts`, sur des etats dont les
+ * deux bandes sont franchies a la fois : c'est le seul endroit ou l'ordre des
+ * deux blocs ci-dessous se voit.
+ *
+ * Le cooldown de B est le dernier gardien, apres la bande de ratio et non avant
+ * elle : un ratio dans sa bande n'a rien a dire d'un cooldown, et l'annoncer
+ * dans `reason` ferait lire une occasion manquee la ou il n'y en avait aucune.
  */
-function aimOf(params: RebalanceParams, weights: Weights): Aim {
+function aimOf(params: RebalanceParams, weights: Weights, cooldown: ResolvedCooldown): Aim {
   const band = cashBand(params);
   const position = locate(weights.USDC, band);
   const cash = cashConstat(weights.USDC, band, position);
@@ -537,6 +717,20 @@ function aimOf(params: RebalanceParams, weights: Weights): Aim {
     };
   }
 
+  const blocking = blockingCooldown(cooldown, params.ratioCooldownDays);
+
+  if (blocking !== null) {
+    return {
+      trigger: 'NONE',
+      weights: params.targets,
+      reason: explain(
+        [...constats, cooldownConstat(blocking, params.ratioCooldownDays)],
+        false,
+        params.rebalanceMode,
+      ),
+    };
+  }
+
   return {
     trigger: 'RATIO_BAND',
     weights: ratioWeights(weights, aimedRatio(rBand, rPosition, params.rebalanceMode)),
@@ -559,19 +753,26 @@ export function decide(state: RebalanceState, clock: Clock, params: RebalancePar
     return { status: 'UNDECIDABLE', code: 'INVALID_PARAMS', reason: issue };
   }
 
+  const runDate = clock.today();
+  const cooldown = ratioCooldownAt(runDate, state.lastRatioRebalanceOn ?? null);
+
+  if (cooldown.state === 'UNREADABLE') {
+    return { status: 'UNDECIDABLE', code: 'INVALID_DATE', reason: cooldown.reason };
+  }
+
   const valuation = valuate(state.holdings, state.prices);
 
   if (valuation.status === 'REJECTED') {
     return { status: 'UNDECIDABLE', code: valuation.code, reason: valuation.reason };
   }
 
-  const aim = aimOf(params, valuation.weights);
+  const aim = aimOf(params, valuation.weights, cooldown);
   const triggered = aim.trigger !== 'NONE';
 
   return {
     status: 'DECIDED',
     intent: {
-      runDate: clock.today(),
+      runDate,
       strategy: params.strategy,
       trigger: aim.trigger,
       reason: aim.reason,
