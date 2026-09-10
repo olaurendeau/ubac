@@ -1,12 +1,14 @@
 import { Decimal } from 'decimal.js';
 import { describe, expect, it } from 'vitest';
 
+import type { Holdings, Prices } from '../../src/core/portfolio.js';
 import { MIN_LEG_USDC, validate } from '../../src/core/risk.js';
 import type { RiskContext } from '../../src/core/risk.js';
 import type {
   Intent,
   IntentLeg,
   Price,
+  Quantity,
   Rejection,
   Side,
   UsdcAmount,
@@ -15,29 +17,40 @@ import type {
 } from '../../src/core/types.js';
 
 const usdc = (v: string): UsdcAmount => new Decimal(v) as UsdcAmount;
+const qty = (v: string): Quantity => new Decimal(v) as Quantity;
 const price = (v: string): Price => new Decimal(v) as Price;
 const weight = (v: string): Weight => new Decimal(v) as Weight;
 
 const WEIGHTS: Weights = { BTC: weight('0.4'), ETH: weight('0.3'), USDC: weight('0.3') };
 
-/**
- * Fabrique injectee a la place de `core/order-id.ts`, qui n'existe pas a cette
- * etape. Elle recopie les quatre composantes en clair : les tests peuvent ainsi
- * verifier *ce qui* est passe a la fabrique, ce qu'un hachage rendrait opaque.
- */
+const BTC = price('60000');
+const ETH = price('3000');
+const PRICES: Prices = { BTC, ETH };
+const HOLDINGS: Holdings = {
+  BTC: qty(new Decimal('40000').div('60000').toString()),
+  ETH: qty(new Decimal('30000').div('3000').toString()),
+  USDC: qty('30000'),
+};
+
 const context: RiskContext = {
   makeClientOrderId: ({ runDate, asset, side, legIndex }) =>
     `${runDate}|${asset}|${side}|${legIndex}`,
+  mids: { BTC, ETH },
+  lastCompleteRebalanceOn: null,
+  balances: [],
+  holdings: HOLDINGS,
+  prices: PRICES,
 };
 
 function leg(overrides: Partial<IntentLeg> = {}): IntentLeg {
+  const asset = overrides.asset ?? 'BTC';
   return {
-    asset: 'BTC',
     quote: 'USDC',
     side: 'BUY' as Side,
     amount: usdc('1500'),
-    limitPrice: price('60000'),
     ...overrides,
+    asset,
+    limitPrice: overrides.limitPrice ?? (asset === 'ETH' ? ETH : BTC),
   };
 }
 
@@ -195,6 +208,19 @@ describe('LEG_TOO_SMALL (C19)', () => {
 
     expect(verdict.orders).toHaveLength(1);
     expect(verdict.ignored).toEqual([]);
+  });
+
+  it('juge LEG_TOO_SMALL sur la valeur absolue', () => {
+    // Sans `.abs()`, -1500 < 200 et la jambe serait ignoree en silence.
+    const kept = accepted(intent([leg({ amount: usdc('-1500'), side: 'SELL' })]));
+    expect(kept.orders).toHaveLength(1);
+    expect(kept.ignored).toEqual([]);
+
+    const dropped = accepted(intent([leg({ amount: usdc('-12') })]));
+    expect(dropped.orders).toHaveLength(0);
+    expect(dropped.ignored).toEqual([
+      expect.objectContaining({ code: 'LEG_TOO_SMALL', legIndex: 0 }),
+    ]);
   });
 
   it('n\'apparait jamais dans les rejets bloquants', () => {
