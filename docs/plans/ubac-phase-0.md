@@ -10,18 +10,19 @@ Constat du 2026-09-10, après reprise sur `origin/main` (`5fad248`) : le `main`
 local avait onze commits de retard et la révision précédente de ce plan décrivait
 cet état périmé. Les lots ci-dessous sont recalés sur le dépôt distant réel.
 
-Intégrées sur `main` : E1 à E13, E15 à E18, E20. Restent E14 (P4), E21 et E24
-(P6), E19, E22 et E23 (P7). `make check` passe (303 tests, `typecheck` inclus).
+**Tous les lots sont intégrés sur `main`.** E1 à E24 au complet. `make check`
+passe : 21 fichiers de test, 404 tests, exit 0. Le rejeu produit les six séries
+de C29 et deux exécutions sortent identiques octet pour octet (C30). `make check` passe (303 tests, `typecheck` inclus).
 
 | Lot | État réel | Reste à livrer |
 |---|---|---|
 | P1 | acquis | — (E4 PR #10, E5 PR #8 fusionnées) |
 | P2 | acquis | — (E7, E8, E9 dans la PR #22, fusionnée le 2026-09-10) |
 | P3 | acquis | — (E16 PR #21 fusionnée le 2026-09-10 à 15:52) |
-| P4 | partiel | E14 ladder, PR #12 ouverte ; E15 DCA acquise (PR #13) |
+| P4 | acquis | — (E15 PR #13, E14 PR #12) |
 | P5 | acquis | — (E17 PR #15, E18 PR #18 fusionnées) |
-| P6 | partiel | E24 script de fixture, PR #14 ouverte ; E21 fixture et intégrité |
-| P7 | à faire | E19 idempotence, E22 moteur de rejeu, E23 rapport |
+| P6 | acquis | — (E20 PR #7, E24 et E21 PR #14) |
+| P7 | acquis | — (E19, E22, E23 dans la PR #23) |
 
 Les anciennes E4–E24 sont remplacées par P1–P7 ci-dessous. Leurs identifiants
 restent des références de traçabilité ; ne pas les dispatcher comme tâches
@@ -177,7 +178,7 @@ Détails et validations conservés des anciennes étapes :
 
 ### P4 — Stratégies shadow
 
-- **Reste** : E14 seule (ladder), sur la PR #12 existante. E15 (DCA) est acquise (PR #13) et sa règle de repli est déjà tranchée dans le code ; la gate DCA est sans objet.
+- **Acquis** : E15 (PR #13) et E14 (PR #12).
 - Remplace : E14, E15.
 - Dépend de : P1.
 - Diff estimé compté : ~400 lignes.
@@ -228,7 +229,7 @@ Détails et validations conservés des anciennes étapes :
 
 ### P6 — Préparation et intégrité des fixtures
 
-- **Reste** : E24 (script de téléchargement, PR #14 ouverte) et E21 (fixture de bougies et de flux, test d'intégrité). E20 est acquise (PR #7) : `src/fixture/normalise.ts` existe. La gate porte sur la source, le fuseau de clôture et la politique de trous proposés par `docs/fixture-source.md` dans la PR #14.
+- **Acquis** : E20 (PR #7), puis E24 et E21 (PR #14). Conventions figées par décision de l'opérateur : source Coinbase Advanced Trade publique, clôture 00:00 UTC, aucun remplissage de trou. Fixture de flux : capital initial 5 000 USDC, apport de 500 USDC le 1er de chaque mois, retrait unique de 1 000 USDC le 2025-06-15.
 - Remplace : E20, E24, E21.
 - Dépend de : E1–E3 intégrées.
 - Diff estimé compté : ~650 lignes.
@@ -291,6 +292,29 @@ Détails et validations conservés des anciennes étapes :
 - Critere de validation : `npm run replay > a.txt && npm run replay > b.txt && cmp a.txt b.txt` sort en 0. `npx vitest run test/replay/report.test.ts` passe.
 - Piege connu : C31 est une interdiction, pas une omission. Aucune assertion du type "rebalance > dca" ne doit entrer dans ce fichier de test, meme si le rejeu la rend vraie : ce serait figer en test un resultat que la spec refuse explicitement de valider. Cote determinisme, les pieges sont le formatage de nombres dependant de la locale et tout parcours de `Map` ou `Set` non trie.
 
+## Bilan de la phase 0
+
+Sept lots, tous intégrés. Deux ont été bloqués en revue sur un défaut réel, puis
+corrigés et relus en session neuve :
+
+- **P2** — la somme des jambes de `REBALANCE_TOO_LARGE` ignorait la valeur
+  absolue (C20). Une vente négative compensait un achat et laissait passer un
+  rééquilibrage au-delà de 25 %. Le défaut était sur une ligne couverte à 100 %
+  et exécutée : la couverture ne l'a pas vu, la revue si.
+- **P7** — les tests du rejeu vérifiaient la forme des six séries, jamais leurs
+  valeurs. Remplacer une métrique par une constante rendait le rapport
+  matériellement faux sans faire tomber un seul test. Corrigé par des oracles de
+  valeur, sans introduire de comparaison entre stratégies (C31).
+
+Points laissés ouverts, sans blocage :
+
+- `PRICE_SANITY` et `RECONCILIATION_DRIFT` n'exercent que le sens positif de
+  l'écart ; ajouter le sens inverse durcirait la détection d'une suppression
+  d'`abs()`.
+- C26 n'est pas parcouru par le rejeu : les seuls déclenchements `RATIO_BAND` de
+  la fixture tombent hors des sept jours suivant un apport. Le critère reste
+  couvert en unitaire par `test/core/cash-flow-delay.test.ts`.
+
 ## Couverture exhaustive de la spec
 
 | Critères | Acquis ou lot responsable |
@@ -306,16 +330,15 @@ Détails et validations conservés des anciennes étapes :
 
 ## Ordre et concurrence
 
-- P1, P2, P3 et P5 sont acquis ; ils ne sont plus dispatchés.
-- Éligibles : P4 (reste). P6 est éligible dès que sa gate est résolue ; les deux
-  portent sur des fichiers disjoints et peuvent aller en parallèle.
-- P7 attend l'intégration de P4 et P6.
+Plus rien à ordonner : les sept lots sont intégrés. L'ordre réellement suivi a
+été P2, puis P4 et P6 en parallèle, puis P7 empilé sur P6 et rebasé après son
+merge.
 
 Trois workers simultanés maximum, construction et revue comprises. Les fichiers
 partagés ajoutés en cours de travail, notamment `package.json`, les types et la
 configuration, restent à sérialiser par le coordinateur ; l'isolation Git ne
 supprime pas les conflits d'intégration.
 
-Trois lots restants (P4, P6, P7), dont deux repris sur PR ouverte. La fixture ne nécessite pas
+Aucun lot restant. La fixture n'a pas nécessité
 d'exception de taille : ses données générées sont contrôlées séparément. Aucune
 estimation en « une soirée » ; mesurer les temps réels pendant les cycles Orca.
