@@ -10,13 +10,13 @@ Constat du 2026-09-10, après reprise sur `origin/main` (`5fad248`) : le `main`
 local avait onze commits de retard et la révision précédente de ce plan décrivait
 cet état périmé. Les lots ci-dessous sont recalés sur le dépôt distant réel.
 
-Intégrées sur `main` : E1, E2, E3, E4, E5, E6, E10, E11, E12, E13, E15, E16, E17,
-E18 et E20. `make check` passe (303 tests, `typecheck` inclus).
+Intégrées sur `main` : E1 à E13, E15 à E18, E20. Restent E14 (P4), E21 et E24
+(P6), E19, E22 et E23 (P7). `make check` passe (303 tests, `typecheck` inclus).
 
 | Lot | État réel | Reste à livrer |
 |---|---|---|
 | P1 | acquis | — (E4 PR #10, E5 PR #8 fusionnées) |
-| P2 | partiel | E7 état projeté, E8 règles contextuelles, E9 verrou de couverture |
+| P2 | acquis | — (E7, E8, E9 dans la PR #22, fusionnée le 2026-09-10) |
 | P3 | acquis | — (E16 PR #21 fusionnée le 2026-09-10 à 15:52) |
 | P4 | partiel | E14 ladder, PR #12 ouverte ; E15 DCA acquise (PR #13) |
 | P5 | acquis | — (E17 PR #15, E18 PR #18 fusionnées) |
@@ -94,7 +94,7 @@ Détails et validations conservés des anciennes étapes :
 
 ### P2 — Risque complet et couverture bloquante
 
-- **Reste** : E7 (état projeté), E8 (règles contextuelles), E9 (verrou de couverture et test de contrat). E6 est acquise (PR #9) : `src/core/risk.ts` contient déjà `validate()` et les règles par jambe, à étendre sans les réécrire.
+- **Acquis** : E6 (PR #9) puis E7, E8 et E9 (PR #22). Rien à dispatcher. Reste ouvert, non bloquant relevé en revue : les tests de `PRICE_SANITY` et `RECONCILIATION_DRIFT` n'exercent que le sens positif de l'écart ; ajouter le sens inverse durcirait la détection d'une suppression de `abs()`.
 - Remplace : E6, E7, E8, E9.
 - Dépend de : P1.
 - Diff estimé compté : ~800 lignes.
@@ -306,16 +306,16 @@ Détails et validations conservés des anciennes étapes :
 
 ## Ordre et concurrence
 
-- P1, P3 et P5 sont acquis ; ils ne sont plus dispatchés.
-- Éligibles : P2 (reste) et P4 (reste), sur des fichiers disjoints. P6 est
-  éligible dès que sa gate est résolue.
-- P7 attend l'intégration de P2, P4 et P6.
+- P1, P2, P3 et P5 sont acquis ; ils ne sont plus dispatchés.
+- Éligibles : P4 (reste). P6 est éligible dès que sa gate est résolue ; les deux
+  portent sur des fichiers disjoints et peuvent aller en parallèle.
+- P7 attend l'intégration de P4 et P6.
 
 Trois workers simultanés maximum, construction et revue comprises. Les fichiers
 partagés ajoutés en cours de travail, notamment `package.json`, les types et la
 configuration, restent à sérialiser par le coordinateur ; l'isolation Git ne
 supprime pas les conflits d'intégration.
 
-Quatre lots restants (P2, P4, P6, P7), dont deux repris sur PR ouverte. La fixture ne nécessite pas
+Trois lots restants (P4, P6, P7), dont deux repris sur PR ouverte. La fixture ne nécessite pas
 d'exception de taille : ses données générées sont contrôlées séparément. Aucune
 estimation en « une soirée » ; mesurer les temps réels pendant les cycles Orca.
