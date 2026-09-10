@@ -78,8 +78,9 @@ Terminer par le signal de fin demandé dans le préambule Orca.
 
 ## Relire
 
-Codex relit dans une session neuve, sans contexte de construction. Si cette
-session a implémenté le changement, signaler l'incompatibilité et arrêter.
+Codex relit dans une session neuve, sans contexte de construction ; à défaut,
+Cursor puis Claude, jamais le moteur qui a construit le lot. Si cette session
+a implémenté le changement, signaler l'incompatibilité et arrêter.
 
 Lire les consignes communes, la spec et les critères applicables fournis par
 le coordinateur, le diff base → SHA demandé, puis le code et les tests utiles.

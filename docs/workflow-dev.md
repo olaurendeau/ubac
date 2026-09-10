@@ -19,13 +19,27 @@ Aucun secret de production n'est nécessaire au développement de la phase 0.
 | Opérateur | Besoin, arbitrages métier, décisions bloquantes |
 | Coordinateur dans Orca | Run, dépendances, dispatches, suivi, reprises et intégration |
 | Claude ; Cursor puis Mistral Vibe en relais | Construction ou correction d'un lot, tests et PR |
-| Codex, session neuve | Revue indépendante du diff contre la spec |
+| Codex, session neuve ; Cursor puis Claude en relais | Revue indépendante du diff contre la spec |
 
 Le coordinateur peut être Claude ou Codex selon la session de pilotage ; les
 modèles restent ceux configurés dans Orca. Trois workers actifs au maximum,
 revues comprises. Aucun sous-agent hors Orca pour remplacer un worker supervisé.
 
 ## Relais Claude → Cursor → Mistral
+
+### Relais de revue
+
+Codex relit par défaut. Si Codex est indisponible — quota, plafond 80 %, service
+ou accès — la revue passe au premier moteur disponible de la chaîne Codex →
+Cursor → Claude, **en excluant le moteur qui a construit le lot**. Un lot
+construit par Cursor est donc relu par Codex ou par Claude, jamais par Cursor.
+Si la chaîne est épuisée parce que le seul moteur restant est le constructeur,
+la revue attend le reset annoncé plutôt que de perdre son indépendance.
+
+Le relecteur travaille en session neuve, dans un checkout de revue distinct,
+sans contexte de construction, et reçoit le même dossier : spec, critères
+applicables, périmètre attendu, base et SHA. Le relais est autorisé sans nouvelle
+validation humaine ; le coordinateur enregistre moteur et motif dans Orca.
 
 ### Plafond de consommation à 80 %
 
