@@ -10,14 +10,14 @@ Constat du 2026-09-10, après reprise sur `origin/main` (`5fad248`) : le `main`
 local avait onze commits de retard et la révision précédente de ce plan décrivait
 cet état périmé. Les lots ci-dessous sont recalés sur le dépôt distant réel.
 
-Intégrées sur `main` : E1, E2, E3, E4, E5, E6, E10, E11, E12, E13, E15, E17, E18
-et E20. `make check` passe (303 tests, `typecheck` inclus).
+Intégrées sur `main` : E1, E2, E3, E4, E5, E6, E10, E11, E12, E13, E15, E16, E17,
+E18 et E20. `make check` passe (303 tests, `typecheck` inclus).
 
 | Lot | État réel | Reste à livrer |
 |---|---|---|
 | P1 | acquis | — (E4 PR #10, E5 PR #8 fusionnées) |
 | P2 | partiel | E7 état projeté, E8 règles contextuelles, E9 verrou de couverture |
-| P3 | partiel | E16 carence de 7 jours sur les apports (C25, C26) |
+| P3 | acquis | — (E16 PR #21 fusionnée le 2026-09-10 à 15:52) |
 | P4 | partiel | E14 ladder, PR #12 ouverte ; E15 DCA acquise (PR #13) |
 | P5 | acquis | — (E17 PR #15, E18 PR #18 fusionnées) |
 | P6 | partiel | E24 script de fixture, PR #14 ouverte ; E21 fixture et intégrité |
@@ -35,6 +35,19 @@ leur diff, leurs retours de revue et leur base avant reprise, puis actualiser
 titre et description vers le périmètre du lot. Aucune PR ouverte n'est un acquis.
 La PR #17 est le témoin du cycle à blanc Orca, hors périmètre métier.
 Ne pas supprimer de branches ni élaguer les worktrees pendant la migration.
+
+### Worker Linux non orchestré, encore actif
+
+La PR #21 (E16) a été créée et fusionnée sur `main` le 2026-09-10 à 15:52 depuis
+`/home/olaurendeau.linux/worktrees/ubac-phase-0-16`, hors du Run Orca et sans
+dispatch. Un worker de l'ancien dispositif tourne donc encore sur une machine
+Linux qui n'est pas connectée à cette instance Orca (`orca host list` ne montre
+que `local`). Le coordinateur ne peut ni l'inspecter ni l'arrêter d'ici.
+
+Conséquence : tout lot encore ouvert peut être implémenté et fusionné en double.
+Avant chaque dispatch, vérifier l'état réel de `origin/main` et des PR, et ne pas
+traiter le plan local comme la source de vérité de ce qui reste. L'arrêt de ce
+worker est une décision de l'opérateur.
 
 ## Convention de livraison
 
@@ -120,7 +133,7 @@ Détails et validations conservés des anciennes étapes :
 
 ### P3 — Rééquilibrage, modes et carence
 
-- **Reste** : E16 seule (carence de 7 jours, C25 et C26). E10, E11, E12 et E13 sont acquises (PR #11, #16, #19, #20) ; `src/core/strategy/rebalance.ts` et `src/core/config.ts` existent et sont à étendre, pas à réécrire. Diff attendu bien sous l'estimation initiale.
+- **Acquis** : E10, E11, E12, E13 (PR #11, #16, #19, #20) et E16 (PR #21). Rien à dispatcher.
 - Remplace : E10, E11, E12, E13, E16.
 - Dépend de : P1.
 - Diff estimé compté : ~900 lignes.
@@ -293,18 +306,16 @@ Détails et validations conservés des anciennes étapes :
 
 ## Ordre et concurrence
 
-- P1 et P5 sont acquis ; ils ne sont plus dispatchés.
-- Éligibles immédiatement, sans dépendance entre eux : P2 (reste), P3 (reste)
-  et P4 (reste). P6 est éligible dès que sa gate est résolue.
-- P2 et P3 touchent des fichiers disjoints (`risk.ts` contre `rebalance.ts`) et
-  peuvent être menés en parallèle. P4 crée `ladder.ts` sur une branche existante.
-- P7 attend l'intégration de P2, P3, P4 et P6.
+- P1, P3 et P5 sont acquis ; ils ne sont plus dispatchés.
+- Éligibles : P2 (reste) et P4 (reste), sur des fichiers disjoints. P6 est
+  éligible dès que sa gate est résolue.
+- P7 attend l'intégration de P2, P4 et P6.
 
 Trois workers simultanés maximum, construction et revue comprises. Les fichiers
 partagés ajoutés en cours de travail, notamment `package.json`, les types et la
 configuration, restent à sérialiser par le coordinateur ; l'isolation Git ne
 supprime pas les conflits d'intégration.
 
-Cinq lots restants (P2, P3, P4, P6, P7), dont deux repris sur PR ouverte. La fixture ne nécessite pas
+Quatre lots restants (P2, P4, P6, P7), dont deux repris sur PR ouverte. La fixture ne nécessite pas
 d'exception de taille : ses données générées sont contrôlées séparément. Aucune
 estimation en « une soirée » ; mesurer les temps réels pendant les cycles Orca.
