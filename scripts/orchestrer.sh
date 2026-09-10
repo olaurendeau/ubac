@@ -9,7 +9,11 @@
 # Env   : WORKTREE_ROOT (defaut ~/worktrees), SLOTS (defaut 3),
 #         MAX_BUDGET_USD (optionnel), MODEL (optionnel),
 #         NTFY_URL / NTFY_TOPIC (sinon les rapports vont sur stdout)
+#         Toutes lues aussi depuis le .env du depot, voir .env.example.
 set -euo pipefail
+
+# shellcheck source=scripts/load-env.sh
+. "$(dirname "${BASH_SOURCE[0]}")/load-env.sh"
 
 DRY_RUN=0
 ONLY=""
@@ -191,6 +195,16 @@ run_step() {
     if [[ ! -d "${wt}" ]]; then
       git -C "${REPO}" worktree add "${wt}" -b "${branche}" origin/main >/dev/null 2>&1 \
         || git -C "${REPO}" worktree add "${wt}" "${branche}" >/dev/null
+    else
+      # Le worktree survit d'un passage precedent. Sans rebase, le worker
+      # relit le plan et la spec tels qu'ils etaient a la creation de la
+      # branche : une etape corrigee entre-temps se reconstruit a l'identique.
+      if ! ( cd "${wt}" && git rebase origin/main ); then
+        ( cd "${wt}" && git rebase --abort ) 2>/dev/null
+        echo "rebase de ${branche} sur origin/main impossible, conflit a trancher a la main"
+        echo "bloque" > "${etat}"
+        exit 0
+      fi
     fi
     touch "${wt}/.orca-started"   # alimente scripts/watchdog.sh
 
