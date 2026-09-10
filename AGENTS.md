@@ -24,6 +24,8 @@ pur et rejeu historique, sans exécution d'ordres.
 - `test/core/types.test-d.ts` : assertions de types vérifiées par TypeScript.
 - `test/structure.test.ts` et `test/lint/fixtures/` : garde-fous de pureté et
   de séparation des couches, adossés à `eslint.config.js`.
+- `test/budget-reporter.ts` et `docs/marge-des-delais.md` : marge de chaque test
+  sous son propre delai, et la regle du delai cible plutot que global.
 - `.claude/commands/` : commandes du workflow Claude Code.
 - `docs/workflow-phases.md` : instructions communes de cadrage, plan, construction et revue.
 - `scripts/dev.sh` : wrapper Docker Compose pour `npm` / Node dans le service
