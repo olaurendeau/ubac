@@ -95,9 +95,11 @@ aucune stratégie de la phase 0 ne le lit.
 
 ## Régénérer
 
+Pas de `npm` / `node` sur le host : tout passe par Docker.
+
 ```sh
-npx tsx scripts/build-fixture.ts --dry-run   # télécharge, valide, n'écrit rien
-npx tsx scripts/build-fixture.ts             # écrit les deux CSV
+./scripts/dev.sh npx tsx scripts/build-fixture.ts --dry-run   # télécharge, valide, n'écrit rien
+./scripts/dev.sh npx tsx scripts/build-fixture.ts             # écrit les deux CSV
 ```
 
 L'écriture est **tout ou rien** : les deux actifs sont téléchargés et validés
