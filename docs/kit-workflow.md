@@ -11,13 +11,14 @@
 ## Préparation
 
 Orca est installé sur le Mac et le dépôt Ubac y est enregistré. Vérifier le
-runtime, la disponibilité de Claude/Codex et l'authentification GitHub :
+runtime, la disponibilité de Claude/Cursor/Codex et l'authentification GitHub :
 
 ```sh
 orca status --json
 orca repo list --json
 orca skills get orchestration
 claude --version
+cursor-agent status
 codex --version
 gh auth status
 ```
@@ -26,6 +27,11 @@ Si une commande diffère, consulter `orca <commande> --help` et le guide embarqu
 avec `orca skills get orchestration --full`. Ne pas copier des drapeaux d'une
 version distante plus récente. Activer l'orchestration dans les paramètres
 expérimentaux si la version installée le demande.
+
+Installer Node.js >= 22 et rendre `node`/`npm` accessibles aux terminaux Orca.
+Dans un dépôt copié depuis Linux, exécuter `npm ci` sur le Mac pour installer les
+bindings natifs macOS ; conserver le lockfile. Une installation Node temporaire
+utilisée pour une vérification ne configure pas les futurs terminaux workers.
 
 Dans Orca desktop, ouvrir le dépôt et un terminal coordinateur Claude ou Codex.
 Appairer le mobile et activer le Relay pour le pilotage hors réseau local.
@@ -41,7 +47,8 @@ Depuis le terminal coordinateur Orca, donner cette demande :
 Coordonne avec l'orchestrateur natif Orca le plan docs/plans/ubac-phase-0.md.
 Lis AGENTS.md, docs/workflow-dev.md et les instructions communes des phases.
 Reprends les PR existantes rattachées aux lots avant de créer du travail neuf.
-Claude construit, Codex relit en session neuve ; trois workers maximum.
+Claude construit par défaut, Cursor le relaie si indisponible, Codex relit
+en session neuve ; trois workers maximum.
 Les dépendances attendent l'intégration vérifiée. Ouvre des gates pour les
 arbitrages métier et applique la politique de merge automatique du workflow.
 ```
@@ -62,6 +69,22 @@ Un reviewer reçoit le rôle « Relire » et ses arguments directement ; Codex n
 pas besoin des slash commands Claude. Le coordinateur n'exécute aucun script
 shell d'ordonnancement et ne réutilise pas l'ancien scheduler Orca.
 
+## Premier lancement dans un worktree
+
+Un nouveau dossier peut afficher l'accueil de confiance de Claude avant que
+la tâche soit injectée. Vérifier qu'il s'agit bien du worktree Ubac attribué et
+terminer cet accueil avant d'attendre la disponibilité du TUI. Un retour
+`agent_prompt_stalled` signifie que le travail n'a pas forcément commencé.
+Inspecter le dispatch et le terminal, conserver le worktree et suivre la reprise
+native `worker-start --retry-of <dispatch_id>` uniquement une fois l'ancienne
+tentative prouvée terminée. Ne pas lancer une deuxième copie de la tâche en
+parallèle. Un terminal préparé peut être attaché avec `--terminal <handle>`, mais reste
+externe pour la fermeture automatique : documenter son propriétaire et sa fin.
+Le chemin normal `worker-start --agent` permet à Orca de posséder le terminal.
+Si une limite de compte est affichée, consigner l'heure de reprise et bloquer la
+tâche. Le relais vers Cursor est autorisé selon `workflow-dev.md`, après preuve
+de fin de l'ancien agent ; conserver l'historique de l'échec Claude.
+
 ## Cycle à blanc isolé
 
 Créer un Run dédié et une branche cible de test basée sur le commit courant,
@@ -71,12 +94,13 @@ Toutes les PR du test ciblent cette branche jetable, jamais `main`.
 
 1. Écrire une mini-spec : un fichier `smoke/value.txt` contient exactement `OK`
    suivi d'un saut de ligne. Critère : comparaison exacte des octets.
-2. Confier à Claude la construction du fichier, son contrôle, le commit et une
+2. Confier à Claude (ou à Cursor pour valider le relais) la construction du fichier, son contrôle, le commit et une
    PR vers la cible de test. Après sa fin, injecter un défaut contrôlé (`KO`) dans
    un commit de test distinct. Le reviewer reçoit la spec et le SHA, sans annonce
    du défaut ni conversation de construction.
 3. Lancer Codex en session neuve : attendre BLOQUE pour la non-conformité réelle.
-   Envoyer les bloquants à une tâche de correction Claude sur la même branche.
+   Envoyer les bloquants à une tâche de correction du même constructeur sur la
+   même branche.
 4. Relire le nouveau SHA dans une autre session Codex. Après PASSE et comparaison
    exacte réussie, intégrer en squash vers la branche de test et vérifier MERGED.
 5. Créer une gate demandant à l'opérateur de confirmer qu'elle apparaît sur le
@@ -99,3 +123,9 @@ Aucune crontab n'était installée pour l'utilisateur du Mac lors de l'inspectio
 Sur un autre hôte utilisant encore l'ancien kit, retirer son entrée cron avant
 de retirer les scripts ; ne pas laisser deux coordinateurs travailler les mêmes PR.
 La migration ne démarre ni ne ferme les sessions préexistantes sur d'autres hôtes.
+
+## Résultat du premier essai
+
+Voir le [compte rendu du 2026-09-10](validation-workflow-orca.md) pour les preuves
+et les résultats distincts des essais Claude → Codex et Cursor → Codex.
+Le défaut de visibilité mobile reste suivi séparément.

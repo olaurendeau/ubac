@@ -1,6 +1,6 @@
 # Consignes communes aux agents
 
-Ce fichier est la référence commune pour les agents travaillant dans ce dépôt.
+Ce fichier est la référence commune pour Claude, Cursor et Codex dans ce dépôt.
 `CLAUDE.md` le charge et complète uniquement les consignes propres à Claude Code.
 
 ## Projet et références
@@ -70,7 +70,8 @@ Codex reçoit directement le rôle et les arguments dans sa tâche Orca.
 - Orca est l'unique orchestrateur : Run, tâches, dispatches, suivi et décisions.
   Lire son guide local avec `orca skills get orchestration` avant de coordonner.
 - Workers sur le Mac actuel, dans des worktrees Orca distincts ; trois workers
-  simultanés maximum. Claude construit, Codex relit en session neuve.
+  simultanés maximum. Claude construit par défaut ; Cursor prend le relais si
+  Claude est indisponible. Codex relit en session neuve.
 - Une étape cohérente par PR, jusqu'à **1 000 lignes ajoutées + supprimées**.
   Code, tests et documentation comptent ; fixtures générées et lockfiles sont
   exclus du plafond, avec contrôles d'intégrité et justification dans la PR.

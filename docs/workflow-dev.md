@@ -18,12 +18,37 @@ Aucun secret de production n'est nécessaire au développement de la phase 0.
 |---|---|
 | Opérateur | Besoin, arbitrages métier, décisions bloquantes |
 | Coordinateur dans Orca | Run, dépendances, dispatches, suivi, reprises et intégration |
-| Claude | Construction ou correction d'un lot, tests et PR |
+| Claude, Cursor en relais | Construction ou correction d'un lot, tests et PR |
 | Codex, session neuve | Revue indépendante du diff contre la spec |
 
 Le coordinateur peut être Claude ou Codex selon la session de pilotage ; les
 modèles restent ceux configurés dans Orca. Trois workers actifs au maximum,
 revues comprises. Aucun sous-agent hors Orca pour remplacer un worker supervisé.
+
+## Relais Claude → Cursor
+
+Claude est le constructeur par défaut. Si son quota, son service ou son accès
+est indisponible, le coordinateur peut reprendre le lot avec Cursor, sans nouvelle
+validation humaine : ce relais est autorisé pour ce projet. Un refus de revue
+ou une erreur d'implémentation ne déclenche pas un changement automatique de moteur.
+
+Avant le relais, vérifier que l'ancien agent a terminé ou a été arrêté de façon
+confirmée ; un dispatch abandonné ou une connexion perdue ne suffit pas. Inspecter
+le travail et conserver le worktree, la branche et la PR. Reprendre via un nouveau
+dispatch Orca, en enregistrant ancien/nouveau moteur et motif. Si la tâche nomme
+explicitement Claude et ne peut pas être modifiée, créer une tâche de remplacement
+avec référence à l'ancienne, qui reste clôturée en échec ou bloquée, sans la
+présenter comme implémentée. Raccorder les dépendances à la nouvelle intégration.
+
+Cursor reçoit les mêmes instructions communes, critères et limites de taille.
+Les corrections du lot lui restent attribuées jusqu'à intégration ; ne pas
+rebasculer au milieu du lot au seul retour de disponibilité de Claude. Les lots
+suivants repartent avec Claude par défaut. Codex conserve la revue indépendante.
+
+Utiliser le modèle Cursor déjà configuré, sans imposer de modèle ni modifier le
+forfait, les paramètres de facturation ou activer de dépassement payant. Si Cursor
+atteint sa limite ou réclame un achat, bloquer et rapporter ; aucun autre relais
+automatique n'est prévu. Le cycle de validation note les moteurs réellement utilisés.
 
 ## Étapes et taille
 
@@ -54,7 +79,8 @@ le coordinateur agent pilote explicitement les tâches. Les anciennes commandes
    dépend de la construction ; l'intégration dépend d'une revue favorable.
    Une tâche terminée n'implique pas que sa PR est fusionnée.
 3. Attribuer un worktree Orca distinct à chaque lot, basé sur la branche cible
-   actualisée. Une PR reprise garde sa branche. Lancer Claude via `worker-start`,
+   actualisée. Une PR reprise garde sa branche. Lancer le constructeur via `worker-start --agent claude` (ou `--agent cursor`
+   pour un relais autorisé),
    avec objectif, contraintes, propriété des fichiers et preuves attendues.
    Utiliser `--setup run` pour les nouveaux worktrees. `npm ci` doit être terminé
    avant les vérifications, même si Orca lance le setup en parallèle de l'agent.
@@ -69,7 +95,8 @@ le coordinateur agent pilote explicitement les tâches. Les anciennes commandes
    PR dans un checkout de revue distinct. Lui transmettre la spec, les critères
    applicables, le périmètre attendu, la base et le SHA ; exclure plan et historique
    de construction. Ne pas réutiliser cette session pour construire ou corriger.
-7. Verdict BLOQUE : attribuer les corrections à Claude sur la même branche, puis
+7. Verdict BLOQUE : attribuer les corrections au constructeur du lot sur la même
+   branche, puis
    nouvelle revue Codex en session neuve. Après deux cycles construction/revue
    infructueux, ouvrir une gate. Une panne de revue ne vaut pas refus métier ;
    conserver la PR et reprendre seulement la revue après diagnostic.

@@ -1,6 +1,6 @@
 # Instructions communes des phases
 
-Ces instructions s'appliquent à Claude et Codex. Le coordinateur transmet le
+Ces instructions s'appliquent à Claude, Cursor et Codex. Le coordinateur transmet le
 rôle, le slug de spec et le lot (ou la PR, la base et le commit à relire).
 La politique d'orchestration est dans [workflow-dev.md](workflow-dev.md).
 
@@ -44,7 +44,8 @@ lots n'ont pas de dépendance métier. Commit `plan: <slug>`, rapport dans Orca.
 
 ## Construire
 
-Claude implémente le lot attribué, avec les tests nécessaires au comportement.
+Claude, ou Cursor en relais, implémente le lot attribué avec les tests nécessaires
+au comportement.
 Lire spec, plan et tâche Orca ; vérifier que les dépendances sont intégrées.
 Utiliser le worktree et la branche attribués : ne pas créer une branche ou une
 PR concurrente quand le coordinateur a confié une reprise de PR existante.
