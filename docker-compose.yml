@@ -9,8 +9,45 @@ services:
     environment:
       npm_config_fund: "false"
       npm_config_audit: "false"
+      # Chaine de la base de developpement, la seule que ce depot connaisse.
+      # Ce n'est PAS un secret : identifiants jetables d'un Postgres local qui
+      # n'ecoute que sur le reseau Compose et ne contient aucune donnee reelle.
+      # Le nom du mot de passe le dit, pour qu'aucune relecture n'ait a le
+      # deviner. La vraie `DATABASE_URL` (Neon, phase 2) reste hors du depot :
+      # elle arrive par l'environnement et passe par src/config/env.ts.
+      #
+      # Aucune cible ne l'expose telle quelle : `make db-push` la recopie dans
+      # DATABASE_URL, `make test-db` dans UBAC_TEST_DATABASE_URL. Un run ordinaire
+      # (`./scripts/dev.sh npm test`) ne pose ni l'une ni l'autre et n'ouvre
+      # aucune connexion.
+      UBAC_DEV_DATABASE_URL: postgres://ubac_dev:developpement-sans-secret@db:5432/ubac_dev
+    # Honore par `docker compose run --rm dev` (cibles db-*), ignore par
+    # ./scripts/dev.sh, qui passe --no-deps : voir docs/base-de-donnees.md.
+    depends_on:
+      db:
+        condition: service_healthy
     stdin_open: true
     tty: true
 
+  # Postgres local et jetable. Neon est la cible de la phase 2 ; rien ici n'en
+  # depend, la chaine de connexion reste une variable d'environnement.
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ubac_dev
+      POSTGRES_PASSWORD: developpement-sans-secret
+      POSTGRES_DB: ubac_dev
+    volumes:
+      - ubac_pgdata:/var/lib/postgresql/data
+    # Aucun port publie sur le host : rien sur le Mac n'a de client Postgres, et
+    # `make db-shell` ouvre psql dans le conteneur. Publier 5432 avec ce mot de
+    # passe serait la seule facon d'en faire un vrai probleme.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ubac_dev -d ubac_dev"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
 volumes:
   ubac_node_modules:
+  ubac_pgdata:
