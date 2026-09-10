@@ -6,6 +6,8 @@ Etat de depart : depot vide de code. Pas de `package.json`, pas de `src/`. Tout 
 
 Convention de validation : chaque critere note `C<n>` renvoie a la liste "Criteres d'acceptation" de la spec.
 
+Revision du 2026-09-10, apres blocage de E3 et E20 par le relecteur. E3 gagne une marque distincte pour les montants en USDC. E20 est scindee : la normalisation pure et ses tests restent en E20, le telechargement et l'ecriture passent en **E24**, dont E21 depend desormais. Aucune correction ne touche la spec.
+
 ## Etapes
 
 ### E1 - Squelette Node / TypeScript / Vitest
@@ -26,12 +28,13 @@ Convention de validation : chaque critere note `C<n>` renvoie a la liste "Criter
 
 ### E3 - `core/types.ts`
 - Depend de : E1
-- Diff estime : ~130 lignes
+- Diff estime : ~150 lignes
 - Fichiers touches : `src/core/types.ts`, `test/core/types.test-d.ts`
-- Contenu : `Price`, `Quantity`, `Weight`, `Intent`, `Order`, `Rejection`, `Verdict`, `Weights`, `Candle`, `CashFlow`, `Clock`. Declarations de types uniquement, aucune logique.
-- Couvre : C3 (aucun `number` flottant porteur d'un prix, d'une quantite ou d'un poids).
-- Critere de validation : `npx tsc --noEmit` sort en 0. Le fichier `types.test-d.ts` contient des lignes `// @ts-expect-error` affectant un `number` a un `Price`, une `Quantity` et un `Weight` ; si la protection disparait, `tsc` echoue sur l'attente non satisfaite.
+- Contenu : `Price`, `Quantity`, `UsdcAmount`, `Weight`, `Intent`, `Order`, `Rejection`, `Verdict`, `Weights`, `Candle`, `CashFlow`, `Clock`. Declarations de types uniquement, aucune logique. Quatre marques, pas trois : un prix est un nombre d'USDC **par unite d'actif**, une quantite est un nombre d'unites d'actif, un `UsdcAmount` est un nombre d'USDC. La relation dimensionnelle est `UsdcAmount = Price x Quantity`.
+- Couvre : C3 (aucun `number` flottant porteur d'un prix, d'une quantite ou d'un poids). Sert aussi C19 et C20, qui raisonnent sur des montants en USDC et non sur des quantites.
+- Critere de validation : `npx tsc --noEmit` sort en 0. Le fichier `types.test-d.ts` contient une ligne `// @ts-expect-error` par confusion interdite : un `number` affecte a chacune des quatre marques, un `UsdcAmount` affecte a une `Quantity`, une `Quantity` affectee a un `UsdcAmount`, un `Price` affecte a un `UsdcAmount`. Si une marque s'effondre sur une autre, `tsc` echoue sur l'attente non satisfaite.
 - Piege connu : `type Price = Decimal` ne protege de rien entre `Price` et `Quantity` : le typage structurel les rend interchangeables. Il faut des types marques (`Decimal & { readonly __brand: 'Price' }`) pour que C3 ait un sens au-dela du simple bannissement de `number`. Choisir maintenant, pas apres que dix modules aient ete ecrits.
+- Piege connu, deuxieme : la premiere tentative de cette etape a donne la meme marque `Quantity` au montant en USDC d'une jambe et a la quantite d'actif d'un ordre. Les deux sont des `Decimal` positifs, la confusion est naturelle, et elle rend **compilable** une conversion intention vers ordre qui oublie la division par le prix limite. L'ordre part alors plusieurs ordres de grandeur trop gros. C'est exactement le bug que le typage marque est cense rendre impossible : si les quatre marques ne sont pas distinctes, l'etape ne sert a rien.
 
 ### E4 - `core/portfolio.ts`
 - Depend de : E3
@@ -170,16 +173,16 @@ Convention de validation : chaque critere note `C<n>` renvoie a la liste "Criter
 - Critere de validation : `npx vitest run test/core/idempotence.test.ts` passe sur les quatre configurations de strategie.
 - Piege connu : C23 exige l'identite de l'**ordre** des jambes, pas seulement de leur ensemble. Un parcours par `Object.keys` sur un objet de poids est stable en pratique mais pas garanti par contrat pour toutes les formes de cles. Trier explicitement.
 
-### E20 - Script de constitution de la fixture et note de source
+### E20 - Normalisation des bougies, pure
 - Depend de : E1
-- Diff estime : ~120 lignes
-- Fichiers touches : `scripts/build-fixture.ts`, `docs/fixture-source.md`
-- Contenu : le script qui telecharge et normalise les bougies. La note fige la source, le fuseau de cloture et la politique de trous.
-- Critere de validation : `npx tsx scripts/build-fixture.ts --dry-run` sort en 0 et affiche le nombre de jours attendus sans ecrire de fichier. `docs/fixture-source.md` existe et nomme explicitement la source, le fuseau et la regle de trou.
-- Piege connu : c'est l'etape qui repond a l'incertitude "fixture non auditee" de la spec. Les bougies daily crypto cloturent a 00:00 UTC ; une source qui cloture en heure locale decale toute la serie et change les resultats du rejeu sans qu'aucun test n'echoue. La note n'est pas de la documentation d'agrement, c'est le seul endroit ou ce choix sera trace.
+- Diff estime : ~140 lignes
+- Fichiers touches : `src/fixture/normalise.ts`, `test/fixture/normalise.test.ts`
+- Contenu : les predicats et la normalisation, sans reseau ni acces disque. Alignement des horodatages sur 00:00 UTC, detection de jour manquant, refus d'un prix nul ou negatif, detection de doublon contradictoire. Fonctions exportees, prenant des bougies deja en memoire.
+- Critere de validation : `npx vitest run test/fixture/normalise.test.ts` passe, avec un test par cause de refus : horodatage non multiple de 86 400 s, jour manquant dans la serie, prix nul ou negatif, deux lignes du meme jour aux valeurs differentes.
+- Piege connu : c'est l'etape qui repond a l'incertitude "fixture non auditee" de la spec. Les bougies daily crypto cloturent a 00:00 UTC ; une source qui cloture en heure locale decale toute la serie et change les resultats du rejeu sans qu'aucun test n'echoue. Ce controle ne vaut que s'il est atteignable depuis un test : la premiere tentative l'avait enfoui dans un script sans export, ou il etait affirme en commentaire et verifiable par personne. Le module vit hors de `src/core/`, donc la regle de purete d'E2 ne le protege pas ; le garder sans IO est une discipline, pas une contrainte outillee.
 
 ### E21 - Fixture de bougies et de flux, avec test d'integrite
-- Depend de : E20
+- Depend de : E24
 - Diff estime : **~1950 lignes de donnees + ~50 lignes de test** — hors cible, voir la note de fin
 - Fichiers touches : `test/fixtures/candles-btc-usdc.csv`, `test/fixtures/candles-eth-usdc.csv`, `test/fixtures/cash-flows.json`, `test/fixtures/integrity.test.ts`
 - Contenu : bougies daily du 2024-01-01 au 2026-08-31 pour BTC et ETH, plus les flux de tresorerie du rejeu.
@@ -204,11 +207,20 @@ Convention de validation : chaque critere note `C<n>` renvoie a la liste "Criter
 - Critere de validation : `npm run replay > a.txt && npm run replay > b.txt && cmp a.txt b.txt` sort en 0. `npx vitest run test/replay/report.test.ts` passe.
 - Piege connu : C31 est une interdiction, pas une omission. Aucune assertion du type "rebalance > dca" ne doit entrer dans ce fichier de test, meme si le rejeu la rend vraie : ce serait figer en test un resultat que la spec refuse explicitement de valider. Cote determinisme, les pieges sont le formatage de nombres dependant de la locale et tout parcours de `Map` ou `Set` non trie.
 
+### E24 - Telechargement de la fixture et note de source
+- Depend de : E20
+- Diff estime : ~130 lignes
+- Fichiers touches : `scripts/build-fixture.ts`, `docs/fixture-source.md`, `package.json`
+- Contenu : le script qui telecharge les bougies, delegue tout controle a `src/fixture/normalise.ts` et ecrit les CSV. La note fige la source, le fuseau de cloture et la politique de trous. `package.json` gagne `tsx` en dependance de developpement.
+- Critere de validation : `npx tsx scripts/build-fixture.ts --dry-run` sort en 0, affiche le nombre de jours attendus, et `git status --porcelain` est vide juste apres. `docs/fixture-source.md` existe et nomme explicitement la source, le fuseau et la regle de trou.
+- Piege connu : l'ecriture doit etre tout ou rien. La premiere tentative ecrivait le CSV de BTC avant de telecharger ETH : un echec sur ETH laissait une fixture a moitie regeneree sur le disque pendant que le script affichait "aucun fichier ecrit". Telecharger les deux actifs, tout valider, puis ecrire seulement a la fin, via des fichiers temporaires renommes. La regle d'idempotence de `CLAUDE.md` n'est pas negociable et c'est ici qu'elle se joue.
+- Piege connu, deuxieme : `tsx` n'etait dans aucune dependance alors que le critere de validation l'invoque. Sans l'ajout a `package.json`, l'etape ne peut pas prouver son propre critere.
+
 ---
 
 ## Synthese
 
-**23 etapes.** Les 32 criteres d'acceptation de la spec sont couverts, chacun rattache a une etape nommee.
+**24 etapes.** Les 32 criteres d'acceptation de la spec sont couverts, chacun rattache a une etape nommee.
 
 **Parallelisable :**
 
@@ -217,13 +229,13 @@ Convention de validation : chaque critere note `C<n>` renvoie a la liste "Criter
 - Apres E4 : **E7, E10, E14, E15 et E17** partent ensemble. C'est le point de fan-out le plus large du plan.
 - **E8** part des E6, en parallele de E7.
 - Trois chaines longues et independantes se deroulent ensuite en parallele : la couche risque (E7/E8 -> E9), la strategie de reequilibrage (E10 -> E11/E12 -> E13 -> E16), et les benchmarks (E17 -> E18).
-- **E20 -> E21** ne depend d'aucune des trois et peut avancer du debut a la fin en fond.
+- **E20 -> E24 -> E21** ne depend d'aucune des trois et peut avancer du debut a la fin en fond. E24 est ecrite en fin de fichier mais s'ordonnance ici : elle depend de E20 et E21 depend d'elle.
 - Le plan se resserre a E22, qui attend E16, E18, E19 et E21.
 
-Chemin critique : E1 -> E3 -> E4 -> E10 -> E12 -> E13 -> E16 -> E22 -> E23, soit **9 etapes**.
+Chemin critique : E1 -> E3 -> E4 -> E10 -> E12 -> E13 -> E16 -> E22 -> E23, soit **9 etapes**. La chaine de la fixture, E1 -> E20 -> E24 -> E21 -> E22, en compte une de moins et ne devient pas critique.
 
 ## Deux points a arbitrer avant de lancer /construire
 
 **1. E21 depasse la regle des 200 lignes et je ne sais pas la redecouper honnetement.** Une fixture de ~970 jours sur deux actifs fait environ 1950 lignes de donnees. La fractionner en dix PR de 200 lignes de CSV ne la rendrait pas plus relisable, juste plus longue a fusionner. J'ai choisi de deplacer la relecture sur le test d'integrite et l'empreinte SHA-256, mais c'est une entorse a la regle, pas une application. A valider ou a trancher autrement.
 
-**2. La v2.0 annoncait la phase 0 en "1 soiree".** Avec 23 PR dimensionnees pour un ecran de telephone, l'estimation ne tient pas. Le plan n'est qu'une hypothese et le nombre d'etapes decoule directement de la contrainte de taille, pas d'un gonflement du perimetre : le perimetre est exactement celui de la spec. Si la duree compte plus que la taille des PR, c'est la regle de taille qu'il faut assouplir, pas la spec qu'il faut couper.
+**2. La v2.0 annoncait la phase 0 en "1 soiree".** Avec 24 PR dimensionnees pour un ecran de telephone, l'estimation ne tient pas. Le plan n'est qu'une hypothese et le nombre d'etapes decoule directement de la contrainte de taille, pas d'un gonflement du perimetre : le perimetre est exactement celui de la spec. Si la duree compte plus que la taille des PR, c'est la regle de taille qu'il faut assouplir, pas la spec qu'il faut couper.
