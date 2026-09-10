@@ -56,11 +56,16 @@ db-push: ## Applique le schéma sur la base locale, DEPUIS LE POSTE
 db-shell: db-up ## psql sur la base de développement
 	$(COMPOSE) exec db psql -U ubac_dev -d ubac_dev
 
+# --no-file-parallelism : les fichiers de test qui parlent à la base partagent
+# UNE base, et chacun la vide dans son beforeEach. Lancés en parallèle, ils se
+# tronquent mutuellement les tables sous les pieds — échecs intermittents, jamais
+# les mêmes. Vitest garde son parallélisme partout ailleurs : `make test` n'est
+# pas ralenti. Voir docs/base-de-donnees.md, section 4.
 test-db: db-push ## vitest run, base comprise (schéma appliqué au préalable)
-	$(DEV_DB) 'UBAC_TEST_DATABASE_URL="$$UBAC_DEV_DATABASE_URL" npm test'
+	$(DEV_DB) 'UBAC_TEST_DATABASE_URL="$$UBAC_DEV_DATABASE_URL" npm test -- --no-file-parallelism'
 
 coverage-db: db-push ## vitest run --coverage, base comprise
-	$(DEV_DB) 'UBAC_TEST_DATABASE_URL="$$UBAC_DEV_DATABASE_URL" npm run test:coverage'
+	$(DEV_DB) 'UBAC_TEST_DATABASE_URL="$$UBAC_DEV_DATABASE_URL" npm run test:coverage -- --no-file-parallelism'
 
 check-db: ci typecheck test-db ## ci + typecheck + tests base comprise
 
