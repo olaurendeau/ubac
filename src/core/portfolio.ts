@@ -5,6 +5,16 @@ import type { AllowedAsset, Price, Quantity, UsdcAmount, Weight, Weights } from 
 /**
  * Valorisation d'un portefeuille : exposition par actif en USDC, valeur totale
  * en USDC, poids par actif. Pur, sans horloge, sans IO.
+ *
+ * `valuate` est la seule facon exportee d'obtenir l'une de ces trois grandeurs.
+ * Ce n'est pas de la coquetterie : une exposition et une valeur totale exportees
+ * nues traversent le garde non fini ci-dessous et rendent NaN. Or `Decimal`
+ * repond `false` a `gte`, `lte` et `gt` sur un NaN, donc un seuil compare a une
+ * valeur totale NaN ne mord jamais. `MAX_EXPOSURE` (50 % de la valeur totale) et
+ * `REBALANCE_TOO_LARGE` (25 % de la valeur totale) passeraient silencieusement,
+ * sur un chemin qu'aucun test de couverture ne signale puisque la ligne de
+ * comparaison, elle, est bien executee. La seule protection qui tienne est de ne
+ * pas laisser sortir la grandeur non gardee.
  */
 
 /**
@@ -74,7 +84,7 @@ function priceOf(asset: AllowedAsset, prices: Prices): Price {
 }
 
 /** Valeur en USDC de chaque ligne : quantite detenue x prix unitaire. */
-export function exposureOf(holdings: Holdings, prices: Prices): Exposure {
+function exposureOf(holdings: Holdings, prices: Prices): Exposure {
   return {
     BTC: asUsdc(holdings.BTC.mul(priceOf('BTC', prices))),
     ETH: asUsdc(holdings.ETH.mul(priceOf('ETH', prices))),
@@ -86,15 +96,6 @@ function sum(exposure: Exposure): UsdcAmount {
   return asUsdc(ASSETS.reduce<Decimal>((acc, asset) => acc.plus(exposure[asset]), new Decimal(0)));
 }
 
-/**
- * Valeur totale en USDC. Une somme, donc toujours calculable : un portefeuille
- * vide vaut 0 et ne rejette rien ici. C'est la division en poids qui n'a pas de
- * sens sur une valeur nulle, et c'est `valuate` qui la refuse.
- */
-export function totalValue(holdings: Holdings, prices: Prices): UsdcAmount {
-  return sum(exposureOf(holdings, prices));
-}
-
 export function valuate(holdings: Holdings, prices: Prices): Valuation {
   const exposure = exposureOf(holdings, prices);
   const total = sum(exposure);
@@ -102,8 +103,9 @@ export function valuate(holdings: Holdings, prices: Prices): Valuation {
   /*
    * Un seul controle suffit pour les trois lignes : NaN et l'infini se
    * propagent par l'addition, une exposition non finie rend forcement le total
-   * non fini. Sans ce test, `Decimal.lte` renvoie false sur NaN et les poids
-   * sortiraient tous a NaN au lieu d'etre rejetes.
+   * non fini. Deux infinis de signes opposes ne s'annulent pas en un total fini,
+   * ils donnent NaN. Sans ce test, `Decimal.lte` renvoie false sur NaN et les
+   * poids sortiraient tous a NaN au lieu d'etre rejetes.
    */
   if (!total.isFinite()) {
     return {
