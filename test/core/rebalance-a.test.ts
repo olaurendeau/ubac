@@ -2,6 +2,7 @@ import { Decimal } from 'decimal.js';
 import fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
 
+import { clientOrderId } from '../../src/core/order-id.js';
 import type { Holdings, PricedAsset, Prices } from '../../src/core/portfolio.js';
 import { valuate } from '../../src/core/portfolio.js';
 import type {
@@ -14,7 +15,15 @@ import {
   cashBand,
   decide,
 } from '../../src/core/strategy/rebalance.js';
-import type { Clock, IntentLeg, IsoDate, Price, Quantity, Weight } from '../../src/core/types.js';
+import type {
+  Clock,
+  Intent,
+  IntentLeg,
+  IsoDate,
+  Price,
+  Quantity,
+  Weight,
+} from '../../src/core/types.js';
 
 const qty = (value: string): Quantity => new Decimal(value) as Quantity;
 const price = (value: string): Price => new Decimal(value) as Price;
@@ -190,10 +199,18 @@ describe('jambes', () => {
     ]);
   });
 
-  it('ne produit pas de jambe pour une ligne deja exactement a sa cible', () => {
+  /*
+   * La jambe nulle est emise malgre tout : c'est ce qui garde l'index de ETH a
+   * 1 quel que soit l'ecart de BTC. `risk.ts` l'ecarte ensuite sous
+   * `LEG_TOO_SMALL`, en ayant deja lu son index.
+   */
+  it('emet quand meme la jambe d une ligne deja exactement a sa cible', () => {
     const { legs } = intentAt(stateAt('0.3399', '0.30', '0.3601'));
 
-    expect(legs.map((leg) => leg.asset)).toEqual(['BTC']);
+    expect(legs.map((leg) => [leg.asset, leg.side, leg.amount.toString()])).toEqual([
+      ['BTC', 'BUY', '6010'],
+      ['ETH', 'SELL', '0'],
+    ]);
   });
 
   it('cote toutes les jambes en USDC, au prix de marche du jour', () => {
@@ -207,6 +224,76 @@ describe('jambes', () => {
     const { legs } = intentAt(stateAt('0.44', '0.3201', '0.2399'));
 
     expect(legs.map((leg) => leg.asset)).not.toContain('USDC');
+  });
+});
+
+/**
+ * L'index d'une jambe est ce qui entre dans le hachage du `client_order_id`
+ * (§7), avec la date, l'actif et le sens. Le calculer ici avec la vraie fabrique
+ * de `core/order-id.ts` est le seul moyen de constater la propriete qui compte
+ * — deux runs qui redecrivent le meme ordre lui donnent le meme identifiant —
+ * plutot que de la deduire d'une egalite d'index.
+ */
+function legNamed(intent: Intent, asset: PricedAsset) {
+  const legIndex = intent.legs.findIndex((candidate) => candidate.asset === asset);
+  const leg = intent.legs[legIndex];
+
+  if (leg === undefined) throw new Error(`aucune jambe sur ${asset} au ${intent.runDate}`);
+
+  return {
+    legIndex,
+    leg,
+    orderId: clientOrderId({ runDate: intent.runDate, asset, side: leg.side, legIndex }),
+  };
+}
+
+/*
+ * Le cas que le §7 designe comme propre a cette strategie : une jambe ne
+ * s'execute pas (post-only rejete, marche qui bouge) et le portefeuille reste
+ * dans un etat intermediaire. La jambe qui, elle, s'est executee laisse sa ligne
+ * pile sur sa cible, donc a ecart nul. C'est exactement la que sauter la jambe
+ * nulle ferait remonter les suivantes d'un index et changerait leur
+ * `client_order_id` a montant, date, actif et sens identiques : le rejeu du jour
+ * doublerait l'ordre au lieu d'etre refuse par l'exchange.
+ */
+describe('C24 : rejeu apres un reequilibrage partiellement execute', () => {
+  const BEFORE = stateAt('0.41', '0.44', '0.15');
+
+  /** Le portefeuille apres execution de la seule jambe BTC, qui ramene BTC a 0.40. */
+  function afterBtcLegOnly(): RebalanceState {
+    return { holdings: applyLegs(BEFORE, [legNamed(intentAt(BEFORE), 'BTC').leg]), prices: PRICES };
+  }
+
+  it('laisse la ligne executee pile sur sa cible et le cash toujours hors bande', () => {
+    const intent = intentAt(afterBtcLegOnly());
+
+    expect(intent.weightsBefore.BTC.toString()).toBe('0.4');
+    expect(intent.weightsBefore.USDC.toString()).toBe('0.16');
+    expect(intent.trigger).toBe('CASH_BAND');
+  });
+
+  it('emet la jambe nulle de la ligne executee, a son index d origine', () => {
+    const btc = legNamed(intentAt(afterBtcLegOnly()), 'BTC');
+
+    expect(btc.legIndex).toBe(0);
+    expect(btc.leg.amount.toString()).toBe('0');
+  });
+
+  it('redecrit la meme vente ETH sous le meme client_order_id', () => {
+    const first = legNamed(intentAt(BEFORE), 'ETH');
+    const replay = legNamed(intentAt(afterBtcLegOnly()), 'ETH');
+
+    expect([first.legIndex, first.leg.side, first.leg.amount.toString()]).toEqual([
+      1,
+      'SELL',
+      '14000',
+    ]);
+    expect([replay.legIndex, replay.leg.side, replay.leg.amount.toString()]).toEqual([
+      1,
+      'SELL',
+      '14000',
+    ]);
+    expect(replay.orderId).toBe(first.orderId);
   });
 });
 

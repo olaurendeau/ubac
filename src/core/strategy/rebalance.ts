@@ -156,9 +156,23 @@ function locate(cashWeight: Weight, band: CashBand): BandPosition {
  * total`. C'est ce qui rend la symetrie de C8 vraie par construction plutot que
  * par une troisieme jambe qu'il faudrait tenir en accord avec les deux autres.
  *
- * Un ecart nul ne produit rien : une jambe a 0 USDC ne serait pas fausse, mais
- * elle decalerait les index de jambe et donc les `client_order_id` de C24 selon
- * qu'une ligne tombe pile sur sa cible ou non.
+ * Chaque ligne de `PRICED_ASSETS` produit sa jambe, y compris quand l'ecart est
+ * nul. L'index d'une jambe est donc sa position dans cette liste, et rien
+ * d'autre : il ne depend pas de l'etat du portefeuille. C'est ce qui rend le
+ * `client_order_id` de C24 stable, puisqu'il est hache sur `leg_index` (§7).
+ *
+ * Sauter la jambe nulle serait l'erreur inverse et elle est silencieuse : BTC
+ * pile sur sa cible ferait remonter ETH de l'index 1 a l'index 0, et la meme
+ * vente ressortirait sous un autre identifiant. Le cas se produit precisement
+ * apres un reequilibrage partiellement execute — la jambe executee laisse sa
+ * ligne a la cible — c'est-a-dire le cas ou le §7 exige justement qu'un rejeu ne
+ * puisse pas doubler l'ordre.
+ *
+ * Une jambe a 0 USDC ne devient pas un ordre pour autant : `risk.ts` prend son
+ * `legIndex` sur `intent.legs.entries()`, donc avant le filtre, puis l'ecarte
+ * sous `LEG_TOO_SMALL` (seuil a 200 USDC) sans decaler personne. Son `side` vaut
+ * `SELL` par la convention de l'expression ci-dessous ; sur un montant nul le
+ * sens ne designe rien, et il n'atteint jamais l'exchange.
  */
 function legsToward(
   current: Weights,
@@ -170,8 +184,6 @@ function legsToward(
 
   for (const asset of PRICED_ASSETS) {
     const delta = target[asset].minus(current[asset]).mul(total);
-
-    if (delta.isZero()) continue;
 
     legs.push({
       asset,
