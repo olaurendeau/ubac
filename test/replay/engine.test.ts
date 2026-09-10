@@ -81,7 +81,20 @@ function assertOracles(result: ReplayResult): void {
   }
 }
 
-describe('moteur de rejeu', () => {
+/**
+ * Meme traitement que le bloc `renderReplay` de report.test.ts, pour la meme
+ * raison : les deux tests de ce bloc chargent la fixture complete (974 jours
+ * x 6 series) et le premier la rejoue entierement. Un rejeu coute ~1,5 s, et
+ * ~4,6 s sous instrumentation de couverture (v8). Ce test tenait donc dans le
+ * testTimeout global de 5 s a 7 % pres sous `npm run test:coverage` : il
+ * passait, mais il echouait des que la machine etait chargee — vu une fois en
+ * revue, puis vert au second essai. Une porte intermittente vaut a peine mieux
+ * qu'une porte cassee.
+ * Le delai est pose ici, sur le seul bloc concerne, plutot qu'en global : un
+ * test reellement bloque ailleurs dans la suite doit continuer d'echouer en 5 s.
+ * Lenteur assumee, pas negligee — ne pas la generaliser au reste de la suite.
+ */
+describe('moteur de rejeu', { timeout: 30_000 }, () => {
   it('produit les 6 series avec les metriques C29 figees', async () => {
     assertOracles(replay(await loadReplayInput(resolve(ROOT, 'test/fixtures'))));
   });
