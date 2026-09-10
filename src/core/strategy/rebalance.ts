@@ -7,6 +7,7 @@ import type {
   Intent,
   IntentLeg,
   StrategyName,
+  Trigger,
   UsdcAmount,
   Weight,
   Weights,
@@ -20,6 +21,12 @@ import type {
  * BTC et ETH sont correles a environ 0,85 : ils montent et descendent ensemble,
  * donc la bande qui travaille reellement est crypto contre cash. C'est de cette
  * ligne que viennent 80 % des declenchements attendus.
+ *
+ * Declencheur B : la bande du ratio BTC/ETH, secondaire et derriere un drapeau.
+ * Il arbitre BTC contre ETH a ligne cash inchangee. Le cadrage l'a sorti de la
+ * production et mis en shadow : c'est un pari que la v2.0 qualifie elle-meme de
+ * moins fonde et plus bruyant, et a 1 a 3 evenements par an son P&L n'est pas
+ * attribuable. D'ou `ratioBandEnabled`, faux par defaut.
  *
  * Module pur : ni horloge propre, ni IO. La date de run vient du `Clock`
  * injecte, que le rejeu alimente ligne a ligne depuis la fixture.
@@ -61,6 +68,14 @@ export interface RebalanceParams {
   readonly cashBandRelative: Decimal;
   /** Ou se pose le run une fois qu'il a tire : sur la cible, ou sur le bord. */
   readonly rebalanceMode: RebalanceMode;
+  /**
+   * Declencheur B. Faux par defaut, et ce defaut est le sujet de C13 : un
+   * defaut a vrai ferait entrer B en production par omission, ce que le cadrage
+   * a explicitement refuse en le renvoyant en shadow.
+   */
+  readonly ratioBandEnabled: boolean;
+  /** Ecart relatif tolere sur le ratio BTC/ETH : 0.30 donne `[0.93, 1.73]`. */
+  readonly ratioBandRelative: Decimal;
 }
 
 /** Les defauts de l'annexe de `ubac-rebalance.md`, en decimal exact. */
@@ -73,6 +88,8 @@ export const DEFAULT_REBALANCE_PARAMS: RebalanceParams = {
   },
   cashBandRelative: new Decimal('0.20'),
   rebalanceMode: 'target',
+  ratioBandEnabled: false,
+  ratioBandRelative: new Decimal('0.30'),
 };
 
 /**
@@ -123,6 +140,38 @@ function paramsIssue(params: RebalanceParams): string | null {
     return 'cibles BTC et ETH nulles en mode band_edge : le solde hors cash est sans repartition';
   }
 
+  /*
+   * Les gardes du declencheur B ne s'appliquent que quand B est arme : une
+   * configuration de production qui n'evalue jamais le ratio n'a pas a etre
+   * refusee sur des parametres qu'elle n'utilise pas.
+   */
+  if (params.ratioBandEnabled) {
+    if (!params.ratioBandRelative.isFinite() || params.ratioBandRelative.isNegative()) {
+      return (
+        `bande relative de ratio a ${params.ratioBandRelative.toString()}` +
+        ' : attendue finie et positive ou nulle'
+      );
+    }
+
+    /*
+     * Un seul controle sur la bande calculee couvre les trois configurations
+     * degenerees, parce que toutes les trois se lisent sur ses bornes : cible
+     * ETH nulle (ratio cible infini ou NaN), cible BTC nulle (bande reduite a
+     * `[0, 0]`), et ecart relatif superieur ou egal a 1 (borne basse negative
+     * ou nulle). Les deux dernieres comptent parce que `band_edge` vise la
+     * borne franchie : un ratio vise nul ou negatif decrirait une ligne BTC
+     * negative, et `1 + ratio` a -1 diviserait par zero.
+     */
+    const band = ratioBand(params);
+
+    if (!band.lower.isFinite() || !band.upper.isFinite() || !band.lower.gt(ZERO)) {
+      return (
+        `bande de ratio BTC/ETH [${band.lower.toString()}, ${band.upper.toString()}]` +
+        ' : attendue finie et de borne basse strictement positive'
+      );
+    }
+  }
+
   return null;
 }
 
@@ -165,6 +214,99 @@ function locate(cashWeight: Weight, band: CashBand): BandPosition {
   if (cashWeight.lt(band.lower)) return { side: 'BELOW', edge: band.lower };
   if (cashWeight.gt(band.upper)) return { side: 'ABOVE', edge: band.upper };
   return { side: 'INSIDE' };
+}
+
+// --- Bande de ratio BTC/ETH (declencheur B) ---------------------------------
+
+/**
+ * Le ratio n'est pas un poids : c'est le quotient de deux poids, donc sans
+ * marque. `Weight` designe une fraction du portefeuille, et un quotient de
+ * fractions n'en est pas une — 1.73 n'a aucun sens comme poids.
+ */
+export interface RatioBand {
+  readonly target: Decimal;
+  readonly lower: Decimal;
+  readonly upper: Decimal;
+}
+
+/**
+ * `[cible x (1 - ecart), cible x (1 + ecart)]` autour de `cibleBTC / cibleETH`,
+ * soit `[0.933333, 1.733333]` autour de 4/3 par defaut — les `0.93 - 1.73` du
+ * §5.2. La bande est bien plus large que celle du cash, et volontairement :
+ * l'arbitrage BTC contre ETH est le pari le moins fonde des deux.
+ */
+export function ratioBand(params: RebalanceParams): RatioBand {
+  const target = params.targets.BTC.div(params.targets.ETH);
+
+  return {
+    target,
+    lower: target.mul(ONE.minus(params.ratioBandRelative)),
+    upper: target.mul(ONE.plus(params.ratioBandRelative)),
+  };
+}
+
+/**
+ * `UNDEFINED` n'est pas `INSIDE` deguise. Un portefeuille sans BTC ni ETH donne
+ * un ratio `0 / 0`, donc NaN, et `Decimal.lt` comme `Decimal.gt` repondent false
+ * sur un NaN : sans cette branche le cas ressortirait « dans la bande », avec un
+ * `NaN` imprime dans le motif journalise. Le rendre explicite est la meme parade
+ * que celle du total non fini de `portfolio.ts`.
+ *
+ * Un ratio infini, lui, est un vrai depassement : plus d'ETH du tout et du BTC
+ * en portefeuille, c'est exactement la situation que B doit rattraper.
+ */
+type RatioPosition =
+  | { readonly side: 'INSIDE' }
+  | { readonly side: 'UNDEFINED' }
+  | { readonly side: 'BELOW'; readonly edge: Decimal }
+  | { readonly side: 'ABOVE'; readonly edge: Decimal };
+
+/** Bornes incluses, comme pour le cash : `lt` et `gt`, jamais `lte` ni `gte`. */
+function locateRatio(ratio: Decimal, band: RatioBand): RatioPosition {
+  if (ratio.isNaN()) return { side: 'UNDEFINED' };
+  if (ratio.lt(band.lower)) return { side: 'BELOW', edge: band.lower };
+  if (ratio.gt(band.upper)) return { side: 'ABOVE', edge: band.upper };
+  return { side: 'INSIDE' };
+}
+
+/**
+ * Le ratio vise par un run de B : la cible, ou la borne franchie en `band_edge`.
+ * Le parametre n'accepte qu'une position hors bande — il n'y a rien a viser
+ * quand le ratio est dedans ou indefini, et le type l'impose plutot que de
+ * laisser une branche morte repondre a la question.
+ */
+function aimedRatio(
+  band: RatioBand,
+  position: Extract<RatioPosition, { readonly edge: Decimal }>,
+  mode: RebalanceMode,
+): Decimal {
+  return mode === 'target' ? band.target : position.edge;
+}
+
+/**
+ * « Reequilibrage BTC vers ETH uniquement, ligne cash inchangee » (§5.2). Le
+ * poids cumule des deux lignes crypto est repris tel quel et redistribue au
+ * ratio vise : `BTC = crypto x r / (1 + r)`, `ETH = crypto / (1 + r)`. Le poids
+ * USDC est recopie a l'identique, donc `legsToward` ne trouve aucun ecart a
+ * combler sur le cash et les deux jambes se compensent.
+ *
+ * Les deux poids sont calcules chacun de leur cote, jamais l'un deduit de
+ * l'autre par `crypto - BTC` : cette deduction les ferait sommer au poids
+ * crypto par construction et masquerait une erreur de repartition derriere une
+ * identite comptable toujours vraie — la meme raison qui interdit a
+ * `portfolio.ts` de deduire le dernier poids des deux autres. Le prix a payer
+ * est que la somme peut manquer le poids crypto de quelques ulps, douze ordres
+ * de grandeur sous la tolerance de 1e-8 a laquelle le cash est dit constant.
+ */
+function ratioWeights(current: Weights, ratio: Decimal): Weights {
+  const crypto = current.BTC.plus(current.ETH);
+  const share = ONE.plus(ratio);
+
+  return {
+    BTC: crypto.mul(ratio).div(share) as Weight,
+    ETH: crypto.div(share) as Weight,
+    USDC: current.USDC,
+  };
 }
 
 // --- Cible visee par le run -------------------------------------------------
@@ -289,7 +431,7 @@ export type Decision =
   | { readonly status: 'DECIDED'; readonly intent: Intent }
   | { readonly status: 'UNDECIDABLE'; readonly code: UndecidableCode; readonly reason: string };
 
-const show = (weight: Weight): string => weight.toFixed(REASON_SCALE);
+const show = (value: Decimal): string => value.toFixed(REASON_SCALE);
 
 /**
  * Ce que le run annonce viser. La borne franchie figure deja dans la phrase,
@@ -300,29 +442,106 @@ const AIM_LABEL: Readonly<Record<RebalanceMode, string>> = {
   band_edge: 'retour a cette borne',
 };
 
-function explain(
-  cashWeight: Weight,
-  band: CashBand,
-  position: BandPosition,
-  mode: RebalanceMode,
-): string {
+const NO_REBALANCE = 'aucun reequilibrage';
+
+/**
+ * Le motif est un constat par bande, puis la conclusion du run. Quand B est
+ * arme, les deux constats se lisent dans l'ordre ou ils sont evalues : le cash
+ * d'abord, le ratio ensuite. Aucun fragment ne porte de conclusion, sans quoi
+ * une phrase a deux constats en annoncerait deux.
+ */
+const explain = (constats: readonly string[], triggered: boolean, mode: RebalanceMode): string =>
+  `${constats.join(' ; ')} : ${triggered ? AIM_LABEL[mode] : NO_REBALANCE}`;
+
+function cashConstat(cashWeight: Weight, band: CashBand, position: BandPosition): string {
   switch (position.side) {
     case 'BELOW':
-      return (
-        `poids USDC ${show(cashWeight)} sous la borne basse ${show(band.lower)}` +
-        ` : ${AIM_LABEL[mode]}`
-      );
+      return `poids USDC ${show(cashWeight)} sous la borne basse ${show(band.lower)}`;
     case 'ABOVE':
-      return (
-        `poids USDC ${show(cashWeight)} au-dessus de la borne haute ${show(band.upper)}` +
-        ` : ${AIM_LABEL[mode]}`
-      );
+      return `poids USDC ${show(cashWeight)} au-dessus de la borne haute ${show(band.upper)}`;
     case 'INSIDE':
       return (
         `poids USDC ${show(cashWeight)} dans la bande` +
-        ` [${show(band.lower)}, ${show(band.upper)}] : aucun reequilibrage`
+        ` [${show(band.lower)}, ${show(band.upper)}]`
       );
   }
+}
+
+function ratioConstat(ratio: Decimal, band: RatioBand, position: RatioPosition): string {
+  switch (position.side) {
+    case 'BELOW':
+      return `ratio BTC/ETH ${show(ratio)} sous la borne basse ${show(band.lower)}`;
+    case 'ABOVE':
+      return `ratio BTC/ETH ${show(ratio)} au-dessus de la borne haute ${show(band.upper)}`;
+    case 'INSIDE':
+      return (
+        `ratio BTC/ETH ${show(ratio)} dans la bande` +
+        ` [${show(band.lower)}, ${show(band.upper)}]`
+      );
+    case 'UNDEFINED':
+      return 'ratio BTC/ETH indefini, aucune ligne BTC ni ETH';
+  }
+}
+
+/** Ce que le run a decide de viser, avant toute mise en forme d'intention. */
+interface Aim {
+  readonly trigger: Trigger;
+  readonly weights: Weights;
+  readonly reason: string;
+}
+
+/**
+ * L'ordre des deux declencheurs est celui du cadrage : A l'emporte. Quand A
+ * tire, le reequilibrage complet remet deja le ratio BTC/ETH sur sa cible — les
+ * deux modes le garantissent — donc B n'a rien a rattraper et n'est meme pas
+ * evalue. Le calculer pour le jeter ensuite laisserait `trigger` a la merci d'un
+ * oubli, alors qu'il est journalise dans `decisions` et sert a compter les
+ * declenchements du rejeu.
+ *
+ * Cette priorite est mesuree par la section C10 de `rebalance-b.test.ts`, sur
+ * des etats dont les deux bandes sont franchies a la fois : c'est le seul
+ * endroit ou l'ordre des deux blocs ci-dessous se voit. L'etape 13 ajoutera le
+ * cooldown propre a B.
+ */
+function aimOf(params: RebalanceParams, weights: Weights): Aim {
+  const band = cashBand(params);
+  const position = locate(weights.USDC, band);
+  const cash = cashConstat(weights.USDC, band, position);
+
+  if (position.side !== 'INSIDE') {
+    return {
+      trigger: 'CASH_BAND',
+      weights: aimedWeights(params, position),
+      reason: explain([cash], true, params.rebalanceMode),
+    };
+  }
+
+  if (!params.ratioBandEnabled) {
+    return {
+      trigger: 'NONE',
+      weights: params.targets,
+      reason: explain([cash], false, params.rebalanceMode),
+    };
+  }
+
+  const rBand = ratioBand(params);
+  const ratio = weights.BTC.div(weights.ETH);
+  const rPosition = locateRatio(ratio, rBand);
+  const constats = [cash, ratioConstat(ratio, rBand, rPosition)];
+
+  if (rPosition.side === 'INSIDE' || rPosition.side === 'UNDEFINED') {
+    return {
+      trigger: 'NONE',
+      weights: params.targets,
+      reason: explain(constats, false, params.rebalanceMode),
+    };
+  }
+
+  return {
+    trigger: 'RATIO_BAND',
+    weights: ratioWeights(weights, aimedRatio(rBand, rPosition, params.rebalanceMode)),
+    reason: explain(constats, true, params.rebalanceMode),
+  };
 }
 
 /**
@@ -346,28 +565,30 @@ export function decide(state: RebalanceState, clock: Clock, params: RebalancePar
     return { status: 'UNDECIDABLE', code: valuation.code, reason: valuation.reason };
   }
 
-  const band = cashBand(params);
-  const position = locate(valuation.weights.USDC, band);
-  const triggered = position.side !== 'INSIDE';
-  const aimed = aimedWeights(params, position);
+  const aim = aimOf(params, valuation.weights);
+  const triggered = aim.trigger !== 'NONE';
 
   return {
     status: 'DECIDED',
     intent: {
       runDate: clock.today(),
       strategy: params.strategy,
-      trigger: triggered ? 'CASH_BAND' : 'NONE',
-      reason: explain(valuation.weights.USDC, band, position, params.rebalanceMode),
+      trigger: aim.trigger,
+      reason: aim.reason,
       weightsBefore: valuation.weights,
       /*
        * Ce que le run vise reellement, et non la cible permanente : en
        * `band_edge` un run qui tire se pose sur le bord franchi, et journaliser
        * 30 % la ou les jambes menent a 24 % rendrait le rapport faux sur le seul
-       * chiffre qu'on lit face aux poids constates. En mode `target`, et hors
-       * declenchement dans les deux modes, c'est bien la cible permanente.
+       * chiffre qu'on lit face aux poids constates. Sur un run de B c'est le
+       * poids USDC constate qui ressort, puisque B n'y touche pas. En mode
+       * `target`, et hors declenchement dans les deux modes, c'est bien la cible
+       * permanente.
        */
-      weightsTarget: aimed,
-      legs: triggered ? legsToward(valuation.weights, aimed, valuation.total, state.prices) : [],
+      weightsTarget: aim.weights,
+      legs: triggered
+        ? legsToward(valuation.weights, aim.weights, valuation.total, state.prices)
+        : [],
     },
   };
 }
