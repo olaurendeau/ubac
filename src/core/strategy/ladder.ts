@@ -18,7 +18,7 @@ import type { Clock, IntentLeg, IsoDate, Price, Side, StrategyName, UsdcAmount }
  * le run et retourne celles d'apres sans rien muter : deux appels sur le meme
  * etat donnent le meme resultat par construction, pas par discipline.
  *
- * Trois points que ni la spec de phase 0 ni la v2.0 ne tranchent, decides ici
+ * Quatre points que ni la spec de phase 0 ni la v2.0 ne tranchent, decides ici
  * et testes comme tels :
  *
  * - **Initialisation de l'ancre.** Au premier jour du rejeu il n'y a pas
@@ -28,6 +28,12 @@ import type { Clock, IntentLeg, IsoDate, Price, Side, StrategyName, UsdcAmount }
  *   dans la journee vaut trois pas de 7 % ; le ladder n'en achete qu'un, puis
  *   repose son ancre au cours du jour, d'ou le suivant se mesure.
  * - **Bornes inclusives.** Un cours exactement a -7 % de l'ancre achete.
+ * - **Le cash est un budget de run, pas un solde par actif.** Deux achats le
+ *   meme jour, ce qu'un krach correle BTC+ETH produit, puisent dans le meme
+ *   solde : chaque tranche est plafonnee au cash **non encore engage par ce
+ *   run**, dans l'ordre de parcours. Les ventes du jour ne le realimentent pas,
+ *   leur produit n'etant pas encaisse tant que les jambes ne sont pas
+ *   appliquees. Sans cela le rejeu se deroule sur un cash negatif.
  */
 
 // --- Parametres -------------------------------------------------------------
@@ -53,6 +59,9 @@ export const LADDER_PARAMS = {
 
 /** Taille d'une tranche, identique sur les deux actifs. */
 export const TRANCHE_USDC = new Decimal('500') as UsdcAmount;
+
+/** Cash de depart d'un run dont le portefeuille n'a pas pu etre valorise. */
+const ZERO_USDC = new Decimal(0) as UsdcAmount;
 
 /**
  * Ordre de parcours fige, jamais `Object.keys`. L'ordre des jambes fait partie
@@ -138,17 +147,28 @@ function crossing(asset: PricedAsset, anchor: Price, price: Price): Crossing | n
 }
 
 /**
- * Ce que le portefeuille peut reellement engager : le cash pour un achat, la
- * valeur detenue sur l'actif pour une vente. Sans ce plafond le ladder vend ce
- * qu'il ne detient pas et le rejeu se deroule sur des soldes negatifs. Aucun
- * des 9 codes de rejet ne couvre le manque de contrepartie, et les regles de
- * `risk.ts` sont taillees pour le reequilibrage, pas pour une strategie shadow :
- * personne en aval ne rattraperait la jambe.
+ * Ce que le portefeuille peut reellement engager sur cette jambe : le cash
+ * encore libre pour un achat, la valeur detenue sur l'actif pour une vente.
+ * Sans ce plafond le ladder achete ou vend ce qu'il ne detient pas et le rejeu
+ * se deroule sur des soldes negatifs. Aucun des 9 codes de rejet ne couvre le
+ * manque de contrepartie, et les regles de `risk.ts` sont taillees pour le
+ * reequilibrage, pas pour une strategie shadow : personne en aval ne
+ * rattraperait la jambe.
+ *
+ * `remainingCash` est le cash d'entree diminue des achats deja decides ce run.
+ * C'est la seule grandeur partagee entre les deux actifs : les lignes d'actif,
+ * elles, ne se chevauchent pas, la vente de BTC se plafonne a l'exposition BTC
+ * qu'aucune autre jambe ne touche.
  */
-function budget(side: Side, asset: PricedAsset, valuation: Valuation): UsdcAmount | null {
+function budget(
+  side: Side,
+  asset: PricedAsset,
+  valuation: Valuation,
+  remainingCash: UsdcAmount,
+): UsdcAmount | null {
   if (valuation.status !== 'VALUED') return null;
 
-  return side === 'BUY' ? valuation.exposure.USDC : valuation.exposure[asset];
+  return side === 'BUY' ? remainingCash : valuation.exposure[asset];
 }
 
 interface Step {
@@ -158,7 +178,12 @@ interface Step {
   readonly note: string;
 }
 
-function step(asset: PricedAsset, input: LadderInput, valuation: Valuation): Step {
+function step(
+  asset: PricedAsset,
+  input: LadderInput,
+  valuation: Valuation,
+  remainingCash: UsdcAmount,
+): Step {
   const price = input.prices[asset];
   const anchor = input.anchors[asset];
 
@@ -194,7 +219,7 @@ function step(asset: PricedAsset, input: LadderInput, valuation: Valuation): Ste
    * pour reessayer, alors que le portefeuille redevient peut-etre solvable
    * des le lendemain.
    */
-  const available = budget(crossed.side, asset, valuation);
+  const available = budget(crossed.side, asset, valuation, remainingCash);
   if (available === null || available.lte(0)) {
     return {
       anchor,
@@ -233,11 +258,26 @@ export function decide(input: LadderInput): LadderDecision {
   const legs: IntentLeg[] = [];
   const notes: string[] = [];
 
+  /*
+   * Le seul etat qui traverse la boucle. Un cash lu une fois pour toutes hors
+   * de la boucle laisserait chaque actif engager la totalite du solde : deux
+   * achats le meme jour sur 600 USDC de cash produiraient deux tranches de 500
+   * et un solde a -400.
+   */
+  let remainingCash = valuation.status === 'VALUED' ? valuation.exposure.USDC : ZERO_USDC;
+
   for (const asset of LADDER_ASSETS) {
-    const outcome = step(asset, input, valuation);
+    const outcome = step(asset, input, valuation, remainingCash);
 
     if (outcome.anchor !== undefined) anchors[asset] = outcome.anchor;
-    if (outcome.leg !== undefined) legs.push(outcome.leg);
+
+    if (outcome.leg !== undefined) {
+      legs.push(outcome.leg);
+      if (outcome.leg.side === 'BUY') {
+        remainingCash = remainingCash.minus(outcome.leg.amount) as UsdcAmount;
+      }
+    }
+
     notes.push(outcome.note);
   }
 

@@ -213,6 +213,57 @@ describe('contrepartie disponible', () => {
     expect(shape(funded)).toEqual(['BTC-USDC BUY 500 @ 55800']);
   });
 
+  /*
+   * Le krach correle : BTC et ETH franchissent leur pas d'achat le meme jour et
+   * puisent dans le meme solde. Avec 600 USDC de cash, un budget lu une fois
+   * pour toutes donnait deux tranches de 500 et un cash a -400, sur lequel tout
+   * le reste du rejeu se serait ensuite deroule.
+   */
+  it('partage un cash unique entre deux achats du meme jour', () => {
+    const tight: Holdings = { ...RICH, USDC: qty('600') };
+    const decision = run({ BTC: price('55800'), ETH: price('2730') }, { holdings: tight });
+
+    expect(shape(decision)).toEqual(['BTC-USDC BUY 500 @ 55800', 'ETH-USDC BUY 100 @ 2730']);
+
+    const engaged = decision.legs.reduce((acc, leg) => acc.plus(leg.amount), new Decimal(0));
+    expect(engaged.toString()).toBe('600');
+  });
+
+  it('n achete pas le second actif quand le premier a pris tout le cash', () => {
+    const tight: Holdings = { ...RICH, USDC: qty('500') };
+    const decision = run({ BTC: price('55800'), ETH: price('2730') }, { holdings: tight });
+
+    expect(shape(decision)).toEqual(['BTC-USDC BUY 500 @ 55800']);
+    expect(decision.reason).toContain('ETH : BUY a 2730 sans contrepartie disponible');
+
+    /*
+     * L'ancre ETH reste a 3 000 : le franchissement n'a pas ete consomme et la
+     * tranche partira des que le cash reviendra, sans exiger un pas de plus.
+     */
+    expect(anchorsOf(decision)).toEqual({ BTC: '55800', ETH: '3000' });
+  });
+
+  /*
+   * Convention : le produit d'une vente n'est pas encaisse dans le run qui la
+   * decide. Le rejeu applique les jambes apres coup ; faire financer l'achat
+   * d'ETH par la vente de BTC le meme jour supposerait un reglement instantane
+   * que rien ne garantit.
+   */
+  it('ne fait pas financer un achat par une vente du meme jour', () => {
+    const noCash: Holdings = { ...RICH, USDC: qty('0') };
+    const decision = run({ BTC: price('67200'), ETH: price('2730') }, { holdings: noCash });
+
+    expect(shape(decision)).toEqual(['BTC-USDC SELL 500 @ 67200']);
+    expect(anchorsOf(decision)).toEqual({ BTC: '67200', ETH: '3000' });
+  });
+
+  it('ne plafonne pas une vente au cash engage par l achat du meme jour', () => {
+    const tight: Holdings = { ...RICH, USDC: qty('500') };
+    const decision = run({ BTC: price('55800'), ETH: price('3450') }, { holdings: tight });
+
+    expect(shape(decision)).toEqual(['BTC-USDC BUY 500 @ 55800', 'ETH-USDC SELL 500 @ 3450']);
+  });
+
   it('ne produit rien sur un portefeuille que l on ne sait pas valoriser', () => {
     const empty: Holdings = { BTC: qty('0'), ETH: qty('0'), USDC: qty('0') };
     const decision = run(at('BTC', '55800'), { holdings: empty });
