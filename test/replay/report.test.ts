@@ -71,7 +71,18 @@ describe('formatReport', () => {
   });
 });
 
-describe('renderReplay', () => {
+/**
+ * Chaque test de ce bloc rejoue la fixture complete (974 jours x 6 series), au
+ * moins deux fois : figer C29 exige deux rendus independants, et l'egalite
+ * formatReport(replay(load)) == renderReplay() compare deux calculs distincts.
+ * Un rejeu coute ~1,4 s, et ~3,8 s sous instrumentation de couverture (v8) :
+ * ces tests tiennent en ~2,9 s avec `npm test` mais atteignent ~7,7 s avec
+ * `npm run test:coverage`, au-dela du testTimeout global de 5 s. Le delai est
+ * pose ici, sur le seul bloc concerne, plutot qu'en global : un test reellement
+ * bloque ailleurs dans la suite doit continuer d'echouer en 5 s.
+ * Lenteur assumee, pas negligee — ne pas la generaliser au reste de la suite.
+ */
+describe('renderReplay', { timeout: 30_000 }, () => {
   it('fige les six series C29 et reste identique octet pour octet', async () => {
     const first = await renderReplay();
     const second = await renderReplay();
