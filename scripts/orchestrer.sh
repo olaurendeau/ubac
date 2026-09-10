@@ -18,6 +18,7 @@ set -euo pipefail
 DRY_RUN=0
 ONLY=""
 SLOTS="${SLOTS:-3}"
+TENTATIVES_MAX="${TENTATIVES_MAX:-2}"
 SLUG=""
 
 while [[ $# -gt 0 ]]; do
@@ -120,10 +121,24 @@ collision_avec_running() {
   return 1
 }
 
+tentatives_de() { cat "${RUN_DIR}/E${1}.tentatives" 2>/dev/null || echo 0; }
+
+reprenable() {
+  local n="$1"
+  case "${STATE[$n]}" in
+    pending|relecture_ko) return 0 ;;
+    # Une etape bloquee repart avec les bloquants du relecteur en entree,
+    # tant que le quota de tentatives n'est pas epuise. Au dela, elle attend
+    # une decision : s'acharner sur un refus de fond coute cher et ne converge pas.
+    bloque) [[ "$(tentatives_de "${n}")" -lt "${TENTATIVES_MAX}" ]] && return 0 ;;
+  esac
+  return 1
+}
+
 eligibles() {
   local n
   for n in "${ORDER[@]}"; do
-    [[ "${STATE[$n]}" == "pending" || "${STATE[$n]}" == "relecture_ko" ]] || continue
+    reprenable "${n}" || continue
     [[ -z "${ONLY}" || "${ONLY}" == "${n}" ]] || continue
     deps_satisfaites "${n}" || continue
     echo "${n}"
@@ -141,7 +156,7 @@ if [[ ${DRY_RUN} -eq 1 ]]; then
   while :; do
     prets=()
     for n in "${ORDER[@]}"; do
-      [[ "${SIM[$n]}" == "pending" || "${SIM[$n]}" == "relecture_ko" ]] || continue
+      [[ "${SIM[$n]}" == "pending" || "${SIM[$n]}" == "relecture_ko" || "${SIM[$n]}" == "bloque" ]] || continue
       ok=1; for d in ${DEPS[$n]}; do [[ "${SIM[$d]}" == "merged" ]] || ok=0; done
       [[ ${ok} -eq 1 ]] && prets+=("$n")
     done
@@ -219,7 +234,17 @@ run_step() {
       echo "--- reprise : construction deja faite, on relance la relecture seule"
     else
       echo "building" > "${etat}"
-      ( cd "${wt}" && claude -p "/construire ${SLUG} E${n}" "${CLAUDE_ARGS[@]}" )
+      echo "$(( $(tentatives_de "${n}") + 1 ))" > "${RUN_DIR}/E${n}.tentatives"
+      local prompt="/construire ${SLUG} E${n}"
+      if [[ -s "${RUN_DIR}/E${n}.bloquants" ]]; then
+        prompt="${prompt}
+
+La relecture precedente a bloque cette etape sur les points ci-dessous. Corrige-les sur la branche existante, sans elargir le perimetre de l'etape :
+
+$(cat "${RUN_DIR}/E${n}.bloquants")"
+        echo "--- tentative $(tentatives_de "${n}"), bloquants reinjectes"
+      fi
+      ( cd "${wt}" && claude -p "${prompt}" "${CLAUDE_ARGS[@]}" )
       echo "--- fin construire, code $?"
     fi
 
@@ -250,15 +275,22 @@ run_step() {
     url="$(gh pr view "${pr}" --json url -q .url 2>/dev/null || true)"
 
     if [[ "${verdict}" == "PASSE" ]]; then
-      if gh pr merge "${pr}" --squash --delete-branch; then
+      # Liberer la branche avant le merge, sinon `--delete-branch` echoue sur
+      # le worktree qui la retient et gh sort en erreur alors que le merge est
+      # passe. C'est l'etat reel de la PR qui fait foi, jamais le code de sortie.
+      git -C "${REPO}" worktree remove --force "${wt}" 2>/dev/null
+      gh pr merge "${pr}" --squash --delete-branch || true
+      if [[ "$(gh pr view "${pr}" --json state -q .state 2>/dev/null)" == "MERGED" ]]; then
         echo "merged" > "${etat}"
+        rm -f "${RUN_DIR}/E${n}.bloquants"
       else
         echo "bloque" > "${etat}"
-        notify "E${n} merge impossible" "Verdict PASSE mais le merge de la PR ${pr} a echoue. Conflit probable." "high" "${url}"
+        notify "E${n} merge impossible" "Verdict PASSE mais la PR ${pr} n'est pas mergee. Conflit probable." "high" "${url}"
       fi
     elif [[ "${verdict}" == "BLOQUE" ]]; then
       echo "bloque" > "${etat}"
-      notify "E${n} BLOQUE" "$(jq -r '.result' <<<"${out}" 2>/dev/null | jq -r '.bloquants[]?' 2>/dev/null | head -5)" "high" "${url}"
+      jq -r '.result' <<<"${out}" 2>/dev/null | jq -r '.bloquants[]?' 2>/dev/null > "${RUN_DIR}/E${n}.bloquants"
+      notify "E${n} BLOQUE (tentative $(tentatives_de "${n}") sur ${TENTATIVES_MAX})" "$(head -5 "${RUN_DIR}/E${n}.bloquants")" "high" "${url}"
     else
       # Pas de verdict : panne reseau, budget epuise, session tuee. Ce n'est
       # pas un refus du relecteur et ca ne doit pas condamner l'etape. La
