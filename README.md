@@ -8,13 +8,20 @@ Ubac : le versant à l'ombre, celui qui garde la neige. Le système conserve tou
 
 | Fichier | Contenu |
 |---|---|
+| `AGENTS.md` | consignes communes aux agents, repères du projet et vérifications |
+| `CLAUDE.md` | chargement des consignes communes pour Claude Code |
 | `docs/specs/ubac-rebalance.md` | spécification de l'agent : stratégie, couche risque, exécution, infra, fiscalité |
 | `docs/workflow-dev.md` | expérimentation du workflow de dev piloté au téléphone |
-| `docs/kit-workflow.md` | mise en route du kit de commandes et du watchdog |
+| `docs/kit-workflow.md` | mise en route et cycle de validation Orca |
 
 ## Workflow de développement
 
-Quatre phases, quatre commandes. Voir `CLAUDE.md`.
+Orca coordonne les tâches et worktrees sur le Mac : Claude construit, Codex
+relit en session neuve, puis le coordinateur fusionne après validation.
+Une étape cohérente par PR, jusqu’à 1 000 lignes de diff hors fixtures générées
+et lockfiles. Voir `AGENTS.md` et `docs/workflow-phases.md`.
+
+Raccourcis Claude (les mêmes instructions sont accessibles à Codex) :
 
 ```
 /cadrer      interroge et challenge le besoin, produit une spec
