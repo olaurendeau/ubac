@@ -3,8 +3,8 @@
 Lot Q1a. Ce document dit exactement ce que les garde-fous structurels de la
 phase 1 garantissent, et ce qu'ils ne garantissent pas.
 
-Le lot Q1b, qui suit, y ajoute la configuration validée : la divergence
-`MIN_CASH` 22 % contre 15 % et la liste des variables d'environnement.
+Le lot Q1b y ajoute la configuration validée : la divergence `MIN_CASH` 22 %
+contre 15 % et la frontière de lecture de l'environnement (sections 3 et 4).
 
 Références : `docs/specs/ubac-rebalance.md` §2, §3, §6 et §7 ;
 `docs/plans/ubac-phase-1.md`, lot Q1.
@@ -131,3 +131,130 @@ Un job peut en importer un autre — c'est la seule exception, et elle est test�
 - Toute couche **nouvelle** (`src/notify/`, par exemple) est couverte par
   défaut : la règle liste ses exemptions, elle ne liste pas ses cibles.
 
+
+---
+
+## 3. `MIN_CASH` : 22 %, pas 15 %
+
+### La divergence
+
+| Source | Valeur |
+|---|---|
+| `src/core/risk.ts`, `MIN_CASH_PCT` | **0.22** |
+| `docs/specs/ubac-rebalance.md` §6 | 15 % |
+| `docs/specs/ubac-rebalance.md`, annexe, `risk.minCashPct` | 0.15 |
+
+Les deux valeurs coexistent dans le dépôt depuis la phase 0. Ce n'est pas une
+question ouverte : c'est un écart connu, dont la décision **D1** a tranché le
+sens.
+
+### Pourquoi 22 % l'emporte
+
+1. **C'est la valeur que le code applique et que les tests couvrent.** Le
+   cadrage de la phase 0 a retenu 22 %, `risk.ts` l'applique, et la couche
+   risque est couverte à 100 % lignes et branches. Les critères C16 et C17 ont
+   été validés contre 22 %.
+2. **Descendre à 15 % rendrait la production plus permissive que ce que la
+   phase 0 a validé**, et le ferait *sans qu'aucun test n'échoue* : un seuil
+   plus bas n'invalide aucun cas de test existant, il en laisse simplement
+   passer davantage. Un assouplissement silencieux du risque est exactement ce
+   que la couche risque est censée rendre impossible.
+3. **La cible de cash est à 30 % et le bord bas de la bande à 24 %.** Avec
+   `MIN_CASH` à 22 %, le seuil mord avant que la ligne de cash n'atteigne son
+   bord bas : il reste un vrai garde-fou. À 15 %, il ne mordrait qu'après une
+   dérive de plus d'un tiers sous la bande, donc à peu près jamais.
+
+### Ce qui n'a pas été fait, et pourquoi
+
+`docs/specs/ubac-rebalance.md` **n'est pas modifiée**. Aligner la spec générale
+sur le code est une décision distincte, qui n'a pas été prise. Ce lot documente
+la divergence et fait en sorte qu'elle ne puisse plus être résolue par accident
+dans le mauvais sens.
+
+### Comment la configuration l'empêche de dériver
+
+`src/config/env.ts` **n'expose aucun réglage des seuils de risque**. Ils sont
+lus depuis `src/core/risk.ts` et exposés en lecture, pour le rapport quotidien
+et le journal, jamais en écriture.
+
+Toute variable d'environnement préfixée `UBAC_RISK_` fait **échouer le
+démarrage**. Sans cela, `UBAC_RISK_MIN_CASH_PCT=0.15` posé en production serait
+ignoré en silence : l'opérateur croirait avoir changé le seuil, le système
+continuerait à 22 % sans le dire. Échouer est la seule réponse honnête — le
+seuil se change dans `risk.ts`, avec ses tests.
+
+La configuration confronte en revanche les **paramètres de stratégie** aux
+seuils, et refuse de démarrer sur une combinaison que la couche risque
+rejetterait à chaque run :
+
+- une cible BTC ou ETH au-delà de `MAX_EXPOSURE` (50 %) ;
+- un cash projeté sous `MIN_CASH` (22 %). Le cash projeté dépend du mode :
+  `target` repose la ligne sur la cible, `band_edge` sur le bord franchi, qui
+  est plus bas. C'est donc le bord bas qu'on compare au seuil quand ce mode est
+  armé.
+
+Sans ces contrôles, une configuration valide prise variable par variable produit
+un système qui se fait rejeter tous les jours, en silence, jusqu'à ce que
+quelqu'un lise le journal des rejets.
+
+---
+
+## 4. La frontière de lecture de l'environnement
+
+`src/config/env.ts` est le seul point de lecture de l'environnement. Il valide
+par Zod, échoue au démarrage en nommant la variable fautive, et **remonte toutes
+les variables invalides d'un coup** plutôt qu'une par redémarrage.
+
+**La liste des variables vit dans `.env.example`**, versionné, avec pour chacune
+sa forme attendue et son défaut. Elle n'est pas recopiée ici : deux listes de la
+même chose finissent par diverger, et c'est le modèle que l'opérateur copie qui
+doit rester juste. `.env` est ignoré par git.
+
+Ce qui suit ne décrit donc pas les variables, mais les quatre propriétés de la
+frontière elle-même.
+
+### Les secrets ne fuient pas dans les messages
+
+Les six variables secrètes du §10 sont requises et sans défaut : un secret
+absent arrête le programme au démarrage, plutôt que de produire un 401 au milieu
+d'un run.
+
+**Aucun message d'erreur ne recopie la valeur d'un secret.** Il nomme la
+variable et la contrainte, rien de plus : une erreur finit dans un journal, et
+`DATABASE_URL` porte un mot de passe. Vérifié par un test.
+
+### Les défauts viennent du noyau, jamais d'un littéral
+
+Les défauts des paramètres métier sont lus dans `DEFAULT_REBALANCE_PARAMS`
+(`src/core/strategy/rebalance.ts`), jamais recopiés dans le module de
+configuration : deux sources pour la même valeur cible finissent par diverger.
+`.env.example` les cite en commentaire, à titre indicatif ; le code ne les lit
+pas là.
+
+### Aucun flottant à la frontière
+
+C'est ici que la règle non négociable d'`AGENTS.md` se perd le plus facilement :
+`z.coerce.number()` sur `"0.30"` est la façon la plus courte d'écrire exactement
+ce que tout le noyau évite depuis la phase 0.
+
+Les paramètres de marché sortent de Zod en `Decimal`. La chaîne est d'abord
+validée contre une décimale littérale — `^-?(0|[1-9]\d*)(\.\d+)?$` — avant
+d'atteindre le constructeur, parce que `decimal.js` accepte aussi `0x10`,
+`Infinity` et `NaN`. Un poids `NaN` est le pire des trois : `Decimal.gt` et
+`Decimal.lt` répondent tous les deux `false` dessus, donc aucun seuil ne mord,
+sur un chemin qu'aucune couverture ne signale puisque la comparaison est bien
+exécutée. Même piège que le total non fini de `portfolio.ts`, même parade.
+
+Les seuls `number` du module sont des comptes de jours : ce sont des entiers de
+calendrier, pas des grandeurs de marché, et le noyau les tient déjà en `number`.
+
+### `manual` est refusé
+
+Le §5.4 propose `newCashPolicy: "immediate" | "delay7d" | "manual"`. Le noyau ne
+connaît qu'un nombre de jours de carence (`newCashFreezeDays`), choix assumé du
+cadrage de la phase 0 : `manual` suppose une intervention humaine, qui n'a pas de
+représentation dans un module pur.
+
+La configuration **refuse** `manual` au lieu de la faire glisser sur `delay7d`.
+Faire glisser donnerait un système qui investit tout seul à un opérateur qui a
+demandé à décider lui-même.
