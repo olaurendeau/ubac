@@ -1,0 +1,25 @@
+// Fixture volontairement saine : un adapter de lecture, tel que la phase 1 les
+// veut. Sans elle, une regle qui se declencherait sur tout satisferait les
+// fixtures fautives sans que rien ne le revele.
+//
+// Elle contient a dessein des noms voisins de ceux qui sont interdits —
+// `fetchOpenOrders`, `parseOrder`, `orders` — parce qu'un motif trop large qui
+// les attraperait rendrait tout adapter de lecture inecrivable.
+import { Decimal } from 'decimal.js';
+
+import type { Price } from '../core/types.js';
+
+interface Compte {
+  fetchOpenOrders(paire: string): Promise<readonly unknown[]>;
+  fetchBalance(): Promise<Record<string, string>>;
+}
+
+export async function ordresOuverts(client: Compte): Promise<readonly unknown[]> {
+  const orders = await client.fetchOpenOrders('BTC/USDC');
+  return orders;
+}
+
+export async function soldeUsdc(client: Compte): Promise<Price> {
+  const balance = await client.fetchBalance();
+  return new Decimal(balance['USDC'] ?? '0') as Price;
+}

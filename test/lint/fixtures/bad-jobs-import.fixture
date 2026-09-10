@@ -1,0 +1,7 @@
+// Fixture volontairement fautive : une couche de lecture qui importe le point
+// d'entree executable. La composition va de jobs/ vers adapters/, jamais
+// l'inverse ; le chemin relatif et le chemin nu doivent tomber tous les deux.
+import { runDaily } from '../jobs/daily.js';
+import { reconcile } from 'src/jobs/reconcile.js';
+
+export const inversion = [runDaily, reconcile];

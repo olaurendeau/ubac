@@ -1,0 +1,8 @@
+/* eslint-disable no-restricted-syntax */
+// Fixture volontairement fautive : le meme placement, precede de la ligne qui
+// suffirait a eteindre le garde-fou depuis le fichier qu'il surveille.
+// `linterOptions.noInlineConfig` rend ces deux directives inoperantes.
+export async function place(client: { createOrder: (p: string) => Promise<unknown> }) {
+  // eslint-disable-next-line no-restricted-syntax
+  return client.createOrder('BTC/USDC');
+}

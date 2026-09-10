@@ -1,0 +1,29 @@
+// Fixture volontairement fautive : place, annule et retire. Chaque forme est la
+// pour une raison distincte, et un selecteur pose sur le seul CallExpression en
+// laisserait passer la moitie.
+import ccxt from 'ccxt';
+
+const client = new ccxt.coinbase({});
+
+// 1. L'appel direct de methode, le cas nominal.
+export async function place(): Promise<unknown> {
+  return client.createOrder('BTC/USDC', 'limit', 'buy', 0.1, 60000);
+}
+
+// 2. La reference sans appel : le detour minimal autour d'un selecteur d'appel.
+export const detour = client.cancelOrder;
+
+// 3. L'acces calcule par chaine litterale, meme detour en une ligne de plus.
+export async function parNom(): Promise<unknown> {
+  return client['createLimitBuyOrder']('ETH/USDC', 1, 3000);
+}
+
+// 4. Le nom en snake_case, tel que l'API Coinbase Advanced l'expose.
+export async function natif(): Promise<unknown> {
+  return client.cancel_all_orders('BTC/USDC');
+}
+
+// 5. Le retrait, que la spec §7 interdit au niveau de la cle elle-meme.
+export async function sortie(): Promise<unknown> {
+  return client.withdraw('USDC', 1000, 'adresse');
+}
