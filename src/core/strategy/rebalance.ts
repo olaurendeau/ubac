@@ -14,7 +14,8 @@ import type {
 
 /**
  * Declencheur A : la bande de cash. Le poids USDC sort de `[0.24, 0.36]`, on
- * ramene toutes les lignes a la cible exacte (mode `target`, defaut du §5.3).
+ * ramene toutes les lignes a la cible exacte (mode `target`, defaut du §5.3) ou
+ * seulement au bord franchi (mode `band_edge`).
  *
  * BTC et ETH sont correles a environ 0,85 : ils montent et descendent ensemble,
  * donc la bande qui travaille reellement est crypto contre cash. C'est de cette
@@ -44,6 +45,13 @@ const REASON_SCALE = 6;
 
 // --- Parametres -------------------------------------------------------------
 
+/**
+ * `target` ramene chaque ligne a sa cible permanente. `band_edge` ne ramene le
+ * cash qu'au bord franchi : il trade moins et laisse le portefeuille derive de
+ * ce qui separe ce bord de la cible (§5.3). Le defaut de l'annexe est `target`.
+ */
+export type RebalanceMode = 'target' | 'band_edge';
+
 export interface RebalanceParams {
   /** Nom journalise dans l'intention. Le rejeu compte les declenchements par la. */
   readonly strategy: StrategyName;
@@ -51,6 +59,8 @@ export interface RebalanceParams {
   readonly targets: Weights;
   /** Ecart relatif tolere autour de la cible USDC : 0.20 donne `[0.24, 0.36]`. */
   readonly cashBandRelative: Decimal;
+  /** Ou se pose le run une fois qu'il a tire : sur la cible, ou sur le bord. */
+  readonly rebalanceMode: RebalanceMode;
 }
 
 /** Les defauts de l'annexe de `ubac-rebalance.md`, en decimal exact. */
@@ -62,6 +72,7 @@ export const DEFAULT_REBALANCE_PARAMS: RebalanceParams = {
     USDC: new Decimal('0.30') as Weight,
   },
   cashBandRelative: new Decimal('0.20'),
+  rebalanceMode: 'target',
 };
 
 /**
@@ -97,6 +108,19 @@ function paramsIssue(params: RebalanceParams): string | null {
 
   if (total.minus(ONE).abs().gt(SUM_TOLERANCE)) {
     return `somme des cibles a ${total.toString()} : attendue 1 a ${SUM_TOLERANCE.toString()} pres`;
+  }
+
+  /*
+   * En `band_edge`, le solde hors cash se repartit entre BTC et ETH au prorata
+   * de leurs cibles ; une allocation entierement en cash rend ce prorata
+   * indefini. `Decimal.div` sur 0 / 0 rend NaN, qui ressortirait en poids vise
+   * NaN puis en jambes NaN sans qu'aucune comparaison ne morde, `Decimal.gt`
+   * repondant false sur un NaN. La configuration est degeneree : elle se refuse
+   * ici plutot que de sortir en silence. En mode `target` elle reste licite,
+   * puisque les cibles sont alors utilisees telles quelles.
+   */
+  if (params.rebalanceMode === 'band_edge' && riskyTargets(params).isZero()) {
+    return 'cibles BTC et ETH nulles en mode band_edge : le solde hors cash est sans repartition';
   }
 
   return null;
@@ -143,16 +167,59 @@ function locate(cashWeight: Weight, band: CashBand): BandPosition {
   return { side: 'INSIDE' };
 }
 
+// --- Cible visee par le run -------------------------------------------------
+
+/** Poids cible cumule des lignes qui ont un prix de marche, soit `1 - USDC`. */
+function riskyTargets(params: RebalanceParams): Decimal {
+  return PRICED_ASSETS.reduce<Decimal>((acc, asset) => acc.plus(params.targets[asset]), ZERO);
+}
+
+/**
+ * Ou se pose le run. En `target`, sur la cible permanente. En `band_edge`, sur
+ * `position.edge`, c'est-a-dire la borne **franchie** et non une borne fixe :
+ * un cash a 20 % remonte a 24 %, un cash a 40 % redescend a 36 %. Ramener
+ * systematiquement a 24 % est l'erreur naturelle et elle ne se voit que sur le
+ * franchissement par le haut, ou elle vend tout le cash excedentaire au lieu de
+ * la seule fraction qui depasse.
+ *
+ * Le solde `1 - bord` se repartit entre BTC et ETH au prorata de leurs cibles,
+ * donc exactement au ratio cible. C'est ce qui garde vraie, dans les deux modes,
+ * la raison pour laquelle B n'est pas evalue quand A tire : le reequilibrage
+ * remet deja le ratio BTC/ETH sur sa cible. Ne conserver que le ratio courant
+ * traderait un peu moins et laisserait le ratio hors bande sans que personne ne
+ * le rattrape, B ayant deja ete saute.
+ *
+ * Hors declenchement, il n'y a pas de bord franchi et rien n'est vise : c'est la
+ * cible permanente qui ressort, celle que le rapport affiche face aux poids
+ * constates.
+ */
+function aimedWeights(params: RebalanceParams, position: BandPosition): Weights {
+  if (position.side === 'INSIDE' || params.rebalanceMode === 'target') return params.targets;
+
+  const risky = ONE.minus(position.edge);
+  const share = riskyTargets(params);
+
+  return {
+    BTC: params.targets.BTC.div(share).mul(risky) as Weight,
+    ETH: params.targets.ETH.div(share).mul(risky) as Weight,
+    USDC: position.edge,
+  };
+}
+
 // --- Jambes -----------------------------------------------------------------
 
 /**
- * Une jambe par actif dont le poids s'ecarte de sa cible, libellee en USDC :
- * `(cible - courant) x valeur totale`. Positif, on achete ; negatif, on vend.
- * Le montant sort en valeur absolue, le sens est porte par `side`.
+ * Une jambe par actif dont le poids s'ecarte de la cible visee, libellee en
+ * USDC : `(visee - courant) x valeur totale`. Positif, on achete ; negatif, on
+ * vend. Le montant sort en valeur absolue, le sens est porte par `side`.
+ *
+ * La visee arrive de `aimedWeights` : c'est la cible permanente en mode
+ * `target`, l'allocation au bord franchi en mode `band_edge`. Le calcul des
+ * jambes ne connait pas le mode, il ne connait que le vecteur qu'on lui donne.
  *
  * La ligne USDC ne produit pas de jambe : elle est la contrepartie des autres.
  * Comme les deux vecteurs de poids somment a 1, la variation de cash implicite
- * `-(dBTC + dETH)` vaut exactement la variation visee `(cibleUSDC - USDC) x
+ * `-(dBTC + dETH)` vaut exactement la variation voulue `(viseeUSDC - USDC) x
  * total`. C'est ce qui rend la symetrie de C8 vraie par construction plutot que
  * par une troisieme jambe qu'il faudrait tenir en accord avec les deux autres.
  *
@@ -176,14 +243,14 @@ function locate(cashWeight: Weight, band: CashBand): BandPosition {
  */
 function legsToward(
   current: Weights,
-  target: Weights,
+  aimed: Weights,
   total: UsdcAmount,
   prices: Prices,
 ): IntentLeg[] {
   const legs: IntentLeg[] = [];
 
   for (const asset of PRICED_ASSETS) {
-    const delta = target[asset].minus(current[asset]).mul(total);
+    const delta = aimed[asset].minus(current[asset]).mul(total);
 
     legs.push({
       asset,
@@ -224,17 +291,31 @@ export type Decision =
 
 const show = (weight: Weight): string => weight.toFixed(REASON_SCALE);
 
-function explain(cashWeight: Weight, band: CashBand, position: BandPosition): string {
+/**
+ * Ce que le run annonce viser. La borne franchie figure deja dans la phrase,
+ * donc `band_edge` n'a pas a la repeter : il lui suffit de la designer.
+ */
+const AIM_LABEL: Readonly<Record<RebalanceMode, string>> = {
+  target: 'retour a la cible',
+  band_edge: 'retour a cette borne',
+};
+
+function explain(
+  cashWeight: Weight,
+  band: CashBand,
+  position: BandPosition,
+  mode: RebalanceMode,
+): string {
   switch (position.side) {
     case 'BELOW':
       return (
         `poids USDC ${show(cashWeight)} sous la borne basse ${show(band.lower)}` +
-        ' : retour a la cible'
+        ` : ${AIM_LABEL[mode]}`
       );
     case 'ABOVE':
       return (
         `poids USDC ${show(cashWeight)} au-dessus de la borne haute ${show(band.upper)}` +
-        ' : retour a la cible'
+        ` : ${AIM_LABEL[mode]}`
       );
     case 'INSIDE':
       return (
@@ -268,6 +349,7 @@ export function decide(state: RebalanceState, clock: Clock, params: RebalancePar
   const band = cashBand(params);
   const position = locate(valuation.weights.USDC, band);
   const triggered = position.side !== 'INSIDE';
+  const aimed = aimedWeights(params, position);
 
   return {
     status: 'DECIDED',
@@ -275,17 +357,17 @@ export function decide(state: RebalanceState, clock: Clock, params: RebalancePar
       runDate: clock.today(),
       strategy: params.strategy,
       trigger: triggered ? 'CASH_BAND' : 'NONE',
-      reason: explain(valuation.weights.USDC, band, position),
+      reason: explain(valuation.weights.USDC, band, position, params.rebalanceMode),
       weightsBefore: valuation.weights,
       /*
-       * Hors declenchement, l'intention ne vise rien ; c'est la cible permanente
-       * qui est journalisee, celle que le rapport affiche face aux poids
-       * constates. En mode `target` les deux valeurs coincident de toute facon.
+       * Ce que le run vise reellement, et non la cible permanente : en
+       * `band_edge` un run qui tire se pose sur le bord franchi, et journaliser
+       * 30 % la ou les jambes menent a 24 % rendrait le rapport faux sur le seul
+       * chiffre qu'on lit face aux poids constates. En mode `target`, et hors
+       * declenchement dans les deux modes, c'est bien la cible permanente.
        */
-      weightsTarget: params.targets,
-      legs: triggered
-        ? legsToward(valuation.weights, params.targets, valuation.total, state.prices)
-        : [],
+      weightsTarget: aimed,
+      legs: triggered ? legsToward(valuation.weights, aimed, valuation.total, state.prices) : [],
     },
   };
 }
