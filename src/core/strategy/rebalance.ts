@@ -498,7 +498,10 @@ interface Aim {
  * oubli, alors qu'il est journalise dans `decisions` et sert a compter les
  * declenchements du rejeu.
  *
- * L'etape 13 ajoutera le cooldown propre a B et les tests de cette priorite.
+ * Cette priorite est mesuree par la section C10 de `rebalance-b.test.ts`, sur
+ * des etats dont les deux bandes sont franchies a la fois : c'est le seul
+ * endroit ou l'ordre des deux blocs ci-dessous se voit. L'etape 13 ajoutera le
+ * cooldown propre a B.
  */
 function aimOf(params: RebalanceParams, weights: Weights): Aim {
   const band = cashBand(params);

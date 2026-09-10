@@ -49,18 +49,19 @@ function stateAt(btc: Decimal | string, eth: Decimal | string, usdc: Decimal | s
 }
 
 /**
- * Portefeuille de 100 000 USDC dont le cash est a 30 %, donc au milieu de la
- * bande de A, et dont les 70 000 USDC de crypto realisent le ratio demande. Le
- * cash au milieu de sa bande est la condition pour que B soit seul en cause :
- * la priorite de A sur B releve de l'etape 13, pas de celle-ci.
+ * Portefeuille de 100 000 USDC dont les lignes crypto realisent le ratio
+ * demande. Le cash vaut 30 000 par defaut, soit 30 % : au milieu de la bande de
+ * A, seule position ou B est seul en cause. Le sortir de cette bande met les
+ * deux declencheurs hors bande en meme temps, ce que mesure la section C10.
  */
-const CRYPTO = new Decimal('70000');
+const TOTAL = new Decimal('100000');
 const CASH = new Decimal('30000');
 
-function stateAtRatio(ratio: Decimal | string): RebalanceState {
+function stateAtRatio(ratio: Decimal | string, cash: Decimal | string = CASH): RebalanceState {
   const r = new Decimal(ratio);
+  const crypto = TOTAL.minus(cash);
 
-  return stateAt(CRYPTO.mul(r).div(r.plus(1)), CRYPTO.div(r.plus(1)), CASH);
+  return stateAt(crypto.mul(r).div(r.plus(1)), crypto.div(r.plus(1)), cash);
 }
 
 function decided(decision: Decision): Extract<Decision, { status: 'DECIDED' }> {
@@ -165,6 +166,120 @@ describe('C13 : le drapeau ratioBandEnabled', () => {
     expect(intent.trigger).toBe('RATIO_BAND');
     expect(intent.strategy).toBe('rebalance_ab');
     expect(intent.runDate).toBe(RUN_DATE);
+  });
+});
+
+// --- C10 : A l'emporte sur B ------------------------------------------------
+
+/*
+ * L'ordre des deux declencheurs est ecrit dans ce module depuis qu'il connait
+ * B : A est evalue en premier et B n'est meme pas regarde quand A tire. Tant
+ * que tous les etats du fichier posent le cash a 30 %, au milieu de la bande de
+ * A, cette priorite n'est affirmee que par un commentaire — inverser les deux
+ * blocs laisse la campagne verte. D'ou ces cas, ou les deux bandes sont
+ * franchies en meme temps : c'est le seul endroit ou la priorite se mesure.
+ *
+ * Le cooldown propre a B (C12) et le cas A dedans / B dehors (C11) restent a
+ * l'etape 13.
+ */
+describe('C10 : A et B hors bande en meme temps', () => {
+  /** Cash a 10 % et a 45 %, donc de part et d'autre de `[0.24, 0.36]`. */
+  const CASH_BELOW = new Decimal('10000');
+  const CASH_ABOVE = new Decimal('45000');
+
+  /** Ratios franchement dehors dans chaque sens, hors de `[0.93, 1.73]`. */
+  const BOTH_OUT = [
+    [CASH_BELOW, '3.0'],
+    [CASH_ABOVE, '0.5'],
+  ] as const;
+
+  it('retourne CASH_BAND et non RATIO_BAND, dans les deux sens', () => {
+    for (const [cash, ratio] of BOTH_OUT) {
+      expect(intentAt(stateAtRatio(ratio, cash)).trigger).toBe('CASH_BAND');
+    }
+  });
+
+  /*
+   * 67 500 de BTC contre 22 500 d'ETH et 10 000 de cash. Les jambes de A menent
+   * a la cible complete : vente de 27 500 sur BTC, achat de 7 500 sur ETH, et
+   * les 20 000 d'ecart remontent le cash de 10 % a 30 %. Une jambe de B ajoutee
+   * par-dessus, ou substituee, se compenserait a cash constant et laisserait le
+   * portefeuille a 10 % de cash, c'est-a-dire hors de la bande qui a tire.
+   */
+  it('ne produit que les jambes de A, sans arbitrage BTC contre ETH separe', () => {
+    const state = stateAtRatio('3.0', CASH_BELOW);
+    const { legs } = intentAt(state);
+
+    expect(legs.map((leg) => [leg.asset, leg.side, leg.amount.toFixed(4)])).toEqual([
+      ['BTC', 'SELL', '27500.0000'],
+      ['ETH', 'BUY', '7500.0000'],
+    ]);
+
+    const after = weightsAfter(state);
+
+    expect(near(after.USDC, '0.30')).toBe(true);
+    expect(near(after.BTC, '0.40')).toBe(true);
+    expect(near(after.ETH, '0.30')).toBe(true);
+  });
+
+  /*
+   * La formulation la plus directe de « B n'est pas evalue » : drapeau arme ou
+   * baisse, le run est le meme a son nom de strategie pres. Jambes, trigger,
+   * poids vises et motif compris.
+   */
+  it('decide exactement comme la production, au nom de strategie pres', () => {
+    for (const [cash, ratio] of BOTH_OUT) {
+      const state = stateAtRatio(ratio, cash);
+
+      expect({ ...intentAt(state, SHADOW), strategy: PROD.strategy }).toEqual(
+        intentAt(state, PROD),
+      );
+    }
+  });
+
+  /* Le motif part dans `decisions` : il ne doit pas parler d'une bande sautee. */
+  it('ne mentionne pas la bande de ratio dans le motif', () => {
+    expect(intentAt(stateAtRatio('3.0', CASH_BELOW)).reason).toBe(
+      'poids USDC 0.100000 sous la borne basse 0.240000 : retour a la cible',
+    );
+    expect(intentAt(stateAtRatio('0.5', CASH_ABOVE)).reason).toBe(
+      'poids USDC 0.450000 au-dessus de la borne haute 0.360000 : retour a la cible',
+    );
+  });
+
+  /*
+   * La raison invoquee pour sauter B : le reequilibrage de A remet deja le ratio
+   * sur sa cible. Elle doit rester vraie en `band_edge`, ou seul le cash s'arrete
+   * au bord franchi tandis que le solde se repartit au prorata des cibles. Si
+   * elle cessait de l'etre, sauter B laisserait le ratio dehors sans personne
+   * pour le rattraper.
+   */
+  it('remet le ratio sur sa cible dans les deux modes, ce qui justifie de sauter B', () => {
+    for (const rebalanceMode of ['target', 'band_edge'] as const) {
+      for (const [cash, ratio] of BOTH_OUT) {
+        const after = weightsAfter(stateAtRatio(ratio, cash), { ...SHADOW, rebalanceMode });
+
+        expect(near(after.BTC.div(after.ETH), RATIO_BAND.target)).toBe(true);
+      }
+    }
+  });
+
+  /*
+   * Les memes 251 ratios que C13, cash hors bande cette fois. Le balayage dit
+   * que la priorite ne tient pas a la valeur du ratio : elle tient a ce que A
+   * soit dehors, dedans ou dehors pour B.
+   */
+  it('ne laisse jamais B prendre la main, de 0.5 a 3.0', () => {
+    for (const cash of [CASH_BELOW, CASH_ABOVE]) {
+      for (const ratio of SWEEP) {
+        const state = stateAtRatio(ratio, cash);
+        const intent = intentAt(state, SHADOW);
+        const seen = { cash: cash.toFixed(0), ratio: ratio.toFixed(2), trigger: intent.trigger };
+
+        expect(seen).toEqual({ ...seen, trigger: 'CASH_BAND' });
+        expect(intent.legs).toEqual(intentAt(state, PROD).legs);
+      }
+    }
   });
 });
 
