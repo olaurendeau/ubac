@@ -1,4 +1,3 @@
-import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -69,6 +68,22 @@ function ruleCounts(result: ESLint.LintResult): Record<string, number> {
   return counts;
 }
 
+/**
+ * `ruleCounts` compte tout, y compris les messages sans regle qu'ESLint emet
+ * pour signaler une directive inline sans effet. Quand c'est justement l'effet
+ * de `noInlineConfig` qu'on mesure, seule compte la regle nommee.
+ */
+function errorCount(result: ESLint.LintResult, ruleId: string): number {
+  return result.messages.filter((m) => m.ruleId === ruleId && m.severity === 2).length;
+}
+
+/** Messages lisibles : un echec doit dire quel fichier et quelle regle. */
+function messageLines(results: readonly ESLint.LintResult[]): string[] {
+  return results.flatMap((r) =>
+    r.messages.map((m) => `${r.filePath}: ${m.ruleId ?? 'fatal'} — ${m.message}`),
+  );
+}
+
 describe('C1 — core n’importe ni adapters/, ni jobs/, ni module d’IO', () => {
   it('refuse un import qui franchit la frontiere de couche', async () => {
     const result = await lintAsCore('bad-cross-layer-import');
@@ -128,9 +143,70 @@ describe('les regles ne se declenchent pas a tort', () => {
   });
 });
 
-describe('C32 — aucun adapter ni job en phase 0', () => {
-  it.each(['src/adapters', 'src/jobs'])('%s n’existe pas', (dir) => {
-    expect(existsSync(resolve(ROOT, dir))).toBe(false);
+/**
+ * C32, phase 0 : « src/adapters et src/jobs n'existent pas ». La phase 1 fait
+ * entrer ces deux repertoires, donc la garantie ne peut plus porter sur
+ * l'arborescence. Elle se deplace sur les **appels** : les repertoires existent,
+ * et aucun chemin d'execution ne place, n'annule ni ne retire.
+ *
+ * Le controle est un controle de noms, pas une preuve. `docs/phase-1-frontieres.md`
+ * dit ce qu'il laisse passer. Le remplacer par un test de presence de fichier
+ * aurait donne un garde-fou qui ne garantit rien du tout.
+ */
+describe("C32 (phase 1) — adapters/ et jobs/ existent, mais rien n'y passe d'ordre", () => {
+  it.each(['src/adapters/coinbase.ts', 'src/jobs/daily.ts'])(
+    'refuse placement, annulation et retrait dans %s',
+    async (virtualPath) => {
+      const result = await lintAs('bad-order-write', virtualPath);
+      // Cinq formes distinctes dans la fixture : appel de methode, reference
+      // sans appel, acces calcule par chaine, nom snake_case, retrait.
+      expect(ruleCounts(result)).toEqual({ 'no-restricted-syntax': 5 });
+    },
+  );
+
+  // Un garde-fou qu'on eteint depuis le fichier qu'il surveille n'en est pas un.
+  it('ne se laisse pas desarmer par un commentaire eslint-disable', async () => {
+    const result = await lintAs('bad-order-write-disabled', 'src/adapters/coinbase.ts');
+    expect(errorCount(result, 'no-restricted-syntax')).toBeGreaterThan(0);
+  });
+
+  it('laisse ecrire un adapter de lecture', async () => {
+    const result = await lintAs('good-adapter-module', 'src/adapters/coinbase.ts');
+    expect(result.messages).toEqual([]);
+  });
+
+  // Le rejeu manipule legitimement des ordres simules : la regle est restreinte
+  // aux deux couches qui touchent l'exterieur, et ce test le verrouille.
+  it('n’applique pas la regle hors adapters/ et jobs/', async () => {
+    const result = await lintAs('bad-order-write', 'src/replay/engine.ts');
+    expect(result.messages).toEqual([]);
+  });
+
+  /*
+   * Les fixtures prouvent que la regle mord ; ce test prouve qu'elle est
+   * branchee sur le code reel. Les deux globs sont vides tant qu'aucun adapter
+   * n'est livre, et deviennent un verrou au premier fichier, sans qu'aucun lot
+   * ulterieur ait a y penser.
+   */
+  it('lint l’arbre reel de adapters/ et jobs/ sans erreur', async () => {
+    const results = await eslint.lintFiles(['src/adapters/**/*.ts', 'src/jobs/**/*.ts']);
+    expect(messageLines(results)).toEqual([]);
+  });
+});
+
+describe('frontieres de couche — jobs/ est le point d’entree, personne ne l’importe', () => {
+  it.each(['src/adapters/coinbase.ts', 'src/config/env.ts'])(
+    'refuse un import de jobs/ depuis %s',
+    async (virtualPath) => {
+      const result = await lintAs('bad-jobs-import', virtualPath);
+      // Un message par import : le chemin relatif et le chemin nu.
+      expect(ruleCounts(result)).toEqual({ 'no-restricted-imports': 2 });
+    },
+  );
+
+  it('laisse un job importer un autre job', async () => {
+    const result = await lintAs('bad-jobs-import', 'src/jobs/daily.ts');
+    expect(result.messages).toEqual([]);
   });
 });
 
@@ -144,9 +220,6 @@ describe('les regles s’appliquent a l’arbre reel', () => {
   });
 
   it('ne remonte aucune erreur sur src/', () => {
-    const errors = results.flatMap((r) =>
-      r.messages.map((m) => `${r.filePath}: ${m.ruleId ?? 'fatal'} — ${m.message}`),
-    );
-    expect(errors).toEqual([]);
+    expect(messageLines(results)).toEqual([]);
   });
 });

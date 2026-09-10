@@ -63,6 +63,81 @@ const CORE_FORBIDDEN_GLOBALS = [
   { name: 'require', message: "core est en ESM : require() contourne la liste blanche d'imports." },
 ];
 
+// --- Frontieres de la phase 1 -----------------------------------------------
+
+/**
+ * Les couches que la phase 1 fait entrer. Elles n'existent pas encore : le glob
+ * est vide tant qu'aucun adapter ni job n'est livre, exactement comme
+ * `src/core/**` l'etait avant E3.
+ */
+const ADAPTERS_AND_JOBS = ['src/adapters/**/*.ts', 'src/jobs/**/*.ts'];
+
+/**
+ * La phase 1 est en observation : aucun ordre ne part, jamais. Le garde-fou C32
+ * de la phase 0 le tenait en interdisant `src/adapters/` et `src/jobs/` tout
+ * court ; ces repertoires arrivent, donc la garantie doit se deplacer de
+ * l'arborescence vers les **appels**.
+ *
+ * Ce qui suit est un controle de **noms**, et rien d'autre. Il attrape tout ce
+ * qui s'ecrit `createOrder`, `place_order`, `cancelAllOrders`, `withdraw`,
+ * `transferFunds` et leurs variantes ccxt, en camelCase comme en snake_case,
+ * quelle que soit la position syntaxique : appel, declaration, propriete lue,
+ * cle d'objet, specificateur d'import, chaine de caracteres. D'ou des selecteurs
+ * poses sur `Identifier` et `Literal` plutot que sur `CallExpression` seul —
+ * `const f = client.createOrder;` puis `f()` contourne un selecteur d'appel.
+ *
+ * Ce qu'il n'attrape pas est ecrit noir sur blanc dans
+ * `docs/phase-1-frontieres.md` : une repartition dynamique
+ * (`client[methode]()` ou `methode` vient de la configuration), un client HTTP
+ * generique (`http.post('/orders', …)`), la reflexion. Le garde-fou reduit la
+ * surface d'erreur ; il ne demontre pas l'absence d'execution. La seule garantie
+ * structurelle est une cle d'API sans permission de trade.
+ */
+const ORDER_WRITE_VERBS = [
+  'create',
+  'place',
+  'submit',
+  'send',
+  'post',
+  'edit',
+  'amend',
+  'modify',
+  'replace',
+  'cancel',
+  'close',
+];
+
+/**
+ * `[A-Za-z_]*` couvre les deux conventions d'un coup : `createLimitBuyOrder`
+ * comme `create_limit_buy_order`. Pas de drapeau `i` — esquery ne garantit pas
+ * de les accepter, et les casses reellement possibles sur un identifiant sont
+ * enumerables.
+ *
+ * `withdraw` et `transfer` sont pris n'importe ou dans le nom, pas seulement en
+ * tete : la spec §7 exige « jamais de permission de retrait », donc un module de
+ * la phase 1 n'a aucune raison de prononcer le mot, meme en lecture.
+ */
+const ORDER_WRITE_NAME = String.raw`^(?:(?:${ORDER_WRITE_VERBS.join('|')})[A-Za-z_]*[Oo]rders?|[A-Za-z_]*(?:[Ww]ithdraw|[Tt]ransfer)[A-Za-z_]*)$`;
+
+const ORDER_WRITE_SELECTORS = [
+  `Identifier[name=/${ORDER_WRITE_NAME}/]`,
+  `PrivateIdentifier[name=/${ORDER_WRITE_NAME}/]`,
+  // `client['createOrder']()` et la cle de chaine d'une table de repartition.
+  `Literal[value=/${ORDER_WRITE_NAME}/]`,
+  `TemplateElement[value.raw=/${ORDER_WRITE_NAME}/]`,
+];
+
+/**
+ * `jobs/` est le point d'entree executable : le runtime l'appelle, le code ne
+ * l'importe pas. Un adapter qui importe un job inverse la composition et rend
+ * un chemin d'execution atteignable depuis une couche qui n'est censee que lire.
+ */
+const JOBS_IMPORT_PATTERN = {
+  regex: '(^|/)jobs(/|$)',
+  message:
+    "jobs/ est le point d'entree executable : il compose les autres couches, aucune ne l'importe.",
+};
+
 export default tseslint.config(
   {
     ignores: ['node_modules/**', 'coverage/**', 'dist/**'],
@@ -127,6 +202,54 @@ export default tseslint.config(
           selector: "MemberExpression[computed=true][object.name=/^(Date|Math)$/]",
           message:
             "core est deterministe : l'acces calcule a Date ou Math contourne les regles ci-dessus.",
+        },
+      ],
+    },
+  },
+
+  /*
+   * Les blocs de la phase 1 viennent **apres** celui de core et l'excluent
+   * explicitement. En configuration plate, deux blocs qui posent le meme nom de
+   * regle ne fusionnent pas : le dernier gagne. Ecrire `src/**` sans exclure
+   * core desarmerait donc `no-restricted-imports` sur core, sans qu'aucun test
+   * de fixture ne le dise autrement que par son compte de messages.
+   */
+  {
+    files: ['src/**/*.ts'],
+    /*
+     * core a ses propres restrictions ci-dessus, inchangees ; jobs/ s'importe
+     * lui-meme ; replay/ et fixture/ sont le harnais hors ligne de la phase 0,
+     * que la phase 1 ne touche pas et dont les fixtures de lint verrouillent
+     * deja le comportement attendu. Tout le reste — adapters/, config/, et
+     * n'importe quelle couche future — est couvert par defaut.
+     */
+    ignores: [
+      'src/core/**/*.ts',
+      'src/jobs/**/*.ts',
+      'src/replay/**/*.ts',
+      'src/fixture/**/*.ts',
+    ],
+    rules: {
+      'no-restricted-imports': ['error', { patterns: [JOBS_IMPORT_PATTERN] }],
+    },
+  },
+
+  {
+    files: ADAPTERS_AND_JOBS,
+    /*
+     * Sans ceci, `// eslint-disable-next-line no-restricted-syntax` au-dessus de
+     * l'appel suffit a desarmer le garde-fou en une ligne, dans le fichier meme
+     * qu'il surveille. Un garde-fou qu'on eteint depuis l'interieur n'en est pas
+     * un.
+     */
+    linterOptions: { noInlineConfig: true },
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: ORDER_WRITE_SELECTORS.join(', '),
+          message:
+            "la phase 1 est en observation : aucun chemin d'execution ne place, n'annule ni ne retire. Ce nom denote une ecriture sur l'exchange.",
         },
       ],
     },
