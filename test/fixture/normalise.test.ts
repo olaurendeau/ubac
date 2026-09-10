@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  EARLIEST_START_SECONDS,
   expectedCalendar,
   FixtureRefused,
+  LATEST_START_SECONDS,
   normaliseCandle,
   normaliseSeries,
   PRICE_FIELDS,
@@ -13,6 +15,9 @@ import {
 const SOURCE = 'BTC-USDC';
 const JAN_1 = 1_704_067_200; // 2024-01-01T00:00:00Z
 const HOUR = 3_600;
+
+/** La seule forme de date que le module a le droit de produire. */
+const DAY_SHAPE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** Une bougie brute plausible, telle qu'une API publique la renvoie. */
 function raw(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -146,6 +151,89 @@ describe('refus — horodatage non multiple de 86 400 s', () => {
   it('refuse une bougie qui n’est pas un objet', () => {
     expectRefusal(() => normaliseCandle(SOURCE, null), 'CANDLE_MALFORMED');
     expectRefusal(() => normaliseCandle(SOURCE, '2024-01-01'), 'CANDLE_MALFORMED');
+  });
+});
+
+describe('refus — horodatage qui n’est pas exprime en secondes', () => {
+  // Le talon d'Achille du controle d'alignement : il est aveugle a l'unite. Si s
+  // est multiple de 86 400, alors s x 1000 et s x 1e6 le sont aussi. Sans borne
+  // de plausibilite, une source qui passe en millisecondes traverse le module
+  // sans qu'aucun refus ne se declenche — et decale toute la fixture.
+  it('refuse un horodatage publie en millisecondes et nomme l’unite probable', () => {
+    const refusal = expectRefusal(
+      () => normaliseCandle(SOURCE, raw({ start: String(JAN_1 * 1_000) })),
+      'TIMESTAMP_OUT_OF_RANGE',
+    );
+    expect(refusal.message).toContain('millisecondes');
+  });
+
+  it('refuse un horodatage publie en microsecondes et nomme l’unite probable', () => {
+    const refusal = expectRefusal(
+      () => normaliseCandle(SOURCE, raw({ start: JAN_1 * 1_000_000 })),
+      'TIMESTAMP_OUT_OF_RANGE',
+    );
+    expect(refusal.message).toContain('microsecondes');
+  });
+
+  it('ne rend jamais une date de l’an 55969 pour un horodatage en millisecondes', () => {
+    // La sortie reelle de la version precedente sur 1 704 067 200 000 :
+    // « +055969-09 », que toISOString().slice(0, 10) produit sans broncher hors
+    // des annees 1000 a 9999. Ce n'etait pas un YYYY-MM-DD et rien ne le disait.
+    expectRefusal(
+      () => normaliseCandle(SOURCE, raw({ start: 1_704_067_200_000 })),
+      'TIMESTAMP_OUT_OF_RANGE',
+    );
+  });
+
+  it('leve un refus code, pas un RangeError, hors des bornes de Date', () => {
+    // Number.isSafeInteger etait la seule borne : au-dela des bornes de Date,
+    // toISOString levait « Invalid time value », que l'appelant ne voyait pas
+    // passer en attrapant FixtureRefused. expectRefusal exige l'instance.
+    const refusal = expectRefusal(
+      () => normaliseCandle(SOURCE, raw({ start: Number.MAX_SAFE_INTEGER })),
+      'TIMESTAMP_OUT_OF_RANGE',
+    );
+    // Aucune unite ne colle : mieux vaut ne rien affirmer que deviner faux.
+    expect(refusal.message).not.toContain('vraisemblablement');
+  });
+
+  it.each([
+    ['la borne basse', EARLIEST_START_SECONDS, '2009-01-01'],
+    ['la borne haute', LATEST_START_SECONDS, '2100-01-01'],
+  ])('accepte %s de la plage, incluse', (_label, start, day) => {
+    expect(normaliseCandle(SOURCE, raw({ start: String(start) })).date).toBe(day);
+  });
+
+  it.each([
+    ['la veille de la borne basse', EARLIEST_START_SECONDS - SECONDS_PER_DAY],
+    ['le lendemain de la borne haute', LATEST_START_SECONDS + SECONDS_PER_DAY],
+    ['l’epoch elle-meme', 0],
+    ['un horodatage negatif', -SECONDS_PER_DAY],
+  ])('refuse %s', (_label, start) => {
+    expectRefusal(() => normaliseCandle(SOURCE, raw({ start })), 'TIMESTAMP_OUT_OF_RANGE');
+  });
+});
+
+describe('la date produite est toujours un YYYY-MM-DD', () => {
+  it('sur toute la plage du rejeu, calendrier comme bougies', () => {
+    const calendar = expectedCalendar('2024-01-01', '2026-08-31');
+    expect(calendar.filter((day) => !DAY_SHAPE.test(day))).toEqual([]);
+
+    const series = normaliseSeries(
+      SOURCE,
+      calendar.map((_day, index) => dayAfter(index)),
+      calendar,
+    );
+    expect(series).toHaveLength(calendar.length);
+    expect(series.filter((candle) => !DAY_SHAPE.test(candle.date))).toEqual([]);
+  });
+
+  it('n’accepte pas un calendrier de chaines nues', () => {
+    // La marque UtcDay n'existe qu'a la compilation : c'est tsc qui refuse ici,
+    // pas le test. Si la marque s'effondrait sur string, l'attente ci-dessous
+    // ne serait plus satisfaite et le typecheck echouerait.
+    // @ts-expect-error un calendrier se fabrique par expectedCalendar, pas a la main
+    expect(normaliseSeries(SOURCE, [raw()], ['2024-01-01'])).toHaveLength(1);
   });
 });
 
