@@ -11,7 +11,7 @@ le code, pas répété ici. Chaque morceau apporte sa section avec son code.
 | **Q3c** | le marché : bougies journalières | une série complète, ou un refus |
 
 Chaque section arrive avec le code qu'elle explique : §1 à §3 avec Q3a,
-§4 à §7 avec Q3b.
+§4 à §7 avec Q3b, §8 avec Q3c.
 
 Références : `docs/specs/ubac-rebalance.md` §3, §7 et §11 ;
 `docs/plans/ubac-phase-1.md`, lot Q3 ; décision préalable **D4**, close ;
@@ -49,6 +49,9 @@ trois lectures et une fermeture, et pas d'autre porte :
 | `balances()` | les soldes du portefeuille dédié, en `Decimal` |
 | `openOrders()` | les ordres non dénoués |
 | `close()` | — ferme le transport HTTP |
+
+`MarketReader`, ajouté par Q3c, en a une seule : `dailyCandles(asset, window)`,
+qui rend une série daily complète en `Decimal`, ou un refus.
 
 ---
 
@@ -228,13 +231,74 @@ quand le code ment ne garantit rien.
 
 ---
 
-## 8. Ce que ces lots n'écrivent pas
+## 8. Les bougies : `normalise.ts` reste le seul contrôle
+
+`market.ts` ne vérifie **rien** de la série lui-même. Le trou, l'horodatage qui
+ne tombe pas sur 00:00 UTC, le prix nul ou négatif, la bougie en double : tout
+cela est traité par `src/fixture/normalise.ts`, écrit en phase 0. Y ajouter une
+vérification ici donnerait deux définitions de « série acceptable », qui
+divergeraient à la première correction.
+
+Le chemin est donc court et sans intelligence : construire le calendrier attendu
+(`expectedCalendar`), demander la fenêtre, passer les bougies **brutes** à
+`normaliseSeries`, convertir les chaînes qu'il conserve. Les prix traversent en
+chaînes de bout en bout — c'est ce qui fait qu'aucun flottant n'apparaît nulle
+part, y compris à l'intérieur du normaliseur, qui refuse déjà un prix publié en
+nombre JSON. Ce que l'adapter fait, lui :
+
+- **construire le produit** `{asset}-USDC` et le passer au contrôle de paire du
+  §5 ; `USDC` n'est pas une ligne négociable et est refusé ;
+- **refuser avant l'appel** une fenêtre dont les bornes ne forment pas un
+  calendrier — aucune requête n'est émise ;
+- **refuser une fenêtre de plus de 350 jours**, plafond de l'API par appel.
+  Au-delà elle tronque, et le normaliseur refuserait la série pour jours
+  manquants : correct, mais racontant la mauvaise cause. Les 200 jours de la
+  spec §8 tiennent largement dans un appel.
+
+L'endpoint utilisé est le **public** (`/brokerage/market/products/…`) : une
+bougie daily n'appartient à personne, et s'en passer de signature évite de donner
+à la lecture de marché une raison d'avoir la clé.
+
+`end` est **inclusif** côté Coinbase : la bougie qui ouvre à `end` est rendue. On
+vise donc l'ouverture du dernier jour et non sa fin, sans quoi l'API rendrait une
+bougie de plus, hors calendrier, que `normaliseSeries` jetterait sans rien dire.
+
+### Deux propriétés mesurées de l'API
+
+**Les bougies reviennent du plus récent au plus ancien.** `normaliseSeries` les
+réordonne sur le calendrier, donc l'ordre d'arrivée n'a pas d'importance — mais
+s'y fier en aurait eu.
+
+**La bougie du jour en cours est partielle et bouge.** Deux appels à quelques
+minutes d'intervalle ont rendu `77180.42` puis `77215.57` en clôture du même
+jour. Une fenêtre qui inclut aujourd'hui donne donc une clôture qui n'en est pas
+une. L'adapter ne peut pas trancher à la place de l'appelant — il n'a pas
+d'horloge, comme le reste du dépôt — donc **c'est au job de s'arrêter au dernier
+jour clos**. À reprendre dans le lot Q4.
+
+### Les tests
+
+`test/adapters/market.test.ts` ne teste pas le normaliseur :
+`test/fixture/normalise.test.ts` le fait depuis la phase 0. Il teste que
+l'adapter lui passe bien la main, et que le refus arrive **intact** jusqu'à
+l'appelant — trou, horodatage non aligné, prix nul, prix publié en nombre JSON,
+chaque refus vérifié par son code (`DAY_MISSING`, `TIMESTAMP_NOT_UTC_MIDNIGHT`,
+`PRICE_NOT_POSITIVE`, `CANDLE_MALFORMED`) et non par son texte.
+
+La série de référence est **réelle** : `coinbase-candles-btc-usdc.json`, huit
+bougies BTC-USDC capturées le 2026-09-11. Elle porte les deux formes que personne
+n'invente — un horodatage `start` publié en **chaîne** de secondes, et des prix
+entiers écrits sans décimale (`"76440"`) à côté de prix à deux décimales. Aucune
+donnée de compte : une bougie est publique.
+
+---
+
+## 9. Ce que ces lots n'écrivent pas
 
 - **Aucun ordre, dans aucune direction.** Phase 3.
 - **Aucune réconciliation.** Comparer soldes réels et état interne est le §7 de
   la spec, lot Q4 : ces lots fournissent la lecture, pas la décision.
 - **Aucun prix mid ni carnet.** Le prix limite à mid ± 0,1 % est de la phase 3.
 - **Aucune écriture en base.** `db.ts` est le lot Q2.
-- **Aucune horloge.** Le module ne date rien lui-même ; il rend les horodatages
-  que l'API publie.
-- **Aucune lecture de marché.** `market.ts` et les bougies sont le lot Q3c.
+- **Aucune horloge.** Les deux modules reçoivent les fenêtres qu'on leur demande
+  et ne datent rien eux-mêmes — d'où le renvoi de la bougie partielle au job.
