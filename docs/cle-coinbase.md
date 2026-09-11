@@ -12,14 +12,44 @@ La protection ne repose pas sur le code. Elle repose sur le fait que **la clé n
 peut structurellement pas atteindre l'argent principal ni le faire sortir**.
 Deux barrières, dans cet ordre d'importance :
 
-1. **Un portefeuille dédié.** Une clé Coinbase est scopée à un portefeuille :
-   « Each API key is scoped to specific portfolio and, unless otherwise noted,
-   can only view and create data that belongs to its own portfolio. » Un
-   portefeuille séparé rend le portefeuille principal invisible pour l'agent.
-   Aucun bug, aucune régression et aucune erreur de configuration ne peut
-   franchir cette limite, parce qu'elle n'est pas dans notre code.
+1. **Un portfolio dédié.** Une clé Coinbase est scopée à un portfolio :
+   « Each API key is scoped to specific portfolio and, **unless otherwise
+   noted**, can only view and create data that belongs to its own portfolio. »
+   Les mots « unless otherwise noted » ne sont pas décoratifs : voir
+   l'avertissement ci-dessous.
 2. **Aucune permission de sortie.** La phase 1 observe et n'exécute rien : la
-   clé n'a besoin que de lire.
+   clé n'a besoin que de lire. C'est la barrière qui tient sans réserve.
+
+> ### Le scoping ne couvre pas les endpoints v2
+>
+> **Correction du 2026-09-11.** Une version antérieure de cette note affirmait
+> qu'aucun bug ni aucune erreur de configuration ne pouvait franchir la limite
+> du portfolio, « parce qu'elle n'est pas dans notre code ». **C'est faux**, et
+> la mesure le montre sans ambiguïté. Avec la clé scopée sur `ubac-agent` :
+>
+> ```
+> GET /api/v3/brokerage/accounts  ->  200,   1 compte
+> GET /v2/accounts                ->  200, 100 comptes sur la première page
+>                                     (EUR, ATOM, XTZ, SOL, ADA, APE…)
+> ```
+>
+> Les devises rendues par `/v2/accounts` ne sont pas celles du portfolio dédié :
+> c'est le compte Coinbase entier. Le scoping au portfolio s'applique aux
+> endpoints **v3 brokerage**, pas à l'API v2.
+>
+> Ce qui reste vrai : la clé est en **lecture seule**, donc rien ne peut sortir
+> ni bouger. La confidentialité du portefeuille principal, elle, n'est pas
+> assurée par le scoping.
+>
+> Ce qui change dans la conception : la séparation du portfolio est une
+> **réduction de surface**, pas une barrière infranchissable. Le code doit
+> lire en v3 et vérifier le rattachement de chaque compte au portfolio attendu,
+> plutôt que de s'en remettre au scoping. C'est ce que fait l'adapter.
+>
+> **À trancher avant la phase 3 :** si une clé reçoit un jour `can_trade`, les
+> endpoints v2 échappent-ils aussi au scoping pour les ordres ? La question
+> n'est pas tranchée ici et elle doit l'être avant toute activation
+> d'exécution. Ne pas supposer que non.
 
 ## Les permissions, et le piège
 
