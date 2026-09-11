@@ -107,7 +107,7 @@ export function openMarketData(transport: CoinbaseTransport): MarketReader {
        * L'API plafonne le nombre de bougies par appel. Au-dela, elle tronque la
        * fenetre : le normaliseur refuserait la serie pour jours manquants, ce
        * qui est correct mais raconte la mauvaise cause. Le dire ici est plus
-       * honnete que de pagine en silence — les 200 jours de la spec §6 tiennent
+       * honnete que de pagine en silence — les 200 jours de la spec §8 tiennent
        * largement dans un appel.
        */
       if (calendar.length > MAX_CANDLES_PER_CALL) {

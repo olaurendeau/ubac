@@ -20,6 +20,11 @@ import type { RefusalCode } from '../../src/fixture/normalise.js';
  * Ce fichier ne teste pas le normaliseur : `test/fixture/normalise.test.ts` le
  * fait depuis la phase 0. Il teste que l'adapter lui passe bien la main, et que
  * le refus arrive intact jusqu'a l'appelant.
+ *
+ * La capture ne suffit pourtant pas a tout : aucun de ses prix n'est
+ * **decimalement sensible**, donc aucun ne peut prouver que le chemin ne passe
+ * pas par un flottant. C'est le role de `BOUGIE_SENSIBLE`, plus bas, qui est
+ * fabriquee et non capturee.
  */
 
 const FIXTURES = resolve(dirname(fileURLToPath(import.meta.url)), 'fixtures');
@@ -90,10 +95,20 @@ describe('serie reelle capturee le 2026-09-11', () => {
       lastDay: DERNIER,
     });
     const veille = serie.find((c) => c.date === '2026-09-10');
-    // "76440" sans decimale dans la capture, et 76440 exactement ici.
+    /*
+     * Les quatre champs, pas deux : ils sont convertis par quatre appels
+     * distincts, et n'en verifier que deux laissait passer un `open` branche
+     * sur `high`. Verifie par mutation — la permutation passait les 14 tests.
+     *
+     * Ces valeurs-la disent la **correspondance** des champs et l'ecriture
+     * conservee (« 76440 » sans decimale dans la capture, et 76440 ici). Elles
+     * ne disent rien du flottant : aucune n'est decimalement sensible. C'est
+     * `BOUGIE_SENSIBLE` qui porte cette preuve.
+     */
+    expect(veille?.open.toString()).toBe('78283.98');
+    expect(veille?.high.toString()).toBe('78554.18');
     expect(veille?.low.toString()).toBe('76440');
     expect(veille?.close.toString()).toBe('76536.55');
-    expect(veille?.close.toFixed(2)).toBe('76536.55');
   });
 
   it('demande la fenetre en secondes, bornes aux ouvertures de jour', async () => {
@@ -107,6 +122,73 @@ describe('serie reelle capturee le 2026-09-11', () => {
         endSeconds: PREMIER_SECONDES + 7 * SECONDS_PER_DAY,
       },
     ]);
+  });
+});
+
+/**
+ * Une bougie **fabriquee**, et deliberement pas capturee.
+ *
+ * Aucun prix de la capture ne peut prouver qu'aucun flottant n'intervient :
+ * « 76536.55 » repasse par un double et en ressort identique, parce que
+ * `String(Number(x))` rend la plus courte ecriture qui retombe sur le meme
+ * double. Mesure faite : en remplacant `candle.close` par
+ * `String(Number(candle.close))` dans `market.ts`, les quatorze tests de ce
+ * fichier restaient verts. Un test qui passe aussi sur une implementation
+ * fausse ne couvre rien.
+ *
+ * Les quatre prix ci-dessous portent un chiffre au-dela de ce qu'un double
+ * distingue. Autour de 78 000, l'exposant binaire vaut 16 : deux doubles
+ * consecutifs y sont espaces de 2^(16-52), soit environ 1,46e-11. La derniere
+ * decimale ecrite ici pese 1e-12, sous cet ecart — elle n'a pas de double a
+ * elle, donc la conversion la perd et ne peut pas la rendre. Le `Decimal`
+ * construit sur la chaine, lui, la garde : c'est toute la difference que ce
+ * test mesure.
+ *
+ * Ne pas arrondir ces valeurs « pour simplifier » : un prix rond rendrait le
+ * test muet sans rien casser. Le test « ces prix sont bien sensibles » plus bas
+ * echoue si quelqu'un le fait quand meme.
+ */
+const JOUR_SENSIBLE = '2026-09-10';
+const BOUGIE_SENSIBLE = {
+  start: '1788998400',
+  open: '78283.980000000001',
+  high: '78554.179999999999',
+  low: '76440.000000000001',
+  close: '76536.550000000001',
+  volume: '6390.76117588',
+} as const;
+
+describe('aucun flottant sur le chemin du prix', () => {
+  it('ces prix sont bien sensibles : un aller-retour par Number les abime', () => {
+    /*
+     * Le garde-fou du garde-fou, et la raison d'ecrire les quatre a la main :
+     * tant que ces quatre assertions tiennent, chaque comparaison du test
+     * suivant distingue vraiment la chaine d'origine d'un flottant. Arrondir
+     * un des prix fait tomber ce test-ci, avant meme l'autre.
+     */
+    expect(String(Number(BOUGIE_SENSIBLE.open))).toBe('78283.98');
+    expect(String(Number(BOUGIE_SENSIBLE.high))).toBe('78554.18');
+    expect(String(Number(BOUGIE_SENSIBLE.low))).toBe('76440');
+    expect(String(Number(BOUGIE_SENSIBLE.close))).toBe('76536.55');
+  });
+
+  it('rend chaque prix chiffre pour chiffre, tel que la source l’a ecrit', async () => {
+    const { transport } = transportDe({ candles: [BOUGIE_SENSIBLE] });
+    const serie = await openMarketData(transport).dailyCandles('BTC', {
+      firstDay: JOUR_SENSIBLE,
+      lastDay: JOUR_SENSIBLE,
+    });
+    const bougie = serie[0];
+    expect(bougie?.date).toBe(JOUR_SENSIBLE);
+    /*
+     * `toString()` et pas `eq` ni `toFixed` : une egalite numerique tolere la
+     * perte des que les deux cotes ont fait le meme aller-retour, et un
+     * arrondi a deux decimales l'efface. Seule la chaine exacte la montre.
+     */
+    expect(bougie?.open.toString()).toBe('78283.980000000001');
+    expect(bougie?.high.toString()).toBe('78554.179999999999');
+    expect(bougie?.low.toString()).toBe('76440.000000000001');
+    expect(bougie?.close.toString()).toBe('76536.550000000001');
   });
 });
 

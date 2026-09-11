@@ -253,7 +253,7 @@ nombre JSON. Ce que l'adapter fait, lui :
 - **refuser une fenêtre de plus de 350 jours**, plafond de l'API par appel.
   Au-delà elle tronque, et le normaliseur refuserait la série pour jours
   manquants : correct, mais racontant la mauvaise cause. Les 200 jours de la
-  spec §6 tiennent largement dans un appel.
+  spec §8 tiennent largement dans un appel.
 
 L'endpoint utilisé est le **public** (`/brokerage/market/products/…`) : une
 bougie daily n'appartient à personne, et s'en passer de signature évite de donner
