@@ -25,12 +25,15 @@ import { describe, expect, it } from 'vitest';
  *
  * ## Comment lire ce fichier
  *
- * Quatre revues ont trouve ici quatre defauts, dont deux n'etaient pas des
- * formes oubliees mais des **ecarts entre cette entete et le comportement des
- * selecteurs** : « toute forme d'import » quand le selecteur ne lisait
+ * Cinq revues ont trouve ici cinq defauts, dont trois n'etaient pas des formes
+ * oubliees mais des **ecarts entre cette entete et ce que les sondes
+ * etablissent** : « toute forme d'import » quand le selecteur ne lisait
  * qu'`ImportDeclaration`, « avec ou sans prefixe » quand le filet exigeait le
- * prefixe. Chercher la forme suivante une par une ne termine jamais ; verifier
- * chaque affirmation, si.
+ * prefixe, « nomme comme renomme comme reexporte, avec ou sans prefixe » quand
+ * deux des six cellules n'etaient pas sondees. Chercher la forme suivante une
+ * par une ne termine jamais ; verifier chaque affirmation, si — et la verifier
+ * **variante par variante**, car une affirmation qui annonce six formes et n'en
+ * sonde que quatre est fausse d'un tiers.
  *
  * Chaque affirmation porte donc un numero — `A1`…`A21` pour ce qui est tenu,
  * `L1`…`L9` pour ce qui est declare ouvert — et chaque numero est cite par le
@@ -48,8 +51,10 @@ import { describe, expect, it } from 'vitest';
  * - **A1** — aucune regle de purete d'`eslint.config.js` ne couvre `src/jobs/` :
  *   elles sont posees sur `src/core/**`. Sonde : la configuration **reelle** du
  *   depot, sur `Date.now()` et `process.env`, aux deux emplacements.
- * - **A2** — le seul garde-fou que la configuration du depot applique a
- *   `src/jobs/` porte sur les noms d'ecriture d'ordre. Meme sonde.
+ * - **A2** — la configuration du depot applique bien **un** garde-fou a
+ *   `src/jobs/`, sur les noms d'ecriture d'ordre. Meme sonde. Qu'il soit le
+ *   seul n'est pas enumere ici : A1 constate seulement qu'il n'y garde ni
+ *   l'horloge ni l'environnement, les deux que ce fichier reprend.
  * - **A3** — les cinq gardiens de ce fichier lintent le glob
  *   `src/jobs/**\/*.ts`, et ce glob designe aujourd'hui au moins un fichier.
  *   Sans cette derniere moitie, chaque verdict « aucun fautif » serait vrai par
@@ -75,8 +80,9 @@ import { describe, expect, it } from 'vitest';
  *   le produit complet, soixante-six cellules, une par cellule. Nomme, renomme,
  *   par defaut, namespace, effet de bord, **en type**, `export … from`,
  *   `export *`, `export * as`, `import x = require(…)`, `import(…)`.
- * - **A9** — de `crypto`, seul `createHash` passe, nomme comme renomme comme
- *   reexporte, avec ou sans prefixe : le hachage est pur, et il sert au
+ * - **A9** — de `crypto`, seul `createHash` passe : trois formes — nomme,
+ *   renomme, reexporte — pour les deux orthographes du specificateur, six
+ *   cellules sondees une a une. Le hachage est pur, et il sert au
  *   client_order_id deterministe.
  * - **A10** — le nom d'un module refuse ecrit **ailleurs qu'en position
  *   d'import** tombe, prefixe ou nu, pour les trois modules :
@@ -91,18 +97,22 @@ import { describe, expect, it } from 'vitest';
  *   process`, `p = process`, `const { env } = process`, `process['env']`,
  *   `lire(process)`, `(p = process) => …`, `{ p: process }`.
  * - **A14** — quatre proprietes sont admises et nommees une a une : `argv`,
- *   `exitCode`, `stdout`, `stderr`. Toute autre tombe.
+ *   `exitCode`, `stdout`, `stderr`, chacune avec sa sonde. Toute autre tombe.
  * - **A15** — un champ nomme `process` sur un autre objet reste permis, dans
- *   les six positions ou le nom est une cle et non la globale.
+ *   les six positions ou le nom est une cle et non la globale : propriete lue,
+ *   cle d'objet, champ et methode de classe, champ et methode de type. Chaque
+ *   position a sa sonde, et une mutation par position montre que la sonde
+ *   depend bien de la position qu'elle nomme.
  * - **A16** — la porte `src/config/env.ts` reste ouverte.
  * - **A17** — `globalThis.process.env` et `global.process.env` echappent au
  *   gardien de configuration et tombent sur celui de l'horloge.
  * - **A18** — aucun module de `src/jobs/` ne lit l'environnement.
  * - **A19** — `x.balances()` tombe partout, et `reconcile.ts` est le seul
  *   fichier de `src/jobs/` ou la regle parle aujourd'hui.
- * - **A20** — un adapter n'entre dans `src/jobs/` que par ses types : les six
+ * - **A20** — un adapter n'entre dans `src/jobs/` que par ses types : les sept
  *   formes qui en font entrer la **valeur** tombent — import, import dynamique,
- *   effet de bord, `export … from`, `export *`, `import x = require(…)`.
+ *   effet de bord, `export … from`, `export *`, `export * as`,
+ *   `import x = require(…)`.
  * - **A21** — `import type` et `export type` d'un adapter passent.
  *
  * A8, A10 et A13 sont ecrits ainsi a la suite de revues : un selecteur qui
@@ -324,6 +334,7 @@ const FORMES_D_HORLOGE = refusees({
 
 describe('A5, A6, A7 — src/jobs/ n’a ni horloge propre ni aleatoire', () => {
   it('A5 : les neuf formes recoivent le verdict attendu, acces calcules et globales compris', async () => {
+    expect(Object.keys(FORMES_D_HORLOGE)).toHaveLength(9);
     expect(await verdicts(HORLOGE, FORMES_D_HORLOGE)).toEqual(attendus(FORMES_D_HORLOGE));
   });
 
@@ -516,13 +527,25 @@ const SPECIFICATEURS_CALCULES: Sondes = {
   ],
 };
 
+/**
+ * A9 annonce trois formes — nommee, renommee, reexportee — pour deux
+ * orthographes du specificateur : six cellules, et non trois. Les deux
+ * cellules `crypto` renommee et reexportee n'avaient pas de sonde, alors que
+ * seule l'entree `crypto` de `no-restricted-imports` porte l'exception qui les
+ * laisse passer : un `allowImportNames` retire a la ligne `crypto` et conserve
+ * a la ligne `node:crypto` ne faisait rougir aucun test. Le produit, la aussi,
+ * plutot que l'echantillon.
+ */
+const CREATE_HASH_PERMIS: Readonly<Record<string, string>> = Object.fromEntries(
+  ['node:crypto', 'crypto'].flatMap((spec) => [
+    [`createHash nomme depuis ${spec}`, `import { createHash } from '${spec}';\nexport const a = createHash('sha256');`],
+    [`createHash renomme depuis ${spec}`, `import { createHash as h } from '${spec}';\nexport const a = h('sha256');`],
+    [`createHash reexporte depuis ${spec}`, `export { createHash } from '${spec}';`],
+  ]),
+);
+
 const IMPORTS_PERMIS = permises({
-  'createHash, parce que le hachage est pur':
-    "import { createHash } from 'node:crypto';\nexport const a = createHash('sha256');",
-  'createHash sans le prefixe node:, meme raison':
-    "import { createHash } from 'crypto';\nexport const a = createHash('sha256');",
-  'createHash renomme': "import { createHash as h } from 'node:crypto';\nexport const a = h('sha256');",
-  'createHash reexporte': "export { createHash } from 'node:crypto';",
+  ...CREATE_HASH_PERMIS,
   'la porte de configuration':
     "import { loadConfig } from '../config/env.js';\nexport const c = loadConfig();",
   'un adapter en type': "import type { UbacDatabase } from '../adapters/db.js';\nexport type X = UbacDatabase;",
@@ -576,6 +599,7 @@ describe('A8 a A12 — un module refuse n’entre par aucune forme d’import', 
   });
 
   it('A9, A16 : ce qui est legitime passe — createHash, la porte de configuration, les types', async () => {
+    expect(Object.keys(CREATE_HASH_PERMIS)).toHaveLength(6);
     expect(await verdicts(MODULES, IMPORTS_PERMIS)).toEqual(attendus(IMPORTS_PERMIS));
   });
 
@@ -645,34 +669,42 @@ const PROPRIETES_ADMISES = '/^(argv|exitCode|stdout|stderr|env)$/';
  * dans les proprietes admises ci-dessus parce que `process.env` a son propre
  * message, plus precis : l'exempter ici evite deux messages pour une faute.
  */
-const NOM_DE_CHAMP = [
-  'MemberExpression[computed=false] > .property',
-  'Property[computed=false] > .key',
-  'PropertyDefinition[computed=false] > .key',
-  'MethodDefinition[computed=false] > .key',
-  'TSPropertySignature[computed=false] > .key',
-  'TSMethodSignature[computed=false] > .key',
-];
+const NOM_DE_CHAMP: Readonly<Record<string, string>> = {
+  'propriete lue': 'MemberExpression[computed=false] > .property',
+  "cle d'objet": 'Property[computed=false] > .key',
+  'champ de classe': 'PropertyDefinition[computed=false] > .key',
+  'methode de classe': 'MethodDefinition[computed=false] > .key',
+  'champ de type': 'TSPropertySignature[computed=false] > .key',
+  'methode de type': 'TSMethodSignature[computed=false] > .key',
+};
 
-const CONFIGURATION = gardien({
-  'no-restricted-syntax': [
-    'error',
-    {
-      selector: "MemberExpression[object.name='process'][property.name='env']",
-      message:
-        'la configuration entre par src/config/env.ts : une lecture directe contourne la validation des secrets, le refus du prefixe UBAC_RISK_ et le filtre des litteraux decimaux.',
-    },
-    {
-      selector: [
-        "Identifier[name='process']",
-        `:not(MemberExpression[computed=false][property.name=${PROPRIETES_ADMISES}] > .object)`,
-        ...NOM_DE_CHAMP.map((position) => `:not(${position})`),
-      ].join(''),
-      message:
-        "mention de la globale process : alias, destructuration, acces calcule ou passage en parametre, toutes menent a env. Seuls argv, exitCode, stdout et stderr sont assumes.",
-    },
-  ],
-});
+/** Le gardien de configuration, prive des positions nommees : la mutation d'A15. */
+function configuration(sansPositions: readonly string[] = []): ESLint {
+  const positions = Object.entries(NOM_DE_CHAMP)
+    .filter(([nom]) => !sansPositions.includes(nom))
+    .map(([, position]) => position);
+  return gardien({
+    'no-restricted-syntax': [
+      'error',
+      {
+        selector: "MemberExpression[object.name='process'][property.name='env']",
+        message:
+          'la configuration entre par src/config/env.ts : une lecture directe contourne la validation des secrets, le refus du prefixe UBAC_RISK_ et le filtre des litteraux decimaux.',
+      },
+      {
+        selector: [
+          "Identifier[name='process']",
+          `:not(MemberExpression[computed=false][property.name=${PROPRIETES_ADMISES}] > .object)`,
+          ...positions.map((position) => `:not(${position})`),
+        ].join(''),
+        message:
+          "mention de la globale process : alias, destructuration, acces calcule ou passage en parametre, toutes menent a env. Seuls argv, exitCode, stdout et stderr sont assumes.",
+      },
+    ],
+  });
+}
+
+const CONFIGURATION = configuration();
 
 /**
  * Les chemins de lecture de l'environnement. Les cinq premiers etaient couverts
@@ -698,36 +730,78 @@ const LECTURES_D_ENVIRONNEMENT: Sondes = {
   'propriete hors de la liste blanche': ['export const j = process.cwd();', 1],
 };
 
+/**
+ * A14 nomme quatre proprietes : quatre sondes, une par nom. Le bloc unique qui
+ * les ecrivait toutes ensemble comptait bien zero, mais il ne disait pas
+ * laquelle l'obtenait.
+ */
+const PROPRIETES_PERMISES: Readonly<Record<string, string>> = {
+  argv: 'export const n = process.argv.length;',
+  exitCode: 'export const run = (): void => {\n  process.exitCode = 1;\n};',
+  stdout: "export const run = (): void => {\n  process.stdout.write('ok');\n};",
+  stderr: "export const run = (): void => {\n  process.stderr.write('ko');\n};",
+};
+
+/**
+ * A15 annonce six positions : six sondes, une par position, et chacune n'ecrit
+ * `process` que dans la sienne. Les sondes precedentes en melaient deux —
+ * `(q: { process(): void }) => q.process()` couvrait la methode de type et la
+ * propriete lue d'un seul tenant — de sorte qu'aucune ligne du fichier ne
+ * pouvait etre lue comme la sonde de `TSMethodSignature`. L'ordre des cles suit
+ * celui de `NOM_DE_CHAMP` et le test verifie que les deux tables se
+ * correspondent nom pour nom.
+ */
+const POSITIONS_DE_CLE: Readonly<Record<string, string>> = {
+  'propriete lue': 'export const lire = (q: Record<string, number>): number | undefined => q.process;',
+  "cle d'objet": 'export const o = { process: 1 };',
+  'champ de classe': 'export class C {\n  process = 1;\n}',
+  'methode de classe': 'export class D {\n  process(): void {}\n}',
+  'champ de type': 'export interface I {\n  process: number;\n}',
+  'methode de type': 'export interface J {\n  process(): void;\n}',
+};
+
 const CONFIGURATION_PERMISE = permises({
   'loadConfig et un UbacConfig recu en parametre': [
     "import { loadConfig } from '../config/env.js';",
     "import type { UbacConfig } from '../config/env.js';",
     'export const url = (c: UbacConfig = loadConfig()) => c.secrets.databaseUrl;',
   ].join('\n'),
-  'les quatre proprietes admises : jobs/ est le point d’entree':
-    "export const run = () => {\n  process.exitCode = process.argv.length;\n  process.stdout.write('ok');\n  process.stderr.write('ko');\n};",
-  'une methode nommee process sur un autre objet':
-    'export const f = (q: { process(): void }) => q.process();',
-  'une cle nommee process': 'export const o = { process: 1 };',
-  'un champ et une methode de classe nommes process':
-    'export class C {\n  process = 1;\n\n  lire(): number {\n    return this.process;\n  }\n}',
-  'une methode de classe nommee process':
-    'export class D {\n  process(): void {}\n}',
-  'un champ de type nomme process':
-    "export interface I {\n  process: number;\n}\nexport type T = I['process'];",
+  ...PROPRIETES_PERMISES,
+  ...POSITIONS_DE_CLE,
 });
 
 describe('A13 a A18 — la configuration d’un job entre par src/config/env.ts', () => {
   it('A13 : les dix chemins de lecture de l’environnement recoivent le verdict attendu', async () => {
+    expect(Object.keys(LECTURES_D_ENVIRONNEMENT)).toHaveLength(10);
     expect(await verdicts(CONFIGURATION, LECTURES_D_ENVIRONNEMENT)).toEqual(
       attendus(LECTURES_D_ENVIRONNEMENT),
     );
   });
 
   it('A14, A15, A16 : les quatre proprietes admises, la porte, et le nom employe comme cle', async () => {
+    expect(Object.keys(PROPRIETES_PERMISES)).toHaveLength(4);
+    expect(Object.keys(POSITIONS_DE_CLE)).toEqual(Object.keys(NOM_DE_CHAMP));
     expect(await verdicts(CONFIGURATION, CONFIGURATION_PERMISE)).toEqual(
       attendus(CONFIGURATION_PERMISE),
     );
+  });
+
+  /*
+   * Une sonde qui rend zero ne prouve pas encore qu'elle sonde quelque chose :
+   * un code que le selecteur ignorerait de toute facon rendrait zero lui aussi.
+   * Chaque position est donc retiree du selecteur a son tour, et sa sonde doit
+   * alors parler — et elle seule. C'est ce qui manquait a `TSMethodSignature`,
+   * dont aucune ligne n'etablissait qu'elle servait a quelque chose.
+   */
+  it('A15 : chacune des six positions porte sa sonde, et aucune autre', async () => {
+    for (const [nom, code] of Object.entries(POSITIONS_DE_CLE)) {
+      const mutant = configuration([nom]);
+      expect(await messagesDe(mutant, code), nom).toBe(1);
+
+      for (const [autre, codeAutre] of Object.entries(POSITIONS_DE_CLE)) {
+        if (autre !== nom) expect(await messagesDe(mutant, codeAutre), `${nom} / ${autre}`).toBe(0);
+      }
+    }
   });
 
   it('A17 : globalThis.process.env et global.process.env tombent sur le garde-fou de l’horloge', async () => {
@@ -871,7 +945,8 @@ const ADAPTERS_EN_TYPE = permises({
 });
 
 describe('A20, A21 — les adapters n’entrent dans la reconciliation que par leurs types', () => {
-  it('A20, L8 : les huit formes qui font entrer la valeur recoivent le verdict attendu', async () => {
+  it('A20, L8 : les sept formes de valeur et le faux positif recoivent le verdict attendu', async () => {
+    expect(Object.keys(ADAPTERS_EN_VALEUR)).toHaveLength(8);
     expect(await verdicts(IMPORTS_DE_VALEUR, ADAPTERS_EN_VALEUR)).toEqual(
       attendus(ADAPTERS_EN_VALEUR),
     );
@@ -906,6 +981,7 @@ describe('A3, A4 — la portee du glob, et un gardien qu’on n’eteint pas', (
    * facon, et il ne lit que `src/jobs/`.
    */
   it('A3 : les cinq gardiens lisent le meme glob, non vide, et rien hors de src/jobs/', async () => {
+    expect(LES_CINQ).toHaveLength(5);
     for (const [nom, eslint] of LES_CINQ) {
       const fichiers = lus(await eslint.lintFiles([JOBS]));
       expect(fichiers, nom).toContain(RECONCILE);
@@ -946,6 +1022,7 @@ describe('A3, A4 — la portee du glob, et un gardien qu’on n’eteint pas', (
         "/* eslint-disable */\nimport { openDatabase } from '../adapters/db.js';\nexport const x = openDatabase;",
       ],
     ];
+    expect(desarmes.map(([nom]) => nom)).toEqual(LES_CINQ.map(([nom]) => nom));
     for (const [nom, eslint, code] of desarmes) {
       expect(await messagesDe(eslint, code), nom).toBe(2);
     }
