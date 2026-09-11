@@ -1,0 +1,29 @@
+{
+  "accounts": [
+    {
+      "uuid": "00000000-0000-4000-8000-000000000002",
+      "name": "Portefeuille en EUR",
+      "currency": "EUR",
+      "available_balance": {
+        "value": "0",
+        "currency": "EUR"
+      },
+      "default": false,
+      "active": true,
+      "created_at": "2026-09-11T06:33:34.714Z",
+      "updated_at": "2026-09-11T06:33:34.742349Z",
+      "deleted_at": null,
+      "type": "ACCOUNT_TYPE_FIAT",
+      "ready": true,
+      "hold": {
+        "value": "0",
+        "currency": "EUR"
+      },
+      "retail_portfolio_id": "00000000-0000-4000-8000-000000000001",
+      "platform": "ACCOUNT_PLATFORM_CONSUMER"
+    }
+  ],
+  "has_next": false,
+  "cursor": "",
+  "size": 1
+}
