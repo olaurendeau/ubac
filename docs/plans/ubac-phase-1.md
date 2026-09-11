@@ -155,6 +155,43 @@ garde-fou livré, le constructeur applique la mutation qu'il est censé attraper
 constate l'échec, restaure, et rapporte ce qu'il a observé. La revue vérifie
 cette preuve au lieu de la produire.
 
+### Seconde correction : auditer ses affirmations avant de chercher des trous
+
+Le lot Q4a-bis a coûté **six cycles de revue** pour un fichier de test de 232
+lignes devenu 1 163. Chaque cycle a trouvé quelque chose de réel — quatre
+contournements, dont un donnait accès à `randomUUID` depuis un job, et sept
+affirmations fausses ou jamais vérifiées. Rien n'a été gaspillé, mais l'ordre
+était mauvais.
+
+Les trois premiers cycles cherchaient des contournements par ingéniosité. Les
+trois derniers ont audité les affirmations du fichier, une par une puis variante
+par variante. **L'audit a trouvé davantage, et des choses que l'ingéniosité ne
+pouvait pas atteindre** : on cherche les trous auxquels on pense, on découvre en
+auditant ce qu'on croyait acquis.
+
+Règle retenue pour tout garde-fou livré, quel qu'il soit :
+
+1. Le constructeur énumère chaque affirmation que son garde-fou porte — en
+   commentaire, en documentation, en nom de test.
+2. Pour chaque affirmation, il énumère les **variantes** annoncées : chaque
+   forme, chaque position, chaque orthographe.
+3. **Une sonde par variante**, pas une sonde par affirmation. Une affirmation
+   qui annonce trois formes et n'en éprouve qu'une est fausse aux deux tiers.
+4. Ce qui ne tient pas est soit fermé, soit **retiré de l'affirmation** et versé
+   aux limites déclarées. Une promesse plus modeste et entièrement vraie vaut
+   mieux qu'une promesse ambitieuse partiellement vérifiée.
+5. Les comptes cités par une documentation sont assertés sur la table qu'ils
+   décrivent, pour qu'un chiffre ne puisse pas diverger en silence.
+6. Le rapport porte le tableau affirmation / variantes / sondes / résultat. La
+   revue le vérifie au lieu de le reconstituer.
+
+Corollaire sur l'arrêt : un garde-fou statique est contournable par
+construction, et ce dépôt l'écrit déjà pour la couche risque et pour la
+frontière de phase. Une fois les affirmations vraies et les limites déclarées,
+**une forme de contournement supplémentaire dans une classe déjà déclarée n'est
+plus un motif de refus** : elle s'ajoute aux limites écrites. Sans cette borne,
+un fichier de garde-fou absorbe des cycles indéfiniment.
+
 ## Lots
 
 ### Q1 — Frontières de phase 1 et configuration validée
