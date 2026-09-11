@@ -102,6 +102,59 @@ le dépôt**, pas une question ouverte. Laisser la configuration de phase 1 lire
 15 % rendrait la production plus permissive que ce que la phase 0 a validé et
 testé, sans qu'aucun test n'échoue.
 
+## Révision des estimations, 2026-09-11
+
+Les vagues 1 et 2 sont intégrées. Les estimations initiales se sont trompées
+d'un facteur 2 à 3, systématiquement et dans le même sens :
+
+| Lot | Estimé | Réel | Livré en |
+|---|---:|---:|---|
+| Q1 | ~450 | 1 440 | 2 PR |
+| Q2 | ~700 | 1 534 | 2 PR |
+| Q3 | ~750 | 1 653 | 3 PR |
+
+L'écart ne porte pas sur le code métier mais sur ce qu'exige une **frontière
+externe** : les tests qui figent le comportement d'une bibliothèque tierce, les
+fixtures capturées, et la documentation de ce qui est garanti et de ce qui ne
+l'est pas. Ce sont ces trois postes qui doublent le volume, et aucun n'est
+superflu — le redécoupage a d'ailleurs révélé deux défauts réels qu'une PR
+unique aurait masqués.
+
+Estimations révisées pour les lots restants, avec le découpage anticipé plutôt
+que subi :
+
+| Lot | Estimé révisé | Découpage prévu |
+|---|---:|---|
+| Q4 | ~1 800 | réconciliation, puis run quotidien |
+| Q5 | ~1 400 | rendu du rapport, puis envoi Brevo |
+| Q6 | ~1 200 | alertes, puis healthcheck et seuil de drawdown |
+| Q7 | ~800 | une seule PR |
+
+Le coordinateur découpe **avant** le dispatch. Un lot redécoupé en cours de
+route coûte un cycle de reconstruction au worker.
+
+## Leçon de méthode, à appliquer aux lots restants
+
+Trois défauts réels ont été attrapés en revue sur ce projet, tous du même
+motif : **un test qui passerait aussi sur une implémentation fausse**.
+
+- phase 0, P2 — la somme des jambes ignorait la valeur absolue ; le test ne
+  distinguait pas les deux implémentations ;
+- phase 0, P7 — les tests du rejeu vérifiaient la forme des six séries, jamais
+  leurs valeurs ; remplacer une métrique par une constante ne cassait rien ;
+- phase 1, Q3c — aucun prix de la capture n'était décimalement sensible ; la
+  conversion par flottant passait quatorze tests sur quatorze.
+
+Les trois ont été trouvés en revue, aucun n'a été évité à la construction. Les
+consignes de revue exigeaient la preuve par mutation ; les consignes de
+construction se contentaient de demander que les tests « mordent ».
+
+**Correction de méthode : la preuve par mutation est désormais exigée dans le
+rapport du constructeur**, pas seulement dans celui du relecteur. Pour chaque
+garde-fou livré, le constructeur applique la mutation qu'il est censé attraper,
+constate l'échec, restaure, et rapporte ce qu'il a observé. La revue vérifie
+cette preuve au lieu de la produire.
+
 ## Lots
 
 ### Q1 — Frontières de phase 1 et configuration validée
