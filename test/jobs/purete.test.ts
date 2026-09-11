@@ -35,14 +35,17 @@ import { describe, expect, it } from 'vitest';
  *    `performance`, `globalThis` et `global`. Les deux dernieres n'ont rien a
  *    voir avec le temps : elles sont refusees parce qu'elles rouvrent nommement
  *    tout ce que les autres regles ferment.
- * 2. **Les modules refuses** — `node:process`, `node:crypto` hors `createHash`,
- *    `node:perf_hooks` — par **toute** forme d'import plutot que par une liste
+ * 2. **Les modules refuses** — `process`, `crypto` hors `createHash`,
+ *    `perf_hooks` — par **toute** forme d'import plutot que par une liste
  *    de formes : nomme, renomme, par defaut, namespace, effet de bord,
  *    `export … from`, `export *`, `import x = require(…)` et `import(…)`, avec
- *    ou sans le prefixe `node:`. S'y ajoutent le specificateur prefixe ecrit
- *    ailleurs qu'en tete de fichier — `createRequire(…)('node:process')`, une
- *    table de resolution — et l'import dynamique dont le specificateur est
- *    calcule, qu'aucun controle de nom ne peut lire.
+ *    ou sans le prefixe `node:`. S'y ajoute le nom ecrit **ailleurs qu'en
+ *    position d'import** — `createRequire(…)('process')`, une table de
+ *    resolution — la aussi avec ou sans le prefixe : dans `src/jobs/`, ces trois
+ *    noms ne s'ecrivent pas comme chaine litterale, et le mot employe comme
+ *    donnee tombe avec eux, faux positif assume et constate par un test. S'y
+ *    ajoute enfin l'import dynamique dont le specificateur est calcule, qu'aucun
+ *    controle de nom ne peut lire.
  * 3. **La configuration** : `process.env`, et **toute autre mention du nom
  *    `process` comme valeur** — `const p = process`, `p = process`,
  *    `const { env } = process`, `process['env']`, `lire(process)`,
@@ -78,6 +81,12 @@ import { describe, expect, it } from 'vitest';
  *   3, qui juge le nom et pas la provenance ; le cas ou il est renomme, non ;
  * - **l'indirection par une dependance** : un paquet qui lit l'environnement ou
  *   l'horloge pour son compte, en dehors de tout code du depot ;
+ * - **le specificateur assemble hors position d'import** :
+ *   `createRequire(…)('proc' + 'ess')`, `createRequire(…)(nom)`. Le filet de
+ *   chaines lit un litteral ; il ne concatene pas et ne resout pas une variable.
+ *   `import(…)` est le seul endroit ou le specificateur cesse d'etre litteral et
+ *   ou la forme entiere reste refusable, parce qu'elle est reconnaissable ; un
+ *   appel quelconque ne l'est pas ;
  * - **les autres builtins Node** : `node:fs` sait lire un `.env`,
  *   `node:child_process` transmettre un environnement, `node:os` decrire la
  *   machine. Seuls les trois modules nommes plus haut sont refuses ;
@@ -246,15 +255,26 @@ describe('src/jobs/ n’a ni horloge propre ni aleatoire', () => {
  * - `import(`node:${x}`)`, `import('node:' + 'process')`, `import(m)` : le
  *   specificateur n'est plus un litteral, donc plus aucun controle de nom ne
  *   peut le lire. La forme entiere est refusee, pas son contenu ;
- * - `createRequire(import.meta.url)('node:process')` et toute autre route qui
- *   ecrit le specificateur ailleurs qu'en tete de fichier : le filet attrape la
- *   chaine `node:…` ou qu'elle se trouve, sauf en position de source d'import,
- *   deja jugee plus haut.
+ * - `createRequire(import.meta.url)('process')` et toute autre route qui ecrit
+ *   le specificateur ailleurs qu'en position d'import : le filet attrape les
+ *   trois noms, prefixes ou nus, ou que la chaine se trouve — sauf en position de
+ *   source d'import, deja jugee plus haut, pour qu'un import ne rende pas deux
+ *   messages pour une faute.
  *
- * Ce dernier filet ne reconnait que la forme prefixee. `createRequire(…)('crypto')`
- * lui echappe, et c'est delibere : refuser la chaine `'crypto'` partout ferait
- * mordre la regle sur le mot employe comme donnee. Le prefixe `node:`, lui, n'a
- * qu'un seul usage possible.
+ * ### Le nom nu, et son prix paye expres
+ *
+ * Ce dernier filet a d'abord ete borne au prefixe, pour ne pas faire mordre la
+ * regle sur le mot employe comme donnee — `export const s = 'crypto'`. La borne
+ * se defendait, mais elle laissait `createRequire(…)('process')` charger le
+ * module alors que l'entete promettait « avec ou sans prefixe ». Entre resserrer
+ * la promesse et fermer le trou, c'est le trou qui est ferme : un garde-fou dont
+ * on surestime la portee est pire qu'un garde-fou absent.
+ *
+ * Le faux positif est donc assume, et constate par une sonde plutot que passe
+ * sous silence. Il coute peu : il est bruyant au lint, il se contourne en
+ * nommant la donnee autrement, `src/jobs/` n'ecrit aujourd'hui aucun de ces
+ * trois mots, et le mot reste libre partout ailleurs dans le depot — ce fichier
+ * ne linte que ce glob.
  *
  * `createHash` reste admis, pour la meme raison que dans core : le hachage est
  * une fonction pure, et il sert au client_order_id deterministe.
@@ -293,7 +313,7 @@ const MODULES = gardien({
     },
     {
       selector: [
-        "Literal[value=/^node:(process|crypto|perf_hooks)$/]",
+        "Literal[value=/^(node:)?(process|crypto|perf_hooks)$/]",
         ':not(ImportDeclaration > .source)',
         ':not(ImportExpression > .source)',
         ':not(ExportNamedDeclaration > .source)',
@@ -301,7 +321,7 @@ const MODULES = gardien({
         ':not(TSExternalModuleReference > .expression)',
       ].join(''),
       message:
-        "specificateur d'un module refuse, hors position d'import : createRequire et les tables de resolution chargent le module sans qu'aucune declaration d'import ne le dise.",
+        "nom d'un module refuse, prefixe ou non, hors position d'import : createRequire et les tables de resolution chargent le module sans qu'aucune declaration d'import ne le dise. Le mot employe comme donnee tombe avec : nommer la donnee autrement.",
     },
   ],
 });
@@ -324,20 +344,29 @@ const FORMES_D_IMPORT: Sondes = {
   'reexport en namespace': ["export * as p from 'node:process';", 1],
   'import egale require': ["import p = require('node:process');\nexport const a = p;", 1],
   dynamique: ["export const p = await import('node:process');", 1],
+  /*
+   * Trois specificateurs qui ne sont plus litteraux, trois comptes voulus. Le
+   * gabarit n'ecrit aucun litteral de chaine au sens de l'AST : seul le filet
+   * des specificateurs calcules parle. Les deux autres ecrivent le nom en clair
+   * quelque part, et le filet de chaines le lit aussi : deux defauts distincts,
+   * donc deux messages.
+   */
   'dynamique en gabarit': ['export const p = await import(`node:process`);', 1],
-  'dynamique concatene': ["export const p = await import('node:' + 'process');", 1],
-  // Deux filets parlent : la chaine en clair, et l'import dont le specificateur
-  // ne se lit plus a la compilation. Les deux sont des defauts distincts.
+  'dynamique concatene': ["export const p = await import('node:' + 'process');", 2],
   'dynamique par variable': ["const m = 'node:process';\nexport const p = await import(m);", 2],
-  createRequire: [
-    "import { createRequire } from 'node:module';\nexport const p = createRequire(import.meta.url)('node:process');",
-    1,
-  ],
   'node:crypto nomme': ["import { randomUUID } from 'node:crypto';\nexport const a = randomUUID();", 1],
   'node:crypto namespace': ["import * as c from 'node:crypto';\nexport const a = c.randomBytes(8);", 1],
   'node:crypto dynamique': ["export const c = await import('node:crypto');", 1],
+  'crypto sans le prefixe node:': [
+    "import { randomUUID } from 'crypto';\nexport const a = randomUUID();",
+    1,
+  ],
   'node:perf_hooks': [
     "import { performance as p } from 'node:perf_hooks';\nexport const a = p.now();",
+    1,
+  ],
+  'perf_hooks sans le prefixe node:': [
+    "import { performance as p } from 'perf_hooks';\nexport const a = p.now();",
     1,
   ],
 };
@@ -345,16 +374,54 @@ const FORMES_D_IMPORT: Sondes = {
 const IMPORTS_PERMIS = permises({
   'createHash, parce que le hachage est pur':
     "import { createHash } from 'node:crypto';\nexport const a = createHash('sha256');",
+  'createHash sans le prefixe node:, meme raison':
+    "import { createHash } from 'crypto';\nexport const a = createHash('sha256');",
   'la porte de configuration':
     "import { loadConfig } from '../config/env.js';\nexport const c = loadConfig();",
   'un adapter en type': "import type { UbacDatabase } from '../adapters/db.js';\nexport type X = UbacDatabase;",
   'un import dynamique a specificateur litteral': "export const a = await import('../adapters/db.js');",
-  'le mot crypto employe comme donnee': "export const s = 'crypto';",
 });
+
+/** L'entete d'un module qui se procure `require` : la route la plus courte. */
+const EXIGER = [
+  "import { createRequire } from 'node:module';",
+  'const exiger = createRequire(import.meta.url);',
+  '',
+].join('\n');
+
+/**
+ * Le nom d'un module refuse, ecrit ailleurs qu'en position d'import. Les six
+ * premieres lignes sont la mutation qui compte : les trois modules, chacun avec
+ * et sans le prefixe. Rendre au selecteur sa borne `^node:` fait passer les trois
+ * lignes nues a zero et les trois prefixees restent a un, ce qui est exactement
+ * le trou qu'une revue a trouve ; la table nomme lesquelles.
+ *
+ * La table de resolution est la pour dire que le filet ne connait pas
+ * `createRequire` et n'a pas a le connaitre : il juge la chaine, pas l'appel.
+ * Toute autre route qui ecrit le nom en clair tombe de la meme facon.
+ *
+ * La derniere ligne est le prix de cette portee, constate plutot que promis.
+ */
+const SPECIFICATEURS_HORS_IMPORT: Sondes = {
+  'createRequire node:process': [`${EXIGER}export const p = exiger('node:process');`, 1],
+  'createRequire process': [`${EXIGER}export const p = exiger('process');`, 1],
+  'createRequire node:crypto': [`${EXIGER}export const c = exiger('node:crypto');`, 1],
+  'createRequire crypto': [`${EXIGER}export const c = exiger('crypto');`, 1],
+  'createRequire node:perf_hooks': [`${EXIGER}export const h = exiger('node:perf_hooks');`, 1],
+  'createRequire perf_hooks': [`${EXIGER}export const h = exiger('perf_hooks');`, 1],
+  'table de resolution': ["const TABLE = { p: 'process' } as const;\nexport const nom = TABLE.p;", 1],
+  'le mot employe comme donnee, faux positif assume': ["export const s = 'crypto';", 1],
+};
 
 describe('un module refuse n’entre par aucune forme d’import', () => {
   it('les vingt formes recoivent le verdict attendu', async () => {
     expect(await verdicts(MODULES, FORMES_D_IMPORT)).toEqual(attendus(FORMES_D_IMPORT));
+  });
+
+  it('le nom hors position d’import tombe, avec et sans prefixe, pour les trois modules', async () => {
+    expect(await verdicts(MODULES, SPECIFICATEURS_HORS_IMPORT)).toEqual(
+      attendus(SPECIFICATEURS_HORS_IMPORT),
+    );
   });
 
   it('ce qui est legitime passe : createHash, la porte de configuration, les types', async () => {
@@ -362,18 +429,20 @@ describe('un module refuse n’entre par aucune forme d’import', () => {
   });
 
   /*
-   * Une limite declaree qu'aucun test ne constate est une promesse. Celle-ci
-   * est verifiee : hors position d'import, le filet ne reconnait que la forme
-   * prefixee, parce que refuser la chaine `'crypto'` partout ferait mordre la
-   * regle sur le mot employe comme donnee. Si un jour le filet est elargi, ce
-   * test devient rouge, et c'est le signal attendu.
+   * Une limite declaree qu'aucun test ne constate est une promesse. Celle qui
+   * reste apres ce tour est que le filet lit un **litteral** : il ne concatene
+   * pas, et il ne resout pas une variable. `import(…)` est le seul endroit ou le
+   * specificateur calcule est refuse en bloc, parce que la forme entiere y est
+   * reconnaissable ; un appel quelconque ne l'est pas, et refuser tout appel a
+   * argument calcule refuserait la moitie du langage. Si un jour l'une de ces
+   * deux formes se ferme, ce test devient rouge, et c'est le signal attendu.
    */
-  it('la limite du filet de chaines est constatee : sans prefixe node:, il ne voit rien', async () => {
-    const code = [
-      "import { createRequire } from 'node:module';",
-      "export const p = createRequire(import.meta.url)('crypto');",
-    ].join('\n');
-    expect(await messagesDe(MODULES, code)).toBe(0);
+  it('la limite qui reste est constatee : hors import, le filet lit un litteral et rien de plus', async () => {
+    const assemble = `${EXIGER}export const p = exiger('proc' + 'ess');`;
+    expect(await messagesDe(MODULES, assemble)).toBe(0);
+
+    const resolu = `${EXIGER}export const lire = (nom: string) => exiger(nom);`;
+    expect(await messagesDe(MODULES, resolu)).toBe(0);
   });
 
   it('aucun module de jobs/ n’importe process, crypto ni perf_hooks', async () => {
