@@ -45,20 +45,44 @@ cette ambiguïté est une raison de plus de ne pas y toucher.
 
 ## Procédure
 
-### 1. Créer le portefeuille dédié
+### 0. Ne pas se tromper de produit
 
-Dans l'application Coinbase, section Advanced Trade, créer un **nouveau
-portefeuille** distinct du portefeuille principal. Lui donner un nom explicite,
-`ubac-agent` par exemple, pour qu'aucune manipulation ultérieure ne se trompe de
-cible.
+Le vocabulaire de Coinbase prête à confusion et l'erreur coûte du temps.
 
-Ne rien y transférer pour l'instant. La phase 1 lit un portefeuille, même vide
-ou faiblement doté ; l'approvisionnement est une décision distincte, à prendre
+| | |
+|---|---|
+| Ce qu'il faut | un **portfolio** Coinbase Advanced, sous-division du compte d'échange |
+| Ce qu'il ne faut pas | la **Base app**, ex-Coinbase Wallet : portefeuille auto-dépositaire on-chain |
+
+Une clé CDP se scope à un *portfolio* Advanced Trade. Elle ne peut pas se
+rattacher à la Base app, qui relève d'un tout autre produit. Le mot
+« portefeuille » employé ailleurs dans cette note désigne toujours un portfolio
+Advanced Trade.
+
+### 1. Créer le portfolio dédié
+
+**Sur le web uniquement.** La création de portfolio n'est pas disponible dans
+l'application mobile — c'est la seule étape de cette procédure qui ne peut pas
+se faire depuis le téléphone.
+
+```
+coinbase.com  →  Advanced  →  page Portfolio  →  Create portfolio
+```
+
+Lui donner un nom explicite, `ubac-agent` par exemple, pour qu'aucune
+manipulation ultérieure ne se trompe de cible. Le compte en autorise jusqu'à 25.
+
+Ne rien y transférer pour l'instant. La phase 1 lit un portfolio, même vide ou
+faiblement doté ; l'approvisionnement est une décision distincte, à prendre
 avant la phase 3.
+
+À savoir pour ce moment-là : **un portfolio ne s'approvisionne pas
+directement**. Les fonds viennent d'un virement depuis le Primary ou depuis un
+autre portfolio, instantané et gratuit.
 
 ### 2. Créer la clé API scopée dessus
 
-Dans le **CDP Portal**, section API Keys, créer une clé :
+Toujours sur le web, dans le **CDP Portal**, section API Keys, créer une clé :
 
 - lui donner un nom explicite, `ubac-phase-1-readonly` par exemple ;
 - dans les réglages avancés, section *Coinbase App & Advanced Trade*,
@@ -123,3 +147,4 @@ D4 et débloque Q3.
 - [Advanced Trade Portfolios](https://docs.cdp.coinbase.com/coinbase-app/advanced-trade-apis/guides/portfolios) — scoping d'une clé à un portefeuille.
 - [Get API Key Permissions](https://docs.cdp.coinbase.com/api-reference/advanced-trade-api/rest-api/data-api/get-api-key-permissions) — `can_view`, `can_trade`, `can_transfer`, `portfolio_uuid`.
 - [Welcome to Advanced Trade API](https://docs.cdp.coinbase.com/coinbase-app/advanced-trade-apis/overview) — vue d'ensemble et authentification.
+- [Multiple portfolios](https://help.coinbase.com/en/coinbase/trading-and-funding/advanced-trade/multiple-portfolios) — création sur le web uniquement, limite de 25, approvisionnement par virement interne.
