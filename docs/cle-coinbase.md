@@ -131,6 +131,52 @@ pas une preuve ; la permission effective en est une.
 Reporter le résultat de ce contrôle dans Orca : c'est lui qui clôt la décision
 D4 et débloque Q3.
 
+### Résultat du contrôle, 2026-09-11
+
+Clé vérifiée, décision D4 close.
+
+```
+HTTP 200
+can_view       : true
+can_trade      : false
+can_transfer   : false
+portfolio_uuid : 04f1112e-…
+portfolio_type : CONSUMER
+```
+
+Le portfolio `04f1112e-…` porte le nom `ubac-agent`. Un second portfolio
+`Default` de type `DEFAULT` existe sur le compte et la clé n'y a **pas** accès :
+la séparation visée est effective.
+
+`portfolio_type: CONSUMER` n'est pas une anomalie. Il désigne un portfolio créé
+depuis le compte particulier, par opposition au `DEFAULT` d'Advanced Trade. Ce
+qui compte est l'UUID, pas le type.
+
+## Deux pièges d'implémentation, constatés à la vérification
+
+Ils valent pour tout code qui parlera à cette API, et coûtent des heures à qui
+les découvre seul.
+
+**1. Le claim `uri` du JWT ne doit pas contenir la chaîne de requête.**
+Mesuré sur le même appel, au même instant :
+
+```
+uri = "GET api.coinbase.com/api/v3/brokerage/products/BTC-USDC/candles?start=…"   -> 401
+uri = "GET api.coinbase.com/api/v3/brokerage/products/BTC-USDC/candles"           -> 200
+```
+
+L'erreur se présente comme un `401 Unauthorized`, donc comme un problème
+d'identifiants, alors que la clé et la signature sont parfaitement valides. Tout
+appel paramétré échoue, tout appel sans paramètre passe : de quoi conclure à
+tort que la clé a des permissions partielles.
+
+**2. La clé est au format Ed25519, pas ECDSA/PEM.**
+L'identifiant est un UUID de 36 caractères, et non la forme
+`organizations/…/apiKeys/…` que documentent beaucoup d'exemples. Le secret est
+un base64 de 88 caractères, soit 64 octets — graine de 32 octets suivie de la
+clé publique — et non un bloc PEM. L'algorithme du JWT est `EdDSA`, pas `ES256`.
+Une bibliothèque ou un exemple qui suppose le format PEM échouera sur cette clé.
+
 ## Ce qui reste à décider plus tard
 
 - **Approvisionnement du portefeuille.** Rien n'est exigé en phase 1. Le montant
