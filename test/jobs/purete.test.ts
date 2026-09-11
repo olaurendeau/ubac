@@ -21,76 +21,138 @@ import { describe, expect, it } from 'vitest';
  *
  * Le controle passe par ESLint sur l'AST, pas par une recherche de texte : un
  * motif textuel se declenche sur un commentaire qui **decrit** l'interdit, ce
- * qui apprend a ne plus le documenter. Chaque regle est accompagnee d'un
- * contre-exemple qui doit la faire mordre : une regle branchee sur un selecteur
- * faux rendrait tous les verdicts verts.
+ * qui apprend a ne plus le documenter.
  *
- * ## Ce que ces garde-fous attrapent, et sous quelles formes
+ * ## Comment lire ce fichier
  *
- * Cinq gardiens lintent le meme glob, `src/jobs`, chacun avec ses propres
- * regles : ce que l'un refuse est refuse.
+ * Quatre revues ont trouve ici quatre defauts, dont deux n'etaient pas des
+ * formes oubliees mais des **ecarts entre cette entete et le comportement des
+ * selecteurs** : « toute forme d'import » quand le selecteur ne lisait
+ * qu'`ImportDeclaration`, « avec ou sans prefixe » quand le filet exigeait le
+ * prefixe. Chercher la forme suivante une par une ne termine jamais ; verifier
+ * chaque affirmation, si.
  *
- * 1. **L'horloge et l'aleatoire** : `Date.now()`, `new Date()` sans argument,
- *    `Math.random()`, l'acces calcule `Date['now']()`, et les globales `crypto`,
- *    `performance`, `globalThis` et `global`. Les deux dernieres n'ont rien a
- *    voir avec le temps : elles sont refusees parce qu'elles rouvrent nommement
- *    tout ce que les autres regles ferment.
- * 2. **Les modules refuses** — `process`, `crypto` hors `createHash`,
- *    `perf_hooks` — par **toute** forme d'import plutot que par une liste
- *    de formes : nomme, renomme, par defaut, namespace, effet de bord,
- *    `export … from`, `export *`, `import x = require(…)` et `import(…)`, avec
- *    ou sans le prefixe `node:`. S'y ajoute le nom ecrit **ailleurs qu'en
- *    position d'import** — `createRequire(…)('process')`, une table de
- *    resolution — la aussi avec ou sans le prefixe : dans `src/jobs/`, ces trois
- *    noms ne s'ecrivent pas comme chaine litterale, et le mot employe comme
- *    donnee tombe avec eux, faux positif assume et constate par un test. S'y
- *    ajoute enfin l'import dynamique dont le specificateur est calcule, qu'aucun
- *    controle de nom ne peut lire.
- * 3. **La configuration** : `process.env`, et **toute autre mention du nom
- *    `process` comme valeur** — `const p = process`, `p = process`,
- *    `const { env } = process`, `process['env']`, `lire(process)`,
- *    `(p = process) => …`, `{ p: process }`. Les seules proprietes admises sont
- *    nommees une a une : `argv`, `exitCode`, `stdout`, `stderr`.
- * 4. **La lecture des soldes** hors de `reconcile.ts`.
- * 5. **L'import de valeur d'un adapter**, qui chargerait `ccxt` et `pg`.
+ * Chaque affirmation porte donc un numero — `A1`…`A21` pour ce qui est tenu,
+ * `L1`…`L9` pour ce qui est declare ouvert — et chaque numero est cite par le
+ * test qui le met a l'epreuve. Un numero sans test est un defaut de ce fichier.
  *
- * Les points 2 et 3 sont ecrits ainsi a la suite d'une revue. Un selecteur qui
+ * Ce qui est cherche n'est pas un garde-fou parfait — un controle statique de
+ * noms est contournable par construction, et `docs/phase-1-frontieres.md` comme
+ * `test/core/risk-contract.test.ts` l'ecrivent deja pour deux autres gardiens.
+ * Ce qui est cherche, c'est que **tout ce que ce fichier affirme soit vrai**, et
+ * que tout le reste soit declare ouvert : un lecteur doit pouvoir se fier a
+ * l'entete sans la verifier.
+ *
+ * ## Le terrain
+ *
+ * - **A1** — aucune regle de purete d'`eslint.config.js` ne couvre `src/jobs/` :
+ *   elles sont posees sur `src/core/**`. Sonde : la configuration **reelle** du
+ *   depot, sur `Date.now()` et `process.env`, aux deux emplacements.
+ * - **A2** — le seul garde-fou que la configuration du depot applique a
+ *   `src/jobs/` porte sur les noms d'ecriture d'ordre. Meme sonde.
+ * - **A3** — les cinq gardiens de ce fichier lintent le glob
+ *   `src/jobs/**\/*.ts`, et ce glob designe aujourd'hui au moins un fichier.
+ *   Sans cette derniere moitie, chaque verdict « aucun fautif » serait vrai par
+ *   vacuite : c'est la sonde qui separe « rien a signaler » de « rien de lu ».
+ * - **A4** — un `eslint-disable` ecrit dans le fichier surveille n'eteint aucun
+ *   de ces gardiens.
+ *
+ * ## Ce que les cinq gardiens attrapent
+ *
+ * Cinq gardiens lintent le meme glob, chacun avec ses propres regles : ce que
+ * l'un refuse est refuse.
+ *
+ * - **A5** — l'horloge, l'aleatoire et les globales tombent sous neuf formes
+ *   nommees une a une : `Date.now()`, `new Date()` sans argument,
+ *   `Math.random()`, `Date['now']()`, `Math['random']()`, et les globales
+ *   `crypto`, `performance`, `globalThis` et `global`. Les deux dernieres n'ont
+ *   rien a voir avec le temps : elles sont refusees parce qu'elles rouvrent
+ *   nommement tout ce que les autres regles ferment.
+ * - **A6** — `new Date(valeur)` reste permis : l'horloge est injectee, pas bannie.
+ * - **A7** — aucun module de `src/jobs/` ne prononce l'une des neuf formes.
+ * - **A8** — les trois modules refuses — `process`, `crypto`, `perf_hooks` —
+ *   tombent sous **onze** formes d'import, avec et sans le prefixe `node:` :
+ *   le produit complet, soixante-six cellules, une par cellule. Nomme, renomme,
+ *   par defaut, namespace, effet de bord, **en type**, `export … from`,
+ *   `export *`, `export * as`, `import x = require(…)`, `import(…)`.
+ * - **A9** — de `crypto`, seul `createHash` passe, nomme comme renomme comme
+ *   reexporte, avec ou sans prefixe : le hachage est pur, et il sert au
+ *   client_order_id deterministe.
+ * - **A10** — le nom d'un module refuse ecrit **ailleurs qu'en position
+ *   d'import** tombe, prefixe ou nu, pour les trois modules :
+ *   `createRequire(…)('process')`, une table de resolution. Dans `src/jobs/`,
+ *   ces trois noms ne s'ecrivent pas comme chaine litterale.
+ * - **A11** — un import dynamique dont le specificateur n'est plus un litteral
+ *   tombe **en bloc**, quel que soit le module vise : aucun controle de nom ne
+ *   peut lire ce qui sera charge.
+ * - **A12** — aucun module de `src/jobs/` n'importe ni ne nomme ces trois modules.
+ * - **A13** — dix chemins de lecture de l'environnement tombent : `process.env`,
+ *   et **toute autre mention du nom `process` comme valeur** — `const p =
+ *   process`, `p = process`, `const { env } = process`, `process['env']`,
+ *   `lire(process)`, `(p = process) => …`, `{ p: process }`.
+ * - **A14** — quatre proprietes sont admises et nommees une a une : `argv`,
+ *   `exitCode`, `stdout`, `stderr`. Toute autre tombe.
+ * - **A15** — un champ nomme `process` sur un autre objet reste permis, dans
+ *   les six positions ou le nom est une cle et non la globale.
+ * - **A16** — la porte `src/config/env.ts` reste ouverte.
+ * - **A17** — `globalThis.process.env` et `global.process.env` echappent au
+ *   gardien de configuration et tombent sur celui de l'horloge.
+ * - **A18** — aucun module de `src/jobs/` ne lit l'environnement.
+ * - **A19** — `x.balances()` tombe partout, et `reconcile.ts` est le seul
+ *   fichier de `src/jobs/` ou la regle parle aujourd'hui.
+ * - **A20** — un adapter n'entre dans `src/jobs/` que par ses types : les six
+ *   formes qui en font entrer la **valeur** tombent — import, import dynamique,
+ *   effet de bord, `export … from`, `export *`, `import x = require(…)`.
+ * - **A21** — `import type` et `export type` d'un adapter passent.
+ *
+ * A8, A10 et A13 sont ecrits ainsi a la suite de revues : un selecteur qui
  * refusait `import { env } from 'node:process'` laissait passer
  * `import p from 'node:process'` puis `p.env`, et douze tests restaient verts.
- * La lecon n'est pas qu'il manquait une forme : c'est qu'enumerer les formes
- * fautives est perdant. Refuser le module quelle que soit la forme, et
- * n'autoriser du nom que trois proprietes, l'est moins.
+ * Enumerer les formes fautives est perdant ; refuser le module quelle que soit
+ * la forme, n'admettre du nom que quatre proprietes, et **sonder le produit
+ * complet** plutot qu'un echantillon, l'est moins.
  *
- * ## Ce qu'ils ne peuvent pas attraper
+ * ## Ce qu'ils ne peuvent pas attraper, et qui est constate
  *
- * Meme honnetete que `docs/phase-1-frontieres.md` pour le garde-fou d'ecriture
- * d'ordre, qui ecrit noir sur blanc que le nom de methode calcule lui echappe,
- * et que `test/core/risk-contract.test.ts` pour sa recherche de chaines. Des
- * categories, donc, et surtout pas une liste qui se pretendrait complete :
+ * Des categories, et surtout pas une liste qui se pretendrait complete. Chacune
+ * a sa sonde : une limite declaree qu'aucun test ne constate est une promesse,
+ * et le jour ou l'une se ferme, son test devient rouge — c'est le signal.
  *
- * - **l'evaluation** : `eval('process.env.X')`, `new Function('return process')` ;
- * - **la repartition dynamique sur un objet lui-meme calcule** : `o[k][m]()`,
- *   `Reflect.get(…)`. Le seul acces calcule ferme ici est celui dont l'objet est
- *   nomme (`Date`, `Math`, `process`), qui est la forme courte, donc la forme
- *   probable ;
- * - **l'indirection par un module du depot** : un `src/partage/machin.ts` qui
- *   lit `process.env` et exporte le resultat ; le job l'importerait sans
+ * - **L1 — l'evaluation** : `eval('process.env.X')`, `new Function('return
+ *   process')`. La lecture est dans une chaine ; aucun selecteur d'AST ne la voit.
+ * - **L2 — la repartition dynamique sur un objet lui-meme calcule** : `o[k][m]()`,
+ *   `Reflect.get(…)`, et de meme `ex['balances']()` ou `const { balances } = ex`.
+ *   Le seul acces calcule ferme ici est celui dont l'objet est nomme (`Date`,
+ *   `Math`, `process`), qui est la forme courte, donc la forme probable.
+ * - **L3 — l'indirection par un module du depot** : un `src/partage/machin.ts`
+ *   qui lit `process.env` et exporte le resultat ; le job l'importerait sans
  *   prononcer aucun interdit. Ce trou n'existe que parce que le glob s'arrete a
  *   `src/jobs`. Le cas ou le nom survit au passage —
- *   `import { process } from '../partage/machin.js'` — est attrape par le point
- *   3, qui juge le nom et pas la provenance ; le cas ou il est renomme, non ;
- * - **l'indirection par une dependance** : un paquet qui lit l'environnement ou
- *   l'horloge pour son compte, en dehors de tout code du depot ;
- * - **le specificateur assemble hors position d'import** :
- *   `createRequire(…)('proc' + 'ess')`, `createRequire(…)(nom)`. Le filet de
- *   chaines lit un litteral ; il ne concatene pas et ne resout pas une variable.
- *   `import(…)` est le seul endroit ou le specificateur cesse d'etre litteral et
- *   ou la forme entiere reste refusable, parce qu'elle est reconnaissable ; un
- *   appel quelconque ne l'est pas ;
- * - **les autres builtins Node** : `node:fs` sait lire un `.env`,
+ *   `import { process } from '../partage/machin.js'` — est attrape par A13, qui
+ *   juge le nom et pas la provenance ; le cas ou il est renomme, non.
+ * - **L4 — l'indirection par une dependance** : un paquet qui lit
+ *   l'environnement ou l'horloge pour son compte, hors de tout code du depot.
+ * - **L5 — le specificateur assemble hors position d'import** :
+ *   `createRequire(…)('proc' + 'ess')`, `createRequire(…)(nom)`, et de meme
+ *   `createRequire(…)('../adapters/db.js')`. Le filet de chaines lit un
+ *   litteral ; il ne concatene pas, ne resout pas une variable, et ne connait
+ *   que les trois noms de modules refuses. `import(…)` est le seul endroit ou le
+ *   specificateur cesse d'etre litteral et ou la forme entiere reste refusable,
+ *   parce qu'elle est reconnaissable ; un appel quelconque ne l'est pas.
+ * - **L6 — les autres builtins Node** : `node:fs` sait lire un `.env`,
  *   `node:child_process` transmettre un environnement, `node:os` decrire la
- *   machine. Seuls les trois modules nommes plus haut sont refuses ;
- * - **tout ce qui vit hors de `src/jobs`**, ce fichier ne lintant que ce glob.
+ *   machine. Seuls les trois modules nommes plus haut sont refuses.
+ * - **L7 — tout ce qui vit hors de `src/jobs`**, ce fichier ne lintant que ce glob.
+ * - **L8 — deux faux positifs assumes**, constates plutot que passes sous
+ *   silence : le mot employe comme donnee (`const s = 'crypto'`) tombe avec le
+ *   nom de module, et le specificateur de type ecrit en ligne
+ *   (`import { type X } from '../adapters/db.js'`) tombe comme un import de
+ *   valeur. Les deux se contournent en une reecriture : nommer la donnee
+ *   autrement, ecrire `import type`, qui est deja la convention du depot.
+ * - **L9 — une portee plus large que promise, assumee** : un import de **type**
+ *   depuis l'un des trois modules refuses tombe aussi, alors qu'il est efface a
+ *   la compilation. Ce n'est pas une fuite ; c'est que ces trois noms n'ont rien
+ *   a faire dans `src/jobs/`, meme en position de type.
  *
  * ## Ce que vaut ce controle
  *
@@ -131,8 +193,13 @@ function fautifs(results: readonly ESLint.LintResult[]): string[] {
     .sort();
 }
 
-async function messagesDe(eslint: ESLint, code: string): Promise<number> {
-  const [result] = await eslint.lintText(code, { filePath: resolve(ROOT, 'src/jobs/sonde.ts') });
+/** Les fichiers **lus**, qu'une regle y ait parle ou non : la portee du glob. */
+function lus(results: readonly ESLint.LintResult[]): string[] {
+  return results.map((r) => relative(ROOT, r.filePath)).sort();
+}
+
+async function messagesDe(eslint: ESLint, code: string, chemin = 'src/jobs/sonde.ts'): Promise<number> {
+  const [result] = await eslint.lintText(code, { filePath: resolve(ROOT, chemin) });
   return result?.messages.length ?? 0;
 }
 
@@ -146,12 +213,12 @@ type Sondes = Readonly<Record<string, readonly [code: string, messages: number]>
 
 /** Lance chaque sonde et rend, par nom, le nombre de messages obtenus. */
 async function verdicts(eslint: ESLint, sondes: Sondes): Promise<Record<string, number>> {
-  const lus = await Promise.all(
+  const lues = await Promise.all(
     Object.entries(sondes).map(
       async ([nom, [code]]) => [nom, await messagesDe(eslint, code)] as const,
     ),
   );
-  return Object.fromEntries(lus);
+  return Object.fromEntries(lues);
 }
 
 /** Les comptes attendus, lus dans la meme table : un seul endroit a tenir. */
@@ -163,6 +230,44 @@ function attendus(sondes: Sondes): Record<string, number> {
 function permises(codes: Readonly<Record<string, string>>): Sondes {
   return Object.fromEntries(Object.entries(codes).map(([nom, code]) => [nom, [code, 0]]));
 }
+
+/** Les formes qui doivent toutes rendre exactement un message. */
+function refusees(codes: Readonly<Record<string, string>>): Sondes {
+  return Object.fromEntries(Object.entries(codes).map(([nom, code]) => [nom, [code, 1]]));
+}
+
+// --- A1, A2 : le terrain, mesure sur la configuration reelle du depot --------
+
+/**
+ * La premiere phrase de cette entete est une affirmation sur un **autre**
+ * fichier : `eslint.config.js`. Elle est la raison d'etre de tout ce qui suit,
+ * et elle etait jusqu'ici la seule a n'avoir aucune sonde. Si la configuration
+ * du depot venait un jour couvrir `src/jobs/`, ce fichier ferait double emploi
+ * sans que rien ne le dise ; si elle cessait d'y appliquer le garde-fou
+ * d'ecriture d'ordre, l'entete mentirait dans l'autre sens.
+ *
+ * Ce gardien-ci n'est donc pas l'un des cinq : il ne pose aucune regle, il lit
+ * celles du depot.
+ */
+const DEPOT = new ESLint({ cwd: ROOT });
+
+describe('A1, A2 — le terrain que ce fichier declare', () => {
+  it('A1 : la configuration du depot ne garde ni l’horloge ni l’environnement dans jobs/, mais les garde dans core/', async () => {
+    const horloge = 'export const a = Date.now();';
+    const environnement = 'export const a = process.env.DATABASE_URL;';
+
+    expect(await messagesDe(DEPOT, horloge, 'src/jobs/sonde.ts')).toBe(0);
+    expect(await messagesDe(DEPOT, environnement, 'src/jobs/sonde.ts')).toBe(0);
+
+    expect(await messagesDe(DEPOT, horloge, 'src/core/sonde.ts')).toBe(1);
+    expect(await messagesDe(DEPOT, environnement, 'src/core/sonde.ts')).toBe(1);
+  });
+
+  it('A2 : le seul garde-fou que le depot applique a jobs/ porte sur les noms d’ecriture d’ordre', async () => {
+    const ordre = 'export const f = (c: Record<string, () => void>) => c.createOrder();';
+    expect(await messagesDe(DEPOT, ordre, 'src/jobs/sonde.ts')).toBe(1);
+  });
+});
 
 // --- Horloge et aleatoire ---------------------------------------------------
 
@@ -183,17 +288,13 @@ const HORLOGE = gardien({
     { name: 'crypto', message: 'randomUUID et randomBytes cassent le determinisme' },
     { name: 'performance', message: 'performance.now() est une horloge' },
     /*
-     * `globalThis` n'a pas sa place ici au titre de l'horloge : il y est parce
-     * qu'il est l'acces indirect a tout le reste. `globalThis.Date.now()` ne
-     * ressemble a aucun des selecteurs ci-dessus — l'objet de la
-     * MemberExpression y est `globalThis.Date`, pas `Date` — et
-     * `globalThis.process.env` echappe de la meme facon au garde-fou de
-     * configuration plus bas. Refuser le nom ferme les deux d'un coup, et c'est
-     * ce qu'`eslint.config.js` fait deja pour core.
-     *
-     * `global` est le meme objet sous l'autre nom, celui que Node expose depuis
-     * toujours : `global.process.env` marche exactement comme la forme
-     * precedente. Fermer une porte en laissant sa jumelle ouverte ne ferme rien.
+     * `globalThis` n'est pas ici au titre de l'horloge : il est l'acces indirect
+     * a tout le reste. `globalThis.Date.now()` ne ressemble a aucun selecteur
+     * ci-dessus — l'objet de la MemberExpression y est `globalThis.Date`, pas
+     * `Date` — et `globalThis.process.env` echappe de la meme facon au garde-fou
+     * de configuration. Refuser le nom ferme les deux d'un coup, comme
+     * `eslint.config.js` le fait deja pour core. `global` est le meme objet sous
+     * l'autre nom : fermer une porte en laissant sa jumelle ouverte ne ferme rien.
      */
     {
       name: 'globalThis',
@@ -203,29 +304,35 @@ const HORLOGE = gardien({
   ],
 });
 
-const SONDE_HORLOGE = `
-const a = Date.now();
-const b = new Date();
-const c = Math.random();
-const d = Date['now']();
-const e = crypto.randomUUID();
-const f = performance.now();
-const g = globalThis.Date.now();
-const h = global.process.env.DATABASE_URL;
-export { a, b, c, d, e, f, g, h };
-`;
+/**
+ * Les neuf formes, une par ligne et une par verdict. La version precedente
+ * lintait les huit premieres d'un bloc et comptait huit messages : un total
+ * juste peut cacher une ligne muette compensee par une ligne bavarde. La table
+ * nomme la forme qui manque.
+ */
+const FORMES_D_HORLOGE = refusees({
+  'Date.now()': 'export const a = Date.now();',
+  'new Date() sans argument': 'export const a = new Date();',
+  'Math.random()': 'export const a = Math.random();',
+  "Date['now']()": "export const a = Date['now']();",
+  "Math['random']()": "export const a = Math['random']();",
+  'la globale crypto': 'export const a = crypto.randomUUID();',
+  'la globale performance': 'export const a = performance.now();',
+  'globalThis, qui rouvre Date': 'export const a = globalThis.Date.now();',
+  'global, qui rouvre process': 'export const a = global.process.env.DATABASE_URL;',
+});
 
-describe('src/jobs/ n’a ni horloge propre ni aleatoire', () => {
-  it('la regle mord sur les huit formes, acces calcule, globalThis et global compris', async () => {
-    expect(await messagesDe(HORLOGE, SONDE_HORLOGE)).toBe(8);
+describe('A5, A6, A7 — src/jobs/ n’a ni horloge propre ni aleatoire', () => {
+  it('A5 : les neuf formes recoivent le verdict attendu, acces calcules et globales compris', async () => {
+    expect(await verdicts(HORLOGE, FORMES_D_HORLOGE)).toEqual(attendus(FORMES_D_HORLOGE));
   });
 
-  it('un horodatage recu en parametre reste permis', async () => {
+  it('A6 : un horodatage recu en parametre reste permis', async () => {
     // L'horloge est injectee, pas bannie : `new Date(valeur)` lit une donnee.
     expect(await messagesDe(HORLOGE, "export const d = new Date('2026-09-11T00:00:00Z');")).toBe(0);
   });
 
-  it('aucun module de jobs/ ne lit l’horloge, l’aleatoire ni les globales', async () => {
+  it('A7 : aucun module de jobs/ ne lit l’horloge, l’aleatoire ni les globales', async () => {
     expect(fautifs(await HORLOGE.lintFiles([JOBS]))).toEqual([]);
   });
 });
@@ -241,20 +348,26 @@ describe('src/jobs/ n’a ni horloge propre ni aleatoire', () => {
  *
  * ### Refuser le module, pas la forme
  *
- * `no-restricted-imports` juge le **specificateur**, donc toutes les formes
- * d'import d'un coup : nomme, renomme, par defaut, namespace, effet de bord,
- * `export … from`, `export *`, `import x = require(…)`. C'est ce qui distingue
- * cette regle d'un selecteur pose sur `ImportSpecifier`, qui ne voit que la
- * forme qu'on a pensee. Les deux orthographes sont listees : `node:process`
- * comme `process`, que Node resout au meme module.
+ * `no-restricted-imports` juge le **specificateur**, donc presque toutes les
+ * formes d'import d'un coup, la ou un selecteur pose sur `ImportSpecifier` ne
+ * voit que la forme qu'on a pensee. Les deux orthographes sont listees :
+ * `node:process` comme `process`, que Node resout au meme module.
  *
- * Restent trois chemins que `no-restricted-imports` ne regarde pas, fermes par
- * selecteur :
+ * Restent quatre chemins que `no-restricted-imports` ne regarde pas, fermes par
+ * selecteur. Les deux derniers sont une trouvaille du produit complet :
  *
  * - `import('node:process')` : la regle ignore l'import dynamique ;
  * - `import(`node:${x}`)`, `import('node:' + 'process')`, `import(m)` : le
  *   specificateur n'est plus un litteral, donc plus aucun controle de nom ne
  *   peut le lire. La forme entiere est refusee, pas son contenu ;
+ * - `import 'node:crypto'` et `import c = require('node:crypto')` : des qu'une
+ *   entree porte `allowImportNames`, `no-restricted-imports` cesse de parler sur
+ *   les deux formes qui ne nomment aucun import — l'effet de bord et la forme
+ *   `import =` de TypeScript. Elles sont muettes pour `crypto` alors qu'elles
+ *   mordent pour `process` et `perf_hooks`, qui n'ont pas d'exception. La
+ *   seconde est une fuite franche : elle lie le module entier, `randomUUID`
+ *   compris. Les deux selecteurs ci-dessous ne visent donc que `crypto` : les
+ *   ajouter aux trois modules rendrait deux messages pour une faute.
  * - `createRequire(import.meta.url)('process')` et toute autre route qui ecrit
  *   le specificateur ailleurs qu'en position d'import : le filet attrape les
  *   trois noms, prefixes ou nus, ou que la chaine se trouve — sauf en position de
@@ -263,23 +376,25 @@ describe('src/jobs/ n’a ni horloge propre ni aleatoire', () => {
  *
  * ### Le nom nu, et son prix paye expres
  *
- * Ce dernier filet a d'abord ete borne au prefixe, pour ne pas faire mordre la
- * regle sur le mot employe comme donnee — `export const s = 'crypto'`. La borne
- * se defendait, mais elle laissait `createRequire(…)('process')` charger le
- * module alors que l'entete promettait « avec ou sans prefixe ». Entre resserrer
- * la promesse et fermer le trou, c'est le trou qui est ferme : un garde-fou dont
- * on surestime la portee est pire qu'un garde-fou absent.
+ * Ce dernier filet a d'abord ete borne au prefixe, pour ne pas mordre sur le mot
+ * employe comme donnee — `export const s = 'crypto'`. La borne se defendait,
+ * mais elle laissait `createRequire(…)('process')` charger le module alors que
+ * l'entete promettait « avec ou sans prefixe » : un garde-fou dont on surestime
+ * la portee est pire qu'un garde-fou absent, donc c'est le trou qui est ferme.
  *
- * Le faux positif est donc assume, et constate par une sonde plutot que passe
- * sous silence. Il coute peu : il est bruyant au lint, il se contourne en
- * nommant la donnee autrement, `src/jobs/` n'ecrit aujourd'hui aucun de ces
- * trois mots, et le mot reste libre partout ailleurs dans le depot — ce fichier
- * ne linte que ce glob.
+ * Le faux positif est assume (L8) et constate par une sonde. Il coute peu : il
+ * est bruyant au lint, il se contourne en nommant la donnee autrement,
+ * `src/jobs/` n'ecrit aujourd'hui aucun de ces trois mots, et le mot reste libre
+ * partout ailleurs — ce fichier ne linte que ce glob.
  *
  * `createHash` reste admis, pour la meme raison que dans core : le hachage est
  * une fonction pure, et il sert au client_order_id deterministe.
  */
 const CRYPTO = 'node:crypto expose randomUUID et randomBytes : seul createHash est deterministe.';
+const SANS_NOM = [
+  "l'exception createHash rend no-restricted-imports muet des qu'aucun nom n'est",
+  'importe : cette forme charge node:crypto sans le dire.',
+].join(' ');
 const MODULES = gardien({
   'no-restricted-imports': [
     'error',
@@ -312,6 +427,15 @@ const MODULES = gardien({
         "import dynamique a specificateur calcule : aucun controle de nom ne peut lire ce qui sera charge.",
     },
     {
+      selector: "ImportDeclaration[specifiers.length=0][source.value=/^(node:)?crypto$/]",
+      message: `import d'effet de bord : ${SANS_NOM}`,
+    },
+    {
+      selector:
+        "TSImportEqualsDeclaration > TSExternalModuleReference > Literal[value=/^(node:)?crypto$/]",
+      message: `import = require : ${SANS_NOM} Cette forme-ci lie en plus le module entier, randomUUID compris.`,
+    },
+    {
       selector: [
         "Literal[value=/^(node:)?(process|crypto|perf_hooks)$/]",
         ':not(ImportDeclaration > .source)',
@@ -327,46 +451,67 @@ const MODULES = gardien({
 });
 
 /**
- * Les formes d'import, une par une. `import p from 'node:process'` est celle
- * que la revue a trouvee ; le namespace et l'absence de prefixe en sont les
- * variantes immediates. Le compte exact vaut mutation : supprimer une regle
- * fait passer une ligne a zero, et la table nomme laquelle.
+ * Les onze formes qui font entrer un module, pour un specificateur donne.
+ * `nom` est un export **refuse** du module vise : `env`, `randomUUID`,
+ * `performance`. La forme `en type` est incluse a dessein — L9 dit qu'elle
+ * tombe aussi, et la table le constate au lieu de le supposer.
  */
-const FORMES_D_IMPORT: Sondes = {
-  nomme: ["import { env } from 'node:process';\nexport const a = env.DATABASE_URL;", 1],
-  renomme: ["import { env as e } from 'node:process';\nexport const a = e.DATABASE_URL;", 1],
-  'par defaut': ["import p from 'node:process';\nexport const a = p.env.DATABASE_URL;", 1],
-  namespace: ["import * as p from 'node:process';\nexport const a = p.env.DATABASE_URL;", 1],
-  'effet de bord': ["import 'node:process';\nexport const a = 1;", 1],
-  'sans le prefixe node:': ["import p from 'process';\nexport const a = p.env.DATABASE_URL;", 1],
-  'reexport nomme': ["export { env } from 'node:process';", 1],
-  'reexport total': ["export * from 'node:process';", 1],
-  'reexport en namespace': ["export * as p from 'node:process';", 1],
-  'import egale require': ["import p = require('node:process');\nexport const a = p;", 1],
-  dynamique: ["export const p = await import('node:process');", 1],
-  /*
-   * Trois specificateurs qui ne sont plus litteraux, trois comptes voulus. Le
-   * gabarit n'ecrit aucun litteral de chaine au sens de l'AST : seul le filet
-   * des specificateurs calcules parle. Les deux autres ecrivent le nom en clair
-   * quelque part, et le filet de chaines le lit aussi : deux defauts distincts,
-   * donc deux messages.
-   */
+function formesDImport(spec: string, nom: string): Record<string, string> {
+  return {
+    nomme: `import { ${nom} } from '${spec}';\nexport const a = ${nom};`,
+    renomme: `import { ${nom} as x } from '${spec}';\nexport const a = x;`,
+    'par defaut': `import x from '${spec}';\nexport const a = x;`,
+    namespace: `import * as x from '${spec}';\nexport const a = x;`,
+    'effet de bord': `import '${spec}';\nexport const a = 1;`,
+    'en type': `import type { X } from '${spec}';\nexport type Y = X;`,
+    'reexport nomme': `export { ${nom} } from '${spec}';`,
+    'reexport total': `export * from '${spec}';`,
+    'reexport en namespace': `export * as x from '${spec}';`,
+    'import egale require': `import x = require('${spec}');\nexport const a = x;`,
+    dynamique: `export const a = await import('${spec}');`,
+  };
+}
+
+/** Les six specificateurs refuses, chacun avec un de ses exports interdits. */
+const SPECIFICATEURS_REFUSES: readonly (readonly [spec: string, exportRefuse: string])[] = [
+  ['process', 'env'],
+  ['node:process', 'env'],
+  ['crypto', 'randomUUID'],
+  ['node:crypto', 'randomUUID'],
+  ['perf_hooks', 'performance'],
+  ['node:perf_hooks', 'performance'],
+];
+
+/**
+ * Le produit complet : six specificateurs par onze formes, soixante-six
+ * cellules, un message attendu dans chacune. L'echantillon precedent en couvrait
+ * vingt et manquait `crypto / effet de bord` et `crypto / import egale require`,
+ * que rien ne laissait deduire des autres : c'est `allowImportNames` qui les
+ * taisait, et seul `crypto` en porte. Un echantillon ne trouve pas ce genre de
+ * creux ; un produit, si.
+ */
+const PRODUIT_COMPLET: Sondes = Object.fromEntries(
+  SPECIFICATEURS_REFUSES.flatMap(([spec, nom]) =>
+    Object.entries(formesDImport(spec, nom)).map(
+      ([forme, code]) => [`${spec} / ${forme}`, [code, 1] as const] as const,
+    ),
+  ),
+);
+
+/**
+ * Trois specificateurs qui ne sont plus litteraux, trois comptes voulus. Le
+ * gabarit n'ecrit aucun litteral de chaine au sens de l'AST : seul le filet des
+ * specificateurs calcules parle. Les deux autres ecrivent le nom en clair
+ * quelque part, et le filet de chaines le lit aussi : deux defauts distincts,
+ * donc deux messages. La derniere ligne vise un module quelconque : la forme est
+ * refusee pour elle-meme, pas pour ce qu'elle charge.
+ */
+const SPECIFICATEURS_CALCULES: Sondes = {
   'dynamique en gabarit': ['export const p = await import(`node:process`);', 1],
   'dynamique concatene': ["export const p = await import('node:' + 'process');", 2],
   'dynamique par variable': ["const m = 'node:process';\nexport const p = await import(m);", 2],
-  'node:crypto nomme': ["import { randomUUID } from 'node:crypto';\nexport const a = randomUUID();", 1],
-  'node:crypto namespace': ["import * as c from 'node:crypto';\nexport const a = c.randomBytes(8);", 1],
-  'node:crypto dynamique': ["export const c = await import('node:crypto');", 1],
-  'crypto sans le prefixe node:': [
-    "import { randomUUID } from 'crypto';\nexport const a = randomUUID();",
-    1,
-  ],
-  'node:perf_hooks': [
-    "import { performance as p } from 'node:perf_hooks';\nexport const a = p.now();",
-    1,
-  ],
-  'perf_hooks sans le prefixe node:': [
-    "import { performance as p } from 'perf_hooks';\nexport const a = p.now();",
+  'dynamique vers un module quelconque': [
+    "const m = '../partage/machin.js';\nexport const p = await import(m);",
     1,
   ],
 };
@@ -376,10 +521,13 @@ const IMPORTS_PERMIS = permises({
     "import { createHash } from 'node:crypto';\nexport const a = createHash('sha256');",
   'createHash sans le prefixe node:, meme raison':
     "import { createHash } from 'crypto';\nexport const a = createHash('sha256');",
+  'createHash renomme': "import { createHash as h } from 'node:crypto';\nexport const a = h('sha256');",
+  'createHash reexporte': "export { createHash } from 'node:crypto';",
   'la porte de configuration':
     "import { loadConfig } from '../config/env.js';\nexport const c = loadConfig();",
   'un adapter en type': "import type { UbacDatabase } from '../adapters/db.js';\nexport type X = UbacDatabase;",
-  'un import dynamique a specificateur litteral': "export const a = await import('../adapters/db.js');",
+  'un import dynamique litteral vers un module quelconque':
+    "export const a = await import('../partage/machin.js');",
 });
 
 /** L'entete d'un module qui se procure `require` : la route la plus courte. */
@@ -391,16 +539,12 @@ const EXIGER = [
 
 /**
  * Le nom d'un module refuse, ecrit ailleurs qu'en position d'import. Les six
- * premieres lignes sont la mutation qui compte : les trois modules, chacun avec
- * et sans le prefixe. Rendre au selecteur sa borne `^node:` fait passer les trois
- * lignes nues a zero et les trois prefixees restent a un, ce qui est exactement
- * le trou qu'une revue a trouve ; la table nomme lesquelles.
- *
- * La table de resolution est la pour dire que le filet ne connait pas
- * `createRequire` et n'a pas a le connaitre : il juge la chaine, pas l'appel.
- * Toute autre route qui ecrit le nom en clair tombe de la meme facon.
- *
- * La derniere ligne est le prix de cette portee, constate plutot que promis.
+ * premieres lignes sont la mutation qui compte : rendre au selecteur sa borne
+ * `^node:` fait passer les trois lignes nues a zero, ce qui est exactement le
+ * trou qu'une revue a trouve, et la table nomme lesquelles. La table de
+ * resolution dit que le filet ne connait pas `createRequire` et n'a pas a le
+ * connaitre : il juge la chaine, pas l'appel. La derniere ligne est le prix de
+ * cette portee, constate plutot que promis (L8).
  */
 const SPECIFICATEURS_HORS_IMPORT: Sondes = {
   'createRequire node:process': [`${EXIGER}export const p = exiger('node:process');`, 1],
@@ -413,39 +557,29 @@ const SPECIFICATEURS_HORS_IMPORT: Sondes = {
   'le mot employe comme donnee, faux positif assume': ["export const s = 'crypto';", 1],
 };
 
-describe('un module refuse n’entre par aucune forme d’import', () => {
-  it('les vingt formes recoivent le verdict attendu', async () => {
-    expect(await verdicts(MODULES, FORMES_D_IMPORT)).toEqual(attendus(FORMES_D_IMPORT));
+describe('A8 a A12 — un module refuse n’entre par aucune forme d’import', () => {
+  it('A8, A9, L9 : les soixante-six cellules du produit complet recoivent le verdict attendu', async () => {
+    expect(Object.keys(PRODUIT_COMPLET)).toHaveLength(66);
+    expect(await verdicts(MODULES, PRODUIT_COMPLET)).toEqual(attendus(PRODUIT_COMPLET));
   });
 
-  it('le nom hors position d’import tombe, avec et sans prefixe, pour les trois modules', async () => {
+  it('A11 : le specificateur calcule est refuse en bloc, quel que soit le module vise', async () => {
+    expect(await verdicts(MODULES, SPECIFICATEURS_CALCULES)).toEqual(
+      attendus(SPECIFICATEURS_CALCULES),
+    );
+  });
+
+  it('A10, L8 : le nom hors position d’import tombe, avec et sans prefixe, pour les trois modules', async () => {
     expect(await verdicts(MODULES, SPECIFICATEURS_HORS_IMPORT)).toEqual(
       attendus(SPECIFICATEURS_HORS_IMPORT),
     );
   });
 
-  it('ce qui est legitime passe : createHash, la porte de configuration, les types', async () => {
+  it('A9, A16 : ce qui est legitime passe — createHash, la porte de configuration, les types', async () => {
     expect(await verdicts(MODULES, IMPORTS_PERMIS)).toEqual(attendus(IMPORTS_PERMIS));
   });
 
-  /*
-   * Une limite declaree qu'aucun test ne constate est une promesse. Celle qui
-   * reste apres ce tour est que le filet lit un **litteral** : il ne concatene
-   * pas, et il ne resout pas une variable. `import(…)` est le seul endroit ou le
-   * specificateur calcule est refuse en bloc, parce que la forme entiere y est
-   * reconnaissable ; un appel quelconque ne l'est pas, et refuser tout appel a
-   * argument calcule refuserait la moitie du langage. Si un jour l'une de ces
-   * deux formes se ferme, ce test devient rouge, et c'est le signal attendu.
-   */
-  it('la limite qui reste est constatee : hors import, le filet lit un litteral et rien de plus', async () => {
-    const assemble = `${EXIGER}export const p = exiger('proc' + 'ess');`;
-    expect(await messagesDe(MODULES, assemble)).toBe(0);
-
-    const resolu = `${EXIGER}export const lire = (nom: string) => exiger(nom);`;
-    expect(await messagesDe(MODULES, resolu)).toBe(0);
-  });
-
-  it('aucun module de jobs/ n’importe process, crypto ni perf_hooks', async () => {
+  it('A12 : aucun module de jobs/ n’importe process, crypto ni perf_hooks', async () => {
     expect(fautifs(await MODULES.lintFiles([JOBS]))).toEqual([]);
   });
 });
@@ -468,7 +602,7 @@ describe('un module refuse n’entre par aucune forme d’import', () => {
  * lue, elle a une valeur, le run continue. Comme pour l'horloge, `src/jobs/`
  * vit hors du glob de purete d'`eslint.config.js`, qui interdit deja la globale
  * `process` a core ; ce fichier est le seul endroit du depot ou la regle peut
- * etre tenue pour les jobs.
+ * etre tenue pour les jobs, et A1 le constate sur la configuration reelle.
  *
  * La configuration d'un job est donc un **parametre** : il recoit un
  * `UbacConfig` deja valide, ou appelle `loadConfig`. L'import de
@@ -481,30 +615,26 @@ describe('un module refuse n’entre par aucune forme d’import', () => {
  * Le premier jet enumerait les detours : `process.env`, `process['env']`,
  * `const { env } = process`. Chaque revue en a trouve un de plus, parce qu'un
  * controle de noms attrape ce a quoi on a pense et rien d'autre. La regle est
- * donc inversee : **toute** mention du nom `process` comme valeur est refusee,
- * et trois proprietes sont nommement exemptees.
+ * donc inversee (A13) : **toute** mention du nom `process` comme valeur est
+ * refusee, et quatre proprietes sont nommement exemptees (A14).
  *
  * Le selecteur ne parle que des positions ou `process` designe la globale. Un
- * champ appele `process` sur un autre objet — `file.process`, `{ process: f }`,
- * `interface I { process: number }` — n'est pas la globale et reste permis,
- * sans quoi la regle mordrait sur un mot francais courant en anglais.
+ * champ appele `process` sur un autre objet n'est pas la globale et reste
+ * permis, sans quoi la regle mordrait sur un mot francais courant en anglais :
+ * les six positions de A15 sont sondees une a une.
  *
- * ### Portee exacte, et ce qui est laisse passer **expres**
- *
- * `process.argv`, `process.exitCode`, `process.stdout` et `process.stderr`
- * restent permis : `jobs/` est le point d'entree executable, et
- * `src/replay/report.ts` montre a quoi cela ressemble en phase 0. Ce qui passe
- * par cette exclusion n'est pas de la configuration ; le jour ou un job lirait
- * un reglage dans `process.argv`, c'est cette exclusion qu'il faudrait
- * resserrer, et elle est ecrite pour cela. Toute autre propriete —
+ * Les quatre proprietes admises le sont parce que `jobs/` est le point d'entree
+ * executable, et `src/replay/report.ts` montre a quoi cela ressemble en phase 0.
+ * Ce qui passe par cette exclusion n'est pas de la configuration ; le jour ou un
+ * job lirait un reglage dans `process.argv`, c'est cette exclusion qu'il
+ * faudrait resserrer, et elle est ecrite pour cela. Toute autre propriete —
  * `process.cwd()`, `process.uptime()` — tombe : une liste blanche s'ouvre
  * expres, un cas a la fois.
  *
  * `globalThis.process.env` et `global.process.env` echappent a ce gardien : leur
  * MemberExpression n'a pas `process` pour objet. Ils tombent sur celui de
- * l'horloge, qui refuse les deux globales. Les tests ci-dessous le disent noir
- * sur blanc plutot que de laisser croire a ce selecteur une portee qu'il n'a
- * pas.
+ * l'horloge (A17), qui refuse les deux globales — dit noir sur blanc plutot que
+ * de laisser croire a ce selecteur une portee qu'il n'a pas.
  */
 
 /** Les proprietes de `process` qu'un job a le droit de nommer. */
@@ -574,29 +704,33 @@ const CONFIGURATION_PERMISE = permises({
     "import type { UbacConfig } from '../config/env.js';",
     'export const url = (c: UbacConfig = loadConfig()) => c.secrets.databaseUrl;',
   ].join('\n'),
-  'argv, exitCode et stdout : jobs/ est le point d’entree':
-    "export const run = () => {\n  process.exitCode = process.argv.length;\n  process.stdout.write('ok');\n};",
+  'les quatre proprietes admises : jobs/ est le point d’entree':
+    "export const run = () => {\n  process.exitCode = process.argv.length;\n  process.stdout.write('ok');\n  process.stderr.write('ko');\n};",
   'une methode nommee process sur un autre objet':
     'export const f = (q: { process(): void }) => q.process();',
   'une cle nommee process': 'export const o = { process: 1 };',
+  'un champ et une methode de classe nommes process':
+    'export class C {\n  process = 1;\n\n  lire(): number {\n    return this.process;\n  }\n}',
+  'une methode de classe nommee process':
+    'export class D {\n  process(): void {}\n}',
   'un champ de type nomme process':
     "export interface I {\n  process: number;\n}\nexport type T = I['process'];",
 });
 
-describe('la configuration d’un job entre par src/config/env.ts', () => {
-  it('les dix chemins de lecture de l’environnement recoivent le verdict attendu', async () => {
+describe('A13 a A18 — la configuration d’un job entre par src/config/env.ts', () => {
+  it('A13 : les dix chemins de lecture de l’environnement recoivent le verdict attendu', async () => {
     expect(await verdicts(CONFIGURATION, LECTURES_D_ENVIRONNEMENT)).toEqual(
       attendus(LECTURES_D_ENVIRONNEMENT),
     );
   });
 
-  it('la porte reste ouverte, et un champ nomme process sur un autre objet aussi', async () => {
+  it('A14, A15, A16 : les quatre proprietes admises, la porte, et le nom employe comme cle', async () => {
     expect(await verdicts(CONFIGURATION, CONFIGURATION_PERMISE)).toEqual(
       attendus(CONFIGURATION_PERMISE),
     );
   });
 
-  it('globalThis.process.env et global.process.env tombent sur le garde-fou de l’horloge', async () => {
+  it('A17 : globalThis.process.env et global.process.env tombent sur le garde-fou de l’horloge', async () => {
     for (const code of [
       'export const a = globalThis.process.env.DATABASE_URL;',
       'export const a = global.process.env.DATABASE_URL;',
@@ -606,30 +740,7 @@ describe('la configuration d’un job entre par src/config/env.ts', () => {
     }
   });
 
-  /*
-   * Les deux limites que l'entete nomme, constatees plutot que promises.
-   * L'evaluation : la lecture est dans une chaine, aucun selecteur d'AST ne la
-   * voit. Le relais par un module du depot : la valeur traverse une frontiere
-   * que ce glob ne linte pas, et le job ne prononce plus rien d'interdit. Le
-   * jour ou l'un des deux se ferme, ce test devient rouge — c'est le signal.
-   *
-   * La troisieme assertion dit ou s'arrete la limite : le nom, lui, est juge
-   * sans egard a la provenance. `process` importe d'un module du depot est
-   * prononce trois fois — specificateur importe, nom local, usage — donc trois
-   * messages.
-   */
-  it('les limites declarees sont constatees, et le nom reste juge sans egard a la provenance', async () => {
-    expect(await messagesDe(CONFIGURATION, "export const a = eval('process.env.X');")).toBe(0);
-
-    const relais = "import { seuil } from '../partage/machin.js';\nexport const b = seuil;";
-    expect(await messagesDe(CONFIGURATION, relais)).toBe(0);
-
-    const nomRepris =
-      "import { process } from '../partage/machin.js';\nexport const c = process.env.X;";
-    expect(await messagesDe(CONFIGURATION, nomRepris)).toBe(3);
-  });
-
-  it('aucun module de jobs/ ne lit l’environnement', async () => {
+  it('A18 : aucun module de jobs/ ne lit l’environnement', async () => {
     expect(fautifs(await CONFIGURATION.lintFiles([JOBS]))).toEqual([]);
   });
 });
@@ -648,7 +759,9 @@ describe('la configuration d’un job entre par src/config/env.ts', () => {
  * fabriquer un `Holdings` a la main. C'est ce que ce bloc ferme. La lecture des
  * soldes appartient a `reconcile.ts` ; tout autre job passe par son resultat.
  *
- * Le controle est vide aujourd'hui — `reconcile.ts` est le seul job livre — et
+ * La regle ne connait pas `reconcile.ts` : elle mord partout, et c'est le test
+ * de glob qui dit ou elle a le droit de parler. Le controle n'a donc qu'un seul
+ * fichier a signaler aujourd'hui — `reconcile.ts` est le seul job livre — et
  * devient un verrou au premier module de Q4b, sans que ce lot ait a y penser.
  * Meme construction que le lint de `src/adapters/**` en Q1.
  */
@@ -663,8 +776,22 @@ const LECTURE_DES_SOLDES = gardien({
   ],
 });
 
-describe('seule la reconciliation lit les soldes de l’exchange', () => {
-  it('reconcile.ts est le seul fichier de jobs/ ou la regle parle', async () => {
+const APPELS_DE_SOLDES: Sondes = {
+  "l'appel nomme": ['declare const ex: { balances(): void };\nexport const a = () => ex.balances();', 1],
+  'un autre appel sur le meme objet': [
+    'declare const ex: { ticker(): void };\nexport const a = () => ex.ticker();',
+    0,
+  ],
+};
+
+describe('A19 — seule la reconciliation lit les soldes de l’exchange', () => {
+  it('A19 : la regle mord sur l’appel nomme et se tait sur un autre', async () => {
+    expect(await verdicts(LECTURE_DES_SOLDES, APPELS_DE_SOLDES)).toEqual(
+      attendus(APPELS_DE_SOLDES),
+    );
+  });
+
+  it('A19 : reconcile.ts est le seul fichier de jobs/ ou la regle parle', async () => {
     /*
      * Les deux assertions du garde-fou en une : reconcile.ts **doit** y figurer,
      * sinon le selecteur ne designe rien et le controle serait vide ; et aucun
@@ -680,35 +807,235 @@ describe('seule la reconciliation lit les soldes de l’exchange', () => {
  * Les tests de ce repertoire tournent sans reseau, sans cle et sans base. Ils le
  * tiennent parce que `jobs/` n'importe des adapters que des **types** :
  * `import type` est efface a la compilation, donc ni `ccxt` ni `pg` n'est
- * charge. Un import de valeur suffirait a rompre la propriete sans qu'aucun test
- * fonctionnel ne bronche — jusqu'au jour ou la suite tourne sans reseau.
- *
- * Le run, lui, compose les adapters : il les importera en valeur. Ce controle
- * dit donc que la **reconciliation** n'en a pas besoin, ce qui est ce qui la
+ * charge. Le run, lui, compose les adapters et les importera en valeur ; ce
+ * controle dit que la **reconciliation** n'en a pas besoin, ce qui est ce qui la
  * rend testable contre des doubles.
+ *
+ * ### Six formes, et non une
+ *
+ * Ce gardien ne visait qu'`ImportDeclaration`, alors que l'entete affirmait que
+ * seuls des types entrent. `await import('../adapters/db.js')` charge le module
+ * autant qu'un `import`, et `export … from`, `export *`, `export * as` et
+ * `import x = require(…)` aussi : cinq formes hors des limites declarees, dont
+ * l'import dynamique, deja traite pour les modules refuses. Le meme traitement
+ * s'applique donc ici, forme par forme.
+ *
+ * `importKind` et `exportKind` separent ici la valeur du type, donc `import
+ * type` et `export type` passent — la ou les modules refuses tombent meme en
+ * type (L9). Un specificateur de type ecrit **en ligne**,
+ * `import { type X } from …`, porte `importKind: 'value'` sur la declaration et
+ * tombe comme un import de valeur : faux positif assume (L8), qui se corrige en
+ * ecrivant `import type`, deja la convention du depot.
  */
+const ADAPTER_EN_VALEUR = "jobs/ n'importe des adapters que leurs types : cette forme en charge la valeur, donc ccxt et pg.";
 const IMPORTS_DE_VALEUR = gardien({
   'no-restricted-syntax': [
     'error',
     {
       selector: "ImportDeclaration[importKind='value'][source.value=/adapters/]",
-      message: "jobs/ n'importe des adapters que leurs types : un import de valeur charge ccxt et pg.",
+      message: ADAPTER_EN_VALEUR,
+    },
+    { selector: "ImportExpression[source.value=/adapters/]", message: ADAPTER_EN_VALEUR },
+    {
+      selector: "ExportNamedDeclaration[exportKind='value'][source.value=/adapters/]",
+      message: ADAPTER_EN_VALEUR,
+    },
+    {
+      selector: "ExportAllDeclaration[exportKind='value'][source.value=/adapters/]",
+      message: ADAPTER_EN_VALEUR,
+    },
+    {
+      selector: "TSExternalModuleReference > Literal[value=/adapters/]",
+      message: ADAPTER_EN_VALEUR,
     },
   ],
 });
 
-describe('les adapters n’entrent dans la reconciliation que par leurs types', () => {
-  it('la regle mord sur un import de valeur', async () => {
-    const code = "import { openDatabase } from '../adapters/db.js';\nexport const x = openDatabase;";
-    expect(await messagesDe(IMPORTS_DE_VALEUR, code)).toBe(1);
+const ADAPTERS_EN_VALEUR: Sondes = refusees({
+  import: "import { openDatabase } from '../adapters/db.js';\nexport const x = openDatabase;",
+  'effet de bord': "import '../adapters/db.js';\nexport const x = 1;",
+  dynamique: "export const x = await import('../adapters/db.js');",
+  'reexport nomme': "export { openDatabase } from '../adapters/db.js';",
+  'reexport total': "export * from '../adapters/db.js';",
+  'reexport en namespace': "export * as db from '../adapters/db.js';",
+  'import egale require': "import db = require('../adapters/db.js');\nexport const x = db;",
+  'specificateur de type en ligne, faux positif assume':
+    "import { type UbacDatabase } from '../adapters/db.js';\nexport type X = UbacDatabase;",
+});
+
+const ADAPTERS_EN_TYPE = permises({
+  'import type': "import type { UbacDatabase } from '../adapters/db.js';\nexport type X = UbacDatabase;",
+  'export type': "export type { UbacDatabase } from '../adapters/db.js';",
+  'un import de valeur hors des adapters':
+    "import { decide } from '../core/decide.js';\nexport const x = decide;",
+});
+
+describe('A20, A21 — les adapters n’entrent dans la reconciliation que par leurs types', () => {
+  it('A20, L8 : les huit formes qui font entrer la valeur recoivent le verdict attendu', async () => {
+    expect(await verdicts(IMPORTS_DE_VALEUR, ADAPTERS_EN_VALEUR)).toEqual(
+      attendus(ADAPTERS_EN_VALEUR),
+    );
   });
 
-  it('elle laisse passer un import de types', async () => {
-    const code = "import type { UbacDatabase } from '../adapters/db.js';\nexport type X = UbacDatabase;";
-    expect(await messagesDe(IMPORTS_DE_VALEUR, code)).toBe(0);
+  it('A21 : le type passe, et un import de valeur hors des adapters aussi', async () => {
+    expect(await verdicts(IMPORTS_DE_VALEUR, ADAPTERS_EN_TYPE)).toEqual(attendus(ADAPTERS_EN_TYPE));
   });
 
-  it('aucun module de jobs/ n’importe un adapter en valeur', async () => {
+  it('A20 : aucun module de jobs/ n’importe un adapter en valeur', async () => {
     expect(fautifs(await IMPORTS_DE_VALEUR.lintFiles([JOBS]))).toEqual([]);
+  });
+});
+
+// --- A3, A4 : la portee du glob et l'impossibilite d'eteindre ---------------
+
+/** Les cinq gardiens, dans l'ordre de l'entete : A3 parle d'eux tous. */
+const LES_CINQ = [
+  ['horloge', HORLOGE],
+  ['modules', MODULES],
+  ['configuration', CONFIGURATION],
+  ['soldes', LECTURE_DES_SOLDES],
+  ['adapters', IMPORTS_DE_VALEUR],
+] as const;
+
+describe('A3, A4 — la portee du glob, et un gardien qu’on n’eteint pas', () => {
+  /*
+   * Quatre des cinq gardiens concluent par « aucun fichier fautif ». Un glob qui
+   * ne designerait plus rien — un repertoire renomme, un `**` perdu — rendrait
+   * ces quatre verdicts verts sans avoir rien lu. Cette sonde separe les deux
+   * cas : le glob lit au moins un fichier, il les lit tous les cinq de la meme
+   * facon, et il ne lit que `src/jobs/`.
+   */
+  it('A3 : les cinq gardiens lisent le meme glob, non vide, et rien hors de src/jobs/', async () => {
+    for (const [nom, eslint] of LES_CINQ) {
+      const fichiers = lus(await eslint.lintFiles([JOBS]));
+      expect(fichiers, nom).toContain(RECONCILE);
+      expect(fichiers.filter((f) => !f.startsWith('src/jobs/')), nom).toEqual([]);
+    }
+  });
+
+  /*
+   * `noInlineConfig` fait rendre deux messages a chaque sonde : le commentaire
+   * desarmant, signale comme sans effet, et la faute qu'il pretendait couvrir.
+   * C'est la faute qui compte ; le compte a deux la prouve presente.
+   */
+  it('A4 : un eslint-disable ecrit dans le fichier surveille n’eteint aucun gardien', async () => {
+    const desarmes: readonly (readonly [nom: string, eslint: ESLint, code: string])[] = [
+      [
+        'horloge',
+        HORLOGE,
+        '/* eslint-disable no-restricted-syntax */\nexport const a = Date.now();',
+      ],
+      [
+        'modules',
+        MODULES,
+        "/* eslint-disable no-restricted-imports */\nimport p from 'node:process';\nexport const a = p;",
+      ],
+      [
+        'configuration',
+        CONFIGURATION,
+        '// eslint-disable-next-line no-restricted-syntax\nexport const a = process.env.X;',
+      ],
+      [
+        'soldes',
+        LECTURE_DES_SOLDES,
+        '/* eslint-disable */\ndeclare const ex: { balances(): void };\nexport const a = () => ex.balances();',
+      ],
+      [
+        'adapters',
+        IMPORTS_DE_VALEUR,
+        "/* eslint-disable */\nimport { openDatabase } from '../adapters/db.js';\nexport const x = openDatabase;",
+      ],
+    ];
+    for (const [nom, eslint, code] of desarmes) {
+      expect(await messagesDe(eslint, code), nom).toBe(2);
+    }
+  });
+});
+
+// --- L1 a L7 : les limites declarees, constatees ----------------------------
+
+/**
+ * Chaque categorie declaree ouverte a sa sonde, et chaque sonde attend zero.
+ * Le jour ou l'une de ces formes se ferme, son test devient rouge : c'est le
+ * signal que l'entete doit etre resserree. L'inverse — une limite ecrite mais
+ * jamais mesuree — est ce que les quatre revues ont reproche a ce fichier.
+ */
+describe('L1 a L7 — les limites declarees sont constatees', () => {
+  it('L1 : l’evaluation echappe aux trois gardiens de noms', async () => {
+    const evaluation = "export const a = eval('process.env.X');";
+    const fabrique = "export const f = new Function('return process');";
+    for (const eslint of [CONFIGURATION, MODULES, HORLOGE]) {
+      expect(await messagesDe(eslint, evaluation)).toBe(0);
+      expect(await messagesDe(eslint, fabrique)).toBe(0);
+    }
+  });
+
+  it('L2 : la repartition sur un objet calcule echappe, y compris pour les soldes', async () => {
+    const calcule = 'declare const o: Record<string, Record<string, () => unknown>>;\ndeclare const k: string;\nexport const a = () => o[k]!.now!();';
+    expect(await messagesDe(HORLOGE, calcule)).toBe(0);
+    expect(await messagesDe(HORLOGE, "export const a = Reflect.get(Date, 'now');")).toBe(0);
+    expect(
+      await messagesDe(
+        LECTURE_DES_SOLDES,
+        "declare const ex: Record<string, () => unknown>;\nexport const a = () => ex['balances']!();",
+      ),
+    ).toBe(0);
+    expect(
+      await messagesDe(
+        LECTURE_DES_SOLDES,
+        'declare const ex: { balances(): void };\nconst { balances } = ex;\nexport const a = () => balances();',
+      ),
+    ).toBe(0);
+  });
+
+  /*
+   * La troisieme assertion dit ou s'arrete L3 : le nom, lui, est juge sans egard
+   * a la provenance. `process` importe d'un module du depot est prononce trois
+   * fois — specificateur importe, nom local, usage — donc trois messages.
+   */
+  it('L3 : le relais par un module du depot echappe, mais le nom repris est juge sans egard a la provenance', async () => {
+    const relais = "import { seuil } from '../partage/machin.js';\nexport const b = seuil;";
+    expect(await messagesDe(CONFIGURATION, relais)).toBe(0);
+
+    const nomRepris =
+      "import { process } from '../partage/machin.js';\nexport const c = process.env.X;";
+    expect(await messagesDe(CONFIGURATION, nomRepris)).toBe(3);
+  });
+
+  it('L4 : une dependance tierce n’est jugee par aucun de ces gardiens', async () => {
+    const dependance = "import ccxt from 'ccxt';\nexport const a = ccxt;";
+    for (const [nom, eslint] of LES_CINQ) {
+      expect(await messagesDe(eslint, dependance), nom).toBe(0);
+    }
+  });
+
+  it('L5 : hors import, le filet lit un litteral et ne connait que les trois noms refuses', async () => {
+    expect(await messagesDe(MODULES, `${EXIGER}export const p = exiger('proc' + 'ess');`)).toBe(0);
+    expect(await messagesDe(MODULES, `${EXIGER}export const lire = (nom: string) => exiger(nom);`)).toBe(0);
+    expect(
+      await messagesDe(IMPORTS_DE_VALEUR, `${EXIGER}export const db = exiger('../adapters/db.js');`),
+    ).toBe(0);
+  });
+
+  it('L6 : les autres builtins Node ne sont pas refuses', async () => {
+    const builtins = permises({
+      'node:fs': "import { readFileSync } from 'node:fs';\nexport const a = readFileSync;",
+      'node:child_process': "import { execSync } from 'node:child_process';\nexport const a = execSync;",
+      'node:os': "import { hostname } from 'node:os';\nexport const a = hostname;",
+    });
+    expect(await verdicts(MODULES, builtins)).toEqual(attendus(builtins));
+  });
+
+  /*
+   * L7 se mesure par ce que le glob ne lit pas. `src/core/` contient des
+   * fichiers, `HORLOGE` mord sur `Date.now()` — et pourtant aucun fichier de
+   * core n'apparait dans un verdict : ce fichier ne juge que `src/jobs/`.
+   */
+  it('L7 : rien hors de src/jobs n’est lu, alors meme que les regles y mordraient', async () => {
+    const dansJobs = lus(await HORLOGE.lintFiles([JOBS]));
+    const dansCore = lus(await HORLOGE.lintFiles(['src/core/**/*.ts']));
+
+    expect(dansCore.length).toBeGreaterThan(0);
+    expect(dansJobs.filter((f) => dansCore.includes(f))).toEqual([]);
   });
 });
