@@ -66,8 +66,15 @@ const POIDS_NEUTRES: Weights = {
   USDC: new Decimal('0.2') as Weight,
 };
 
-/** Le cache interne : seules `positions` comptent pour la reconciliation. */
-export function photo(positions: Readonly<Record<string, Quantity>>): SnapshotRecord {
+/**
+ * Le cache interne. Seules `positions` comptent pour la reconciliation ; les
+ * surcharges servent au chainage du drawdown, qui lit la date, la valeur,
+ * l'horodatage et l'indice porte.
+ */
+export function photo(
+  positions: Readonly<Record<string, Quantity>>,
+  overrides: Partial<SnapshotRecord> = {},
+): SnapshotRecord {
   return {
     runDate: '2026-09-10',
     totalValueUsdc: new Decimal('130000') as UsdcAmount,
@@ -75,6 +82,7 @@ export function photo(positions: Readonly<Record<string, Quantity>>): SnapshotRe
     positions,
     benchmarks: {},
     createdAt: new Date('2026-09-10T07:00:00.000Z'),
+    ...overrides,
   };
 }
 
