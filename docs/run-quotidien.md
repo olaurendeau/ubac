@@ -6,7 +6,7 @@ configuration, ouvre les adaptateurs, appelle `runDaily` de `src/jobs/daily.ts`
 et ferme ce qu'il a ouvert. Toute la logique est dans `daily.ts`, qui ne connaît
 des adaptateurs que leurs types.
 
-Lot Q4b1-bis de la phase 1. La réconciliation qu'il appelle est décrite dans
+Lots Q4b1, Q4b1-bis et Q4b2 de la phase 1. La réconciliation qu'il appelle est décrite dans
 [reconciliation.md](reconciliation.md) ; les frontières de la phase sont dans
 [phase-1-frontieres.md](phase-1-frontieres.md).
 
@@ -62,7 +62,7 @@ qui est la clé, et elle est passée à part.
 
 | Code | Signification |
 |---|---|
-| 0 | le run a conclu — `COMPLETED`, les quatre lignes de `decisions` écrites ou déjà présentes. |
+| 0 | le run a conclu — `COMPLETED`, les quatre lignes de `decisions` écrites ou déjà présentes, et la photo du jour prise ou déjà prise. |
 | 1 | tout le reste : arguments refusés, configuration invalide, abandon de réconciliation, erreur. |
 
 Un abandon de réconciliation rend **1**. Ce n'est pas une anomalie du programme,
@@ -85,7 +85,7 @@ refus du préfixe `UBAC_RISK_` et le filtre des littéraux décimaux.
 Aucune variable `UBAC_RISK_*` n'est acceptée : les seuils de risque vivent dans
 `src/core/risk.ts`, couverts à 100 %, et n'ont pas de mode de contournement.
 
-## 3. Ce que le run fait : les étapes 1 à 5
+## 3. Ce que le run fait : les étapes 1 à 5 et 7
 
 1. **Healthcheck de démarrage.** La clé répond, et le run dit ce qu'il est.
 2. **Réconciliation**, avant toute décision. Un abandon arrête le run **avant la
@@ -99,11 +99,92 @@ Aucune variable `UBAC_RISK_*` n'est acceptée : les seuils de risque vivent dans
    décidées, validées par la couche risque, puis journalisées. Une ligne par
    stratégie et par run, `trigger NONE` comprise : un run sans action laisse une
    trace.
+7. **Benchmarks et photo du jour** dans `snapshots` : valeur totale, poids,
+   positions, benchmarks. Détail ci-dessous.
 
-L'idempotence vient de la base : aucune condition du code ne vérifie qu'un run a
-déjà eu lieu, c'est l'index unique `(run_date, strategy, is_shadow)` qui refuse
-la seconde écriture en rendant `ALREADY_RECORDED`. Relancer le même
-`--run-date` est donc sans danger.
+L'étape 7 est **calculée avant l'étape 5** et **écrite après**. Calculée avant,
+parce que la suspension au drawdown est une entrée de la décision et ne peut pas
+attendre. Écrite après, parce que c'est ce qui donne gratuitement la propriété
+que la spec attend d'un abandon : **un run abandonné n'écrit aucune photo**,
+puisqu'il rend avant d'y arriver.
+
+L'idempotence de `decisions` vient de la base : aucune condition du code ne
+vérifie qu'un run a déjà eu lieu, c'est l'index unique
+`(run_date, strategy, is_shadow)` qui refuse la seconde écriture en rendant
+`ALREADY_RECORDED`. Celle de `snapshots` ne peut pas venir du même endroit : sa
+clé primaire **remplace** la ligne du jour au lieu de la refuser. C'est la règle
+d'antériorité de la section 4 qui la tient. Relancer le même `--run-date` reste
+sans danger.
+
+### Ce qu'un abandon laisse, et ce qu'il ne laisse pas
+
+Un abandon — divergence de réconciliation, portefeuille non valorisable,
+stratégie indécidable — **n'écrit rien du tout** : ni décision, ni photo. C'est
+volontaire : le run s'arrête avant la première écriture, et rien de partiel ne
+reste derrière lui.
+
+La conséquence est à connaître : **depuis la base, un abandon est
+indistinguable d'un job qui n'a pas tourné.** Les deux laissent la journée vide.
+Le cas s'est produit en réel sur le compte de l'opérateur — portefeuille vide,
+valeur totale nulle, aucun poids définissable, run abandonné proprement, aucune
+ligne écrite. La spec prévoit qu'un abandon déclenche une **alerte** (§9) et
+c'est l'alerte, pas la base, qui fera la différence ; elle arrive au lot suivant.
+D'ici là, la seule trace d'un abandon est le journal du processus et son code de
+sortie **1**.
+
+### La photo du jour, le drawdown et la suspension du §6
+
+`src/jobs/snapshot.ts` calcule l'étape 7 ; son en-tête porte les motifs, cette
+section porte ce qu'un opérateur doit en savoir.
+
+**Les benchmarks sont consommés, pas recalculés.** Les métriques de
+`src/core/benchmark.ts`, livrées en phase 0, sont appelées telles quelles sur la
+fenêtre OHLCV de 200 jours : TWR, max drawdown et Sharpe glissant 90 j du hold
+BTC et du hold 50/50. Les deux hold partent d'**1 USDC sans flux**, le TWR étant
+invariant d'échelle. Les courbes d'ombre `ladder` et `dca` que cite le §4 **ne
+sont pas écrites** : en phase 1 aucune stratégie ne place d'ordre, donc les trois
+portefeuilles simulés seraient le portefeuille réel au centime près, et trois
+courbes identiques feraient lire une comparaison là où il n'y en a aucune.
+
+**Le drawdown se mesure sur l'indice de croissance, jamais sur la valeur en
+USDC** — un retrait de la moitié du portefeuille creuse la valeur de 50 % sans
+qu'aucun prix n'ait bougé. La fenêtre est l'historique **entier**, depuis la
+première photo. La source est **la série des snapshots passés**, condensée :
+chaque photo porte dans `benchmarks` l'indice (`portfolio_twr_index`) et son
+plus-haut (`portfolio_twr_peak`), et la suivante s'y enchaîne.
+
+**La photo du jour se prend une fois.** Un second run le même jour ne la réécrit
+pas : il relit le drawdown qu'elle porte, donc il suspend exactement comme le
+premier. Un rejeu d'un jour antérieur à une photo existante ne réécrit rien non
+plus. Le motif est dans l'en-tête du module : le plus-haut est idempotent,
+l'indice ne l'est pas.
+
+**Le premier run n'a pas de drawdown, et n'écrit pas zéro à la place.** La clé
+`portfolio_drawdown` est **absente** de `benchmarks`, et son absence est ce qui
+enregistre l'indisponibilité — un zéro se lirait « tout va bien » et ce serait
+faux. Conséquence : **un drawdown indisponible ne suspend pas**, la règle disant
+« un drawdown de 25 % suspend » et inconnu n'étant pas 25 %.
+
+**La suspension porte sur la seule stratégie de production.** Au-delà de -25 %
+— borne **incluse**, le §6 disant « de 25 % » et non « de plus de 25 % » —
+`decide()` n'est pas appelé pour la production, et sa ligne de `decisions` porte
+`trigger NONE`, zéro jambe et une `reason` préfixée `SUSPENSION_DRAWDOWN` avec le
+chiffre. Sans ce marqueur, un jour suspendu serait indistinguable d'un jour où
+rien n'a déclenché. Les trois stratégies d'ombre continuent d'être
+journalisées : elles ne passent aucun ordre, donc les suspendre ne protégerait
+rien et couperait la comparaison au moment où elle est la plus intéressante.
+Aucune vente n'est déclenchée : la décision de sortir reste humaine (§6).
+
+### Une conséquence pour la réconciliation
+
+À partir de ce lot, chaque run réussi **rafraîchit le cache** que la
+réconciliation du lendemain compare aux soldes réels. Avant, `snapshots` n'était
+alimentée par personne. La limite décrite dans
+[reconciliation.md](reconciliation.md) section 6 — un apport de plus de 1 % de la
+ligne USDC survenu entre deux runs fait abandonner le run — devient donc une
+limite d'un jour et non d'une durée indéfinie : le run suivant l'abandon reste
+bloqué, mais la photo la plus récente date bien de la veille dès qu'un run
+aboutit.
 
 ## 4. Ce que le run ne fait pas
 
@@ -113,9 +194,9 @@ noms d'`eslint.config.js` refuse dans `src/adapters/` et `src/jobs/` tout nom qu
 dénote un placement, une annulation ou un retrait. La clé Coinbase est en lecture
 seule.
 
-Les étapes suivantes appartiennent aux lots suivants et ne sont pas appelées
-ici : le snapshot quotidien (7), les benchmarks, le rapport et le ping (8 et 9).
-`runDaily` rend sa fenêtre OHLCV telle quelle pour qu'ils la consomment.
+Les étapes 8 et 9 — rapport Brevo et ping du healthcheck — appartiennent aux lots
+suivants et ne sont pas appelées ici. `runDaily` rend sa fenêtre OHLCV, ses
+benchmarks et son drawdown tels quels pour qu'ils les consomment.
 
 ### L'annulation des ordres de plus de 24 h est reportée en phase 3
 

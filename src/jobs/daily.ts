@@ -1,3 +1,5 @@
+import type { Decimal } from 'decimal.js';
+
 import type { CoinbaseReader } from '../adapters/coinbase.js';
 import type { CashFlowRecord, RecordDecisionOutcome, UbacDatabase } from '../adapters/db.js';
 import type { DailyCandle, DailyWindow, MarketReader } from '../adapters/market.js';
@@ -19,22 +21,25 @@ import type {
   Intent,
   IsoDate,
   StrategyName,
+  UsdcAmount,
   Verdict,
   Weights,
 } from '../core/types.js';
 import type { ReconcileObservations } from './reconcile.js';
 import { reconcile } from './reconcile.js';
+import type { BenchmarkGap, DrawdownState, SnapshotWrite, Suspension } from './snapshot.js';
+import { prepareSnapshot } from './snapshot.js';
 
 /**
- * Le run quotidien de la spec §8, **etapes 1 a 5**. Il lit, il decide, il
- * journalise, et il ne place rien.
+ * Le run quotidien de la spec §8, **etapes 1 a 5 et 7**. Il lit, il decide, il
+ * journalise, il photographie, et il ne place rien.
  *
  * **L'etape 6, l'execution, n'existe pas.** Ce n'est pas une etape laissee vide :
  * aucun code de placement n'est ecrit ici, et le garde-fou de noms
- * d'`eslint.config.js` refuserait celui qui l'ecrirait. Les etapes 7 a 9 —
- * benchmarks, snapshot, rapport, ping — appartiennent aux lots suivants.
+ * d'`eslint.config.js` refuserait celui qui l'ecrirait. Les etapes 8 et 9 —
+ * rapport et ping — appartiennent aux lots suivants.
  *
- * Quatre proprietes gouvernent ce fichier.
+ * Cinq proprietes gouvernent ce fichier.
  *
  * 1. **L'horloge est un parametre, `run_date` comprise.** Rien ici ne lit
  *    l'heure : un run lance a 23 h 59 UTC et son rejeu a 00 h 01 porteraient
@@ -51,10 +56,18 @@ import { reconcile } from './reconcile.js';
  *    quelle et documente que c'est a l'appelant de ne pas la demander : c'est
  *    ici. La fenetre s'arrete au dernier jour **clos**, et `closingPrices` refuse
  *    une serie qui ne finit pas dessus.
- * 4. **L'idempotence vient de la base.** Aucune condition de ce fichier ne
- *    verifie qu'un run a deja eu lieu : `recordDecision` est appelee a chaque
- *    run, et c'est l'index unique `(run_date, strategy, is_shadow)` qui refuse
- *    la seconde ecriture en rendant `ALREADY_RECORDED`.
+ * 4. **L'idempotence de `decisions` vient de la base.** Aucune condition de ce
+ *    fichier ne verifie qu'un run a deja eu lieu : `recordDecision` est appelee
+ *    a chaque run, et c'est l'index unique `(run_date, strategy, is_shadow)` qui
+ *    refuse la seconde ecriture en rendant `ALREADY_RECORDED`. Celle de
+ *    `snapshots` ne peut pas venir de la meme place : sa cle primaire accepte le
+ *    remplacement, et l'indice de croissance qu'une photo porte ne se rechaine
+ *    pas sur lui-meme. C'est `snapshot.ts` qui la tient, et le motif y est.
+ * 5. **La photo est calculee avant l'etape 5 et ecrite apres.** La suspension au
+ *    drawdown du §6 est une entree de la decision : elle ne peut pas attendre
+ *    l'etape 7. L'ecriture, elle, reste en derniere position, ce qui donne
+ *    gratuitement la propriete que la spec attend d'un abandon — **un run
+ *    abandonne n'ecrit aucune photo**, parce qu'il rend avant d'y arriver.
  *
  * Deux branches de ce fichier sont **inatteignables par construction**, et le
  * disent la ou elles se trouvent : le franchissement d'ancre du ladder, prive
@@ -130,7 +143,7 @@ export interface DailyPorts {
   readonly market: Pick<MarketReader, 'dailyCandles'>;
   readonly db: Pick<
     UbacDatabase,
-    'recordDecision' | 'latestSnapshot' | 'recentCashFlows' | 'pendingOrders'
+    'recordDecision' | 'recordSnapshot' | 'latestSnapshot' | 'recentCashFlows' | 'pendingOrders'
   >;
 }
 
@@ -179,6 +192,15 @@ export type DailyRunResult =
       readonly cashFlows: readonly CashFlow[];
       readonly observations: ReconcileObservations;
       readonly outcomes: readonly StrategyOutcome[];
+      readonly totalValue: UsdcAmount;
+      /** Etape 7 : ce qui est parti dans `snapshots.benchmarks`. */
+      readonly benchmarks: Readonly<Record<string, Decimal>>;
+      /** Les metriques qu'aucune valeur ne represente, et leur motif. */
+      readonly benchmarkGaps: readonly BenchmarkGap[];
+      readonly drawdown: DrawdownState;
+      /** §6 : la production est-elle suspendue ce jour-la. */
+      readonly suspension: Suspension;
+      readonly snapshot: SnapshotWrite;
     };
 
 // --- Prix -------------------------------------------------------------------
@@ -284,6 +306,35 @@ function ladderIntent(decision: LadderDecision, weights: Weights): Intent {
   };
 }
 
+/**
+ * La ligne que la production laisse dans `decisions` un jour suspendu : meme
+ * forme qu'un run sans declenchement — `trigger NONE`, zero jambe — mais une
+ * `reason` qui porte le marqueur et le chiffre. C'est **la** difference entre un
+ * jour suspendu et un jour ou rien n'a tire, et sans elle la base ne permet pas
+ * de les distinguer.
+ *
+ * `weightsTarget` reprend la cible permanente et non les poids constates,
+ * contrairement au ladder : la production vise toujours cette allocation, elle
+ * ne l'atteint simplement pas aujourd'hui. C'est aussi ce qu'ecrit `decide()`
+ * quand il rend `NONE`, donc la colonne reste lisible d'une ligne a l'autre.
+ */
+function suspendedIntent(
+  run: DailyRun,
+  name: RebalanceStrategyName,
+  weights: Weights,
+  suspension: Extract<Suspension, { status: 'ACTIVE' }>,
+): Intent {
+  return {
+    runDate: run.clock.today(),
+    strategy: name,
+    trigger: 'NONE',
+    reason: suspension.reason,
+    weightsBefore: weights,
+    weightsTarget: rebalanceParams(name, run.config).targets,
+    legs: [],
+  };
+}
+
 interface Decided {
   readonly strategy: StrategyName;
   readonly isShadow: boolean;
@@ -298,8 +349,11 @@ type DecideAll = { readonly ok: true; readonly decided: readonly Decided[] } | {
  * sur quatre : les quatre partagent le meme etat, et un etat qu'une strategie ne
  * sait pas lire n'est pas un etat sur lequel les autres devraient conclure.
  *
- * L'ordre compte : `rebalance` valide la date de run et les flux avant que le
- * DCA, qui leve au lieu de rendre un code, ne les voie.
+ * L'ordre compte : la premiere configuration de rebalance valide la date de run
+ * et les flux avant que le DCA, qui leve au lieu de rendre un code, ne les voie.
+ * Une suspension ne perce pas ce filet : elle ne peut porter que sur la
+ * **production**, donc l'autre configuration de rebalance passe toujours par
+ * `decide()`, avant le ladder et le DCA.
  */
 function decideAll(
   run: DailyRun,
@@ -307,12 +361,17 @@ function decideAll(
   prices: Prices,
   weights: Weights,
   cashFlows: readonly CashFlow[],
+  suspension: Suspension,
 ): DecideAll {
   const { clock, config } = run;
   const decided: Decided[] = [];
   const shadow = (name: StrategyName): boolean => name !== config.rebalance.strategy;
 
   for (const name of ['rebalance', 'rebalance_ab'] as const) {
+    if (suspension.status === 'ACTIVE' && !shadow(name)) {
+      decided.push({ strategy: name, isShadow: false, intent: suspendedIntent(run, name, weights, suspension) });
+      continue;
+    }
     const decision = decideRebalance(
       {
         holdings,
@@ -415,14 +474,43 @@ export async function runDaily(run: DailyRun): Promise<DailyRunResult> {
   );
   const cashFlows = (await ports.db.recentCashFlows(depuis)).map(toCashFlow);
 
+  /*
+   * 4bis. La photo du jour, **calculee** ici et ecrite a l'etape 7 : la
+   * suspension du §6 est une entree de l'etape 5 et ne peut pas attendre.
+   *
+   * Seconde lecture de `latestSnapshot()` du run : la reconciliation lit la
+   * meme ligne pour ses positions. Les faire partager une lecture demanderait de
+   * changer le contrat de `reconcile`, qui appartient a un lot integre ; deux
+   * lectures d'une ligne que rien n'ecrit entre-temps coutent moins que ca.
+   *
+   * La fenetre de flux du chainage n'est pas celle de la carence : elle part de
+   * l'horodatage de la photo precedente, qui peut etre plus ancien que sept
+   * jours si un run a saute. La requete est donc distincte, pas un filtre de la
+   * precedente.
+   */
+  const createdAt = clock.instant();
+  const previous = await ports.db.latestSnapshot();
+  const flows = previous === undefined ? [] : await ports.db.recentCashFlows(previous.createdAt);
+  const step = prepareSnapshot({
+    runDate,
+    runInstant: createdAt,
+    holdings,
+    weights: valuation.weights,
+    totalValue: valuation.total,
+    history,
+    previous,
+    flows,
+  });
+  if (step.suspension.status === 'ACTIVE') log(step.suspension.reason);
+  for (const gap of step.gaps) log(`benchmark ${gap.key} indisponible (${gap.code}) : ${gap.reason}`);
+
   // 5. Les quatre strategies : decide(), validate(), puis persistance.
-  const decided = decideAll(run, holdings, prices, valuation.weights, cashFlows);
+  const decided = decideAll(run, holdings, prices, valuation.weights, cashFlows, step.suspension);
   if (!decided.ok) {
     log(`abandon : ${decided.abort.reason}`);
     return { status: 'ABORTED', runDate, abort: decided.abort };
   }
 
-  const createdAt = clock.instant();
   const outcomes: StrategyOutcome[] = [];
   for (const { strategy, isShadow, intent } of decided.decided) {
     const verdict = validate(intent, {
@@ -464,6 +552,19 @@ export async function runDaily(run: DailyRun): Promise<DailyRunResult> {
     outcomes.push({ strategy, isShadow, intent, verdict, recorded });
   }
 
+  /*
+   * 7. La photo, en derniere position. L'ecriture est le seul effet de l'etape
+   * qui reste ici : tout le reste a ete calcule plus haut. C'est ce qui fait
+   * qu'un abandon — reconciliation, valorisation, strategie indecidable — ne
+   * laisse aucune ligne dans `snapshots`, sans qu'aucune condition ne le dise.
+   */
+  if (step.write.status === 'TO_RECORD') {
+    await ports.db.recordSnapshot(step.write.record);
+    log(`snapshot ${runDate} : ${valuation.total.toFixed(2)} USDC, ${String(Object.keys(step.benchmarks).length)} benchmark(s)`);
+  } else {
+    log(`snapshot ${runDate} non ecrit (${step.write.code}) : ${step.write.reason}`);
+  }
+
   return {
     status: 'COMPLETED',
     runDate,
@@ -476,5 +577,11 @@ export async function runDaily(run: DailyRun): Promise<DailyRunResult> {
     cashFlows,
     observations: reconciled.observations,
     outcomes,
+    totalValue: valuation.total,
+    benchmarks: step.benchmarks,
+    benchmarkGaps: step.gaps,
+    drawdown: step.drawdown,
+    suspension: step.suspension,
+    snapshot: step.write,
   };
 }
