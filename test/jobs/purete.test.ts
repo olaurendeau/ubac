@@ -35,8 +35,8 @@ import { describe, expect, it } from 'vitest';
  * **variante par variante**, car une affirmation qui annonce six formes et n'en
  * sonde que quatre est fausse d'un tiers.
  *
- * Chaque affirmation porte donc un numero — `A1`…`A21` pour ce qui est tenu,
- * `L1`…`L9` pour ce qui est declare ouvert — et chaque numero est cite par le
+ * Chaque affirmation porte donc un numero — `A1`…`A22` pour ce qui est tenu,
+ * `L1`…`L10` pour ce qui est declare ouvert — et chaque numero est cite par le
  * test qui le met a l'epreuve. Un numero sans test est un defaut de ce fichier.
  *
  * Ce qui est cherche n'est pas un garde-fou parfait — un controle statique de
@@ -55,17 +55,22 @@ import { describe, expect, it } from 'vitest';
  *   `src/jobs/`, sur les noms d'ecriture d'ordre. Meme sonde. Qu'il soit le
  *   seul n'est pas enumere ici : A1 constate seulement qu'il n'y garde ni
  *   l'horloge ni l'environnement, les deux que ce fichier reprend.
- * - **A3** — les cinq gardiens de ce fichier lintent le glob
+ * - **A3** — les six gardiens de ce fichier lintent le glob
  *   `src/jobs/**\/*.ts`, et ce glob designe aujourd'hui au moins un fichier.
  *   Sans cette derniere moitie, chaque verdict « aucun fautif » serait vrai par
  *   vacuite : c'est la sonde qui separe « rien a signaler » de « rien de lu ».
+ *   Le sixieme lit **en plus** un terrain plus large, dont A22 constate la
+ *   non-vacuite partie par partie.
  * - **A4** — un `eslint-disable` ecrit dans le fichier surveille n'eteint aucun
  *   de ces gardiens.
  *
- * ## Ce que les cinq gardiens attrapent
+ * ## Ce que les six gardiens attrapent
  *
- * Cinq gardiens lintent le meme glob, chacun avec ses propres regles : ce que
- * l'un refuse est refuse.
+ * Six gardiens, chacun avec ses propres regles : ce que l'un refuse est refuse.
+ * Les cinq premiers lintent le meme glob, `src/jobs/**\/*.ts`. Le sixieme —
+ * celui d'A22 — est le seul dont l'affirmation porte hors de ce repertoire : il
+ * lit tout le TypeScript du depot, parce que « rien n'importe le point
+ * d'entree » serait a moitie vide s'il ne regardait que `src/jobs/`.
  *
  * - **A5** — l'horloge, l'aleatoire et les globales tombent sous neuf formes
  *   nommees une a une : `Date.now()`, `new Date()` sans argument,
@@ -109,11 +114,24 @@ import { describe, expect, it } from 'vitest';
  * - **A18** — aucun module de `src/jobs/` ne lit l'environnement.
  * - **A19** — `x.balances()` tombe partout, et `reconcile.ts` est le seul
  *   fichier de `src/jobs/` ou la regle parle aujourd'hui.
- * - **A20** — un adapter n'entre dans `src/jobs/` que par ses types : les sept
- *   formes qui en font entrer la **valeur** tombent — import, import dynamique,
- *   effet de bord, `export … from`, `export *`, `export * as`,
- *   `import x = require(…)`.
+ * - **A20** — un adapter n'entre dans `src/jobs/` que par ses types, **sauf
+ *   dans le point d'entree** : les sept formes qui en font entrer la **valeur**
+ *   tombent — import, import dynamique, effet de bord, `export … from`,
+ *   `export *`, `export * as`, `import x = require(…)` — et le verdict sur
+ *   l'arbre reel n'est pas « aucun fichier » mais « exactement
+ *   `src/jobs/daily-main.ts` », comme A19 dit « exactement `reconcile.ts` ». Un
+ *   second lieu de composition, ou un adapter glisse dans `daily.ts`, echoue
+ *   ici : l'exception est nommee, pas ouverte a `src/jobs/` entier.
  * - **A21** — `import type` et `export type` d'un adapter passent.
+ * - **A22** — ce que A20 concede tient a une seule chose : **rien n'importe le
+ *   point d'entree**. `src/jobs/daily-main.ts` charge `ccxt` et `pg`, et il
+ *   **appelle son `main` a l'evaluation** — l'importer depuis une suite de tests
+ *   ne ferait pas entrer deux paquets, il lancerait le run. Les **onze** formes
+ *   d'A8, celles-la memes qui font entrer un module, tombent donc sur lui, et
+ *   sur les quatre orthographes de specificateur qui le designent. Le terrain
+ *   n'est pas `src/jobs/` mais tout le TypeScript du depot : un job, un autre
+ *   module de `src/`, un test, un fichier de configuration de la racine — aucun
+ *   ne l'importe.
  *
  * A8, A10 et A13 sont ecrits ainsi a la suite de revues : un selecteur qui
  * refusait `import { env } from 'node:process'` laissait passer
@@ -153,12 +171,24 @@ import { describe, expect, it } from 'vitest';
  *   `node:child_process` transmettre un environnement, `node:os` decrire la
  *   machine. Seuls les trois modules nommes plus haut sont refuses.
  * - **L7 — tout ce qui vit hors de `src/jobs`**, ce fichier ne lintant que ce glob.
- * - **L8 — deux faux positifs assumes**, constates plutot que passes sous
+ * - **L8 — trois faux positifs assumes**, constates plutot que passes sous
  *   silence : le mot employe comme donnee (`const s = 'crypto'`) tombe avec le
- *   nom de module, et le specificateur de type ecrit en ligne
+ *   nom de module, le specificateur de type ecrit en ligne
  *   (`import { type X } from '../adapters/db.js'`) tombe comme un import de
- *   valeur. Les deux se contournent en une reecriture : nommer la donnee
- *   autrement, ecrire `import type`, qui est deja la convention du depot.
+ *   valeur, et tout specificateur qui **prolonge** `daily-main` —
+ *   `./daily-main-helpers.js` — tombe avec le point d'entree, le motif d'A22
+ *   jugeant une sous-chaine comme celui d'A20 juge `adapters`. Les trois se
+ *   contournent en une reecriture : nommer la donnee autrement, ecrire
+ *   `import type`, nommer le voisin autrement.
+ * - **L10 — A22 juge des imports, pas un lancement** : un chemin ecrit comme
+ *   chaine et passe a un sous-processus — `execFile(node, [… , 'src/jobs/daily-main.ts'])`
+ *   — fait tourner le module sans qu'aucun noeud d'import n'apparaisse, et n'est
+ *   donc pas refuse. Ce n'est pas une fuite a fermer : c'est **la** facon de le
+ *   lancer, celle du script `npm run daily` et celle par laquelle
+ *   `test/jobs/daily-main.test.ts` eprouve son contrat d'arguments. A22 dit
+ *   « rien ne l'importe », et non « rien ne peut le faire tourner » — la
+ *   difference compte, parce qu'un import le chargerait dans le processus de
+ *   test, la ou un sous-processus reste un processus a part.
  * - **L9 — une portee plus large que promise, assumee** : un import de **type**
  *   depuis l'un des trois modules refuses tombe aussi, alors qu'il est efface a
  *   la compilation. Ce n'est pas une fuite ; c'est que ces trois noms n'ont rien
@@ -176,6 +206,16 @@ import { describe, expect, it } from 'vitest';
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const JOBS = 'src/jobs/**/*.ts';
 const RECONCILE = 'src/jobs/reconcile.ts';
+/** Le point d'entree du run quotidien : le seul lieu de composition de `jobs/`. */
+const DAILY_MAIN = 'src/jobs/daily-main.ts';
+
+/**
+ * Le terrain d'A22 : les deux arbres TypeScript du depot **et** les fichiers de
+ * configuration de la racine. A22 affirme que rien n'importe le point d'entree ;
+ * borner le controle a `src/jobs/` en aurait fait une affirmation a moitie vide,
+ * `src/replay/`, `test/` et `vitest.config.ts` pouvant l'importer aussi bien.
+ */
+const TOUT_LE_TYPESCRIPT = ['src/**/*.ts', 'test/**/*.ts', '*.ts'];
 
 const BASE: Linter.Config = {
   files: ['**/*.ts'],
@@ -879,11 +919,16 @@ describe('A19 — seule la reconciliation lit les soldes de l’exchange', () =>
 
 /**
  * Les tests de ce repertoire tournent sans reseau, sans cle et sans base. Ils le
- * tiennent parce que `jobs/` n'importe des adapters que des **types** :
- * `import type` est efface a la compilation, donc ni `ccxt` ni `pg` n'est
- * charge. Le run, lui, compose les adapters et les importera en valeur ; ce
- * controle dit que la **reconciliation** n'en a pas besoin, ce qui est ce qui la
- * rend testable contre des doubles.
+ * tiennent parce qu'aucun module de `jobs/` **que les tests chargent** n'importe
+ * d'adapter autrement que par ses **types** : `import type` est efface a la
+ * compilation, donc ni `ccxt` ni `pg` n'est charge. Le run, lui, doit bien
+ * composer les adapters quelque part, et ce quelque part est `daily-main.ts` —
+ * le seul fichier ou cette regle parle, et celui qu'A22 rend inimportable.
+ *
+ * Les deux moities vont ensemble, et c'est la seule raison pour laquelle A20
+ * peut conceder un fichier : sans A22, l'exception serait une convention, et un
+ * `import '../../src/jobs/daily-main.js'` dans un test suffirait a faire entrer
+ * `ccxt` et `pg` dans la suite — et a lancer le run.
  *
  * ### Six formes, et non une
  *
@@ -944,7 +989,7 @@ const ADAPTERS_EN_TYPE = permises({
     "import { decide } from '../core/decide.js';\nexport const x = decide;",
 });
 
-describe('A20, A21 — les adapters n’entrent dans la reconciliation que par leurs types', () => {
+describe('A20, A21 — les adapters n’entrent dans jobs/ que par leurs types, hors du point d’entree', () => {
   it('A20, L8 : les sept formes de valeur et le faux positif recoivent le verdict attendu', async () => {
     expect(Object.keys(ADAPTERS_EN_VALEUR)).toHaveLength(8);
     expect(await verdicts(IMPORTS_DE_VALEUR, ADAPTERS_EN_VALEUR)).toEqual(
@@ -956,33 +1001,261 @@ describe('A20, A21 — les adapters n’entrent dans la reconciliation que par l
     expect(await verdicts(IMPORTS_DE_VALEUR, ADAPTERS_EN_TYPE)).toEqual(attendus(ADAPTERS_EN_TYPE));
   });
 
-  it('A20 : aucun module de jobs/ n’importe un adapter en valeur', async () => {
-    expect(fautifs(await IMPORTS_DE_VALEUR.lintFiles([JOBS]))).toEqual([]);
+  /*
+   * Le verdict n'est pas « aucun fichier », il est « exactement celui-la » —
+   * meme forme qu'A19. Un blanc-seing sur tout `src/jobs/` aurait rendu la regle
+   * muette au premier job suivant ; nommer le point d'entree fait qu'un second
+   * lieu de composition, ou un adapter glisse dans `daily.ts`, echoue ici.
+   */
+  it('A20 : daily-main.ts est le seul module de jobs/ qui importe un adapter en valeur', async () => {
+    expect(fautifs(await IMPORTS_DE_VALEUR.lintFiles([JOBS]))).toEqual([DAILY_MAIN]);
+  });
+});
+
+// --- A22 : le point d'entree ne s'importe de nulle part ---------------------
+
+/**
+ * A20 laisse desormais passer un fichier. Ce qui empeche cette exception de
+ * contaminer le reste n'est pas une convention : c'est qu'aucun module ne peut
+ * l'importer. Sans ce controle, un `import '../../src/jobs/daily-main.js'` dans
+ * un test chargerait `ccxt` et `pg` — et **executerait le run**, ce module
+ * appelant `main` a l'evaluation.
+ *
+ * ### Onze formes, cinq selecteurs, et pourquoi le compte differe
+ *
+ * Les formes sondees sont les **onze** d'A8, reprises telles quelles : c'est
+ * l'enumeration que ce fichier s'est deja donnee de « ce qui fait entrer un
+ * module », et en inventer une plus courte ici serait retomber dans le defaut
+ * que cinq revues ont trouve. Cinq selecteurs suffisent a les fermer, parce que
+ * plusieurs formes partagent un type de noeud : **six** formes sont des
+ * `ImportDeclaration` — nommee, renommee, par defaut, namespace, effet de bord,
+ * **et en type** —, et `export *` comme `export * as` sont des
+ * `ExportAllDeclaration`. Le compte des selecteurs n'est donc pas celui des
+ * variantes, et ce sont les variantes qui sont sondees. Cette repartition n'est
+ * pas laissee a la prose : `PORTEE_PAR_SELECTEUR` la mesure, forme par forme et
+ * porte par porte.
+ *
+ * `import type` n'est pas exempte ici, contrairement a A20 : aucun filtre
+ * `importKind` n'est pose, a dessein. Ce module n'exporte **rien**, donc un
+ * `import type` qui le viserait ne pourrait etre qu'un chemin ecrit par erreur —
+ * et le laisser passer apprendrait a ecrire le chemin.
+ */
+const POINT_D_ENTREE =
+  "src/jobs/daily-main.ts est un point d'entree : le composer charge ccxt et pg, et l'importer lance le run.";
+
+/**
+ * Les cinq selecteurs, dans une table nommee et non en ligne : l'entete cite
+ * leur nombre, donc leur nombre doit etre assertable. Le message est le meme
+ * pour les cinq — c'est une seule interdiction, vue sous cinq types de noeud.
+ */
+const SELECTEURS_DU_POINT_D_ENTREE = [
+  'ImportDeclaration[source.value=/daily-main/]',
+  'ImportExpression[source.value=/daily-main/]',
+  'ExportNamedDeclaration[source.value=/daily-main/]',
+  'ExportAllDeclaration[source.value=/daily-main/]',
+  'TSExternalModuleReference > Literal[value=/daily-main/]',
+] as const;
+
+const IMPORTS_DU_POINT_D_ENTREE = gardien({
+  'no-restricted-syntax': [
+    'error',
+    ...SELECTEURS_DU_POINT_D_ENTREE.map((selector) => ({ selector, message: POINT_D_ENTREE })),
+  ],
+});
+
+/**
+ * Les onze formes d'A8, appliquees au point d'entree. `main` n'est pas un export
+ * de ce module — il n'en a aucun — mais un selecteur juge le specificateur et
+ * pas la resolution : c'est justement ce qui fait tomber la forme nommee comme
+ * les autres.
+ */
+const ENTREES_DU_POINT_D_ENTREE: Sondes = refusees(formesDImport('./daily-main.js', 'main'));
+
+/**
+ * Les quatre orthographes du specificateur, chacune lintee depuis l'endroit d'ou
+ * elle serait ecrite. Le motif juge une sous-chaine, donc aucune n'y echappe ;
+ * la table le constate au lieu de le supposer, et trois des quatre partent d'un
+ * chemin de `test/`, qui est le terrain que ce gardien ajoute aux cinq autres.
+ */
+const ORTHOGRAPHES: Readonly<Record<string, readonly [code: string, chemin: string]>> = {
+  'depuis un job voisin': ["import './daily-main.js';\nexport const x = 1;", 'src/jobs/sonde.ts'],
+  'depuis un test': [
+    "import '../../src/jobs/daily-main.js';\nexport const x = 1;",
+    'test/jobs/sonde.test.ts',
+  ],
+  'sans extension': [
+    "import '../../src/jobs/daily-main';\nexport const x = 1;",
+    'test/jobs/sonde.test.ts',
+  ],
+  'en .ts': [
+    "import '../../src/jobs/daily-main.ts';\nexport const x = 1;",
+    'test/jobs/sonde.test.ts',
+  ],
+};
+
+/**
+ * Quelle forme franchit quelle porte. L'entete l'ecrit en prose ; cette table la
+ * mesure, un gardien par selecteur. Elle etablit ce que le compte des messages
+ * ne dit pas : non pas qu'une forme tombe **une** fois, mais **laquelle** des
+ * cinq portes elle franchit — et que les quatre autres se taisent. C'est ce qui
+ * fait que « onze variantes, cinq selecteurs » se verifie au lieu de se croire.
+ */
+const PORTEE_PAR_SELECTEUR: Readonly<Record<string, readonly string[]>> = {
+  'ImportDeclaration[source.value=/daily-main/]': [
+    'nomme',
+    'renomme',
+    'par defaut',
+    'namespace',
+    'effet de bord',
+    'en type',
+  ],
+  'ImportExpression[source.value=/daily-main/]': ['dynamique'],
+  'ExportNamedDeclaration[source.value=/daily-main/]': ['reexport nomme'],
+  'ExportAllDeclaration[source.value=/daily-main/]': ['reexport total', 'reexport en namespace'],
+  'TSExternalModuleReference > Literal[value=/daily-main/]': ['import egale require'],
+};
+
+/** La portee du motif : ce qu'il prend en trop (L8) et ce qu'il laisse passer. */
+const PORTEE_DU_MOTIF: Sondes = {
+  'un voisin dont le nom prolonge le motif, faux positif assume': [
+    "import './daily-main-helpers.js';\nexport const x = 1;",
+    1,
+  ],
+  'le run lui-meme, que le point d’entree importe': [
+    "import { runDaily } from './daily.js';\nexport const x = runDaily;",
+    0,
+  ],
+  'son type, que le point d’entree importe aussi': [
+    "import type { RunClock } from './daily.js';\nexport type X = RunClock;",
+    0,
+  ],
+  'un adapter, que le point d’entree a le droit de composer': [
+    "import { openDatabase } from '../adapters/db.js';\nexport const x = openDatabase;",
+    0,
+  ],
+  /*
+   * L10 : le chemin passe a un sous-processus n'est pas un import et n'est pas
+   * refuse. La sonde ecrit le chemin du fichier en clair, dans un litteral que
+   * le gardien voit passer, et n'obtient zero message — c'est ce qui rend la
+   * limite mesuree au lieu d'annoncee.
+   */
+  'un chemin passe a un sous-processus, limite declaree (L10)': [
+    [
+      "import { execFileSync } from 'node:child_process';",
+      "export const lancer = (): string =>",
+      "  execFileSync('node', ['--import', 'tsx', 'src/jobs/daily-main.ts'], {",
+      "    encoding: 'utf8',",
+      '  });',
+    ].join('\n'),
+    0,
+  ],
+};
+
+describe('A22 — le point d’entree du run ne s’importe de nulle part', () => {
+  it('A22 : les onze formes qui le feraient entrer tombent, une par une', async () => {
+    // Les deux comptes que l'entete cite, assertes sur leurs tables.
+    expect(Object.keys(ENTREES_DU_POINT_D_ENTREE)).toHaveLength(11);
+    expect(SELECTEURS_DU_POINT_D_ENTREE).toHaveLength(5);
+    expect(Object.keys(ENTREES_DU_POINT_D_ENTREE)).toEqual(
+      Object.keys(formesDImport('node:process', 'env')),
+    );
+    expect(await verdicts(IMPORTS_DU_POINT_D_ENTREE, ENTREES_DU_POINT_D_ENTREE)).toEqual(
+      attendus(ENTREES_DU_POINT_D_ENTREE),
+    );
+  });
+
+  /*
+   * Retirer un selecteur fait tomber a zero les formes de sa ligne, et elles
+   * seules : c'est la mutation que cette table rend lisible, et la raison pour
+   * laquelle la ligne d'`ImportDeclaration` en porte six.
+   */
+  it('A22 : chaque forme franchit une porte nommee, et les quatre autres se taisent', async () => {
+    expect(Object.keys(PORTEE_PAR_SELECTEUR)).toEqual([...SELECTEURS_DU_POINT_D_ENTREE]);
+    expect(Object.values(PORTEE_PAR_SELECTEUR).flat().sort()).toEqual(
+      Object.keys(ENTREES_DU_POINT_D_ENTREE).sort(),
+    );
+
+    for (const [selecteur, formes] of Object.entries(PORTEE_PAR_SELECTEUR)) {
+      const seul = gardien({
+        'no-restricted-syntax': ['error', { selector: selecteur, message: POINT_D_ENTREE }],
+      });
+      for (const [forme, [code]] of Object.entries(ENTREES_DU_POINT_D_ENTREE)) {
+        const attendu = formes.includes(forme) ? 1 : 0;
+        expect(await messagesDe(seul, code), `${selecteur} / ${forme}`).toBe(attendu);
+      }
+    }
+  });
+
+  it('A22 : les quatre orthographes du specificateur tombent, d’ou qu’elles soient ecrites', async () => {
+    expect(Object.keys(ORTHOGRAPHES)).toHaveLength(4);
+    for (const [nom, [code, chemin]] of Object.entries(ORTHOGRAPHES)) {
+      expect(await messagesDe(IMPORTS_DU_POINT_D_ENTREE, code, chemin), nom).toBe(1);
+    }
+  });
+
+  it('A22, L8, L10 : le motif prend en trop ce qui le prolonge, et rien d’autre', async () => {
+    expect(await verdicts(IMPORTS_DU_POINT_D_ENTREE, PORTEE_DU_MOTIF)).toEqual(
+      attendus(PORTEE_DU_MOTIF),
+    );
+  });
+
+  /*
+   * Le terrain entier, et la non-vacuite de chacune de ses trois parties — pas
+   * seulement de leur total. « Aucun fautif » serait vrai sans rien avoir lu, et
+   * vrai aussi si l'un des trois globs cessait de designer quoi que ce soit,
+   * auquel cas l'affirmation se reduirait en silence. Le point d'entree lui-meme
+   * doit y figurer : s'il manque, c'est lui que le glob a rate.
+   *
+   * Delai cible, et pose sur ce test seul plutot que sur le bloc : c'est le seul
+   * d'A22 qui linte tout le TypeScript du depot — une soixantaine de fichiers,
+   * contre trois pour les cinq autres gardiens — et il consommait un tiers du
+   * delai global de 5 s sous instrumentation v8. Les autres tests du fichier
+   * restent a 5 s, ce qui garde leur detection intacte ;
+   * `docs/marge-des-delais.md` pose la regle sur le `describe` parce que dans
+   * `test/replay/` tout le bloc est lent, ce qui n'est pas le cas ici.
+   */
+  it('A22 : ni un job, ni un autre module de src/, ni un test, ni la racine ne l’importe', { timeout: 30_000 }, async () => {
+    const resultats = await IMPORTS_DU_POINT_D_ENTREE.lintFiles(TOUT_LE_TYPESCRIPT);
+    const fichiers = lus(resultats);
+
+    expect(fichiers).toContain(DAILY_MAIN);
+    for (const [partie, dedans] of [
+      ['src/ hors de jobs/', (f: string) => f.startsWith('src/') && !f.startsWith('src/jobs/')],
+      ['test/', (f: string) => f.startsWith('test/')],
+      ['la racine', (f: string) => !f.includes('/')],
+    ] as const) {
+      expect(fichiers.filter(dedans), partie).not.toEqual([]);
+    }
+
+    expect(fautifs(resultats)).toEqual([]);
   });
 });
 
 // --- A3, A4 : la portee du glob et l'impossibilite d'eteindre ---------------
 
-/** Les cinq gardiens, dans l'ordre de l'entete : A3 parle d'eux tous. */
-const LES_CINQ = [
+/** Les six gardiens, dans l'ordre de l'entete : A3 parle d'eux tous. */
+const LES_GARDIENS = [
   ['horloge', HORLOGE],
   ['modules', MODULES],
   ['configuration', CONFIGURATION],
   ['soldes', LECTURE_DES_SOLDES],
   ['adapters', IMPORTS_DE_VALEUR],
+  ["point d'entree", IMPORTS_DU_POINT_D_ENTREE],
 ] as const;
 
 describe('A3, A4 — la portee du glob, et un gardien qu’on n’eteint pas', () => {
   /*
-   * Quatre des cinq gardiens concluent par « aucun fichier fautif ». Un glob qui
-   * ne designerait plus rien — un repertoire renomme, un `**` perdu — rendrait
-   * ces quatre verdicts verts sans avoir rien lu. Cette sonde separe les deux
-   * cas : le glob lit au moins un fichier, il les lit tous les cinq de la meme
+   * Quatre des six gardiens concluent par « aucun fichier fautif » — horloge,
+   * modules, configuration, point d'entree — et les deux autres par « exactement
+   * ce fichier-la », `reconcile.ts` pour A19 et `daily-main.ts` pour A20. Un
+   * glob qui ne designerait plus rien — un repertoire renomme, un `**` perdu —
+   * rendrait les quatre premiers verts sans avoir rien lu. Cette sonde separe
+   * les deux cas : le glob lit au moins un fichier, les six le lisent de la meme
    * facon, et il ne lit que `src/jobs/`.
    */
-  it('A3 : les cinq gardiens lisent le meme glob, non vide, et rien hors de src/jobs/', async () => {
-    expect(LES_CINQ).toHaveLength(5);
-    for (const [nom, eslint] of LES_CINQ) {
+  it('A3 : les six gardiens lisent le meme glob, non vide, et rien hors de src/jobs/', async () => {
+    expect(LES_GARDIENS).toHaveLength(6);
+    for (const [nom, eslint] of LES_GARDIENS) {
       const fichiers = lus(await eslint.lintFiles([JOBS]));
       expect(fichiers, nom).toContain(RECONCILE);
       expect(fichiers.filter((f) => !f.startsWith('src/jobs/')), nom).toEqual([]);
@@ -1021,8 +1294,13 @@ describe('A3, A4 — la portee du glob, et un gardien qu’on n’eteint pas', (
         IMPORTS_DE_VALEUR,
         "/* eslint-disable */\nimport { openDatabase } from '../adapters/db.js';\nexport const x = openDatabase;",
       ],
+      [
+        "point d'entree",
+        IMPORTS_DU_POINT_D_ENTREE,
+        "/* eslint-disable */\nimport './daily-main.js';\nexport const x = 1;",
+      ],
     ];
-    expect(desarmes.map(([nom]) => nom)).toEqual(LES_CINQ.map(([nom]) => nom));
+    expect(desarmes.map(([nom]) => nom)).toEqual(LES_GARDIENS.map(([nom]) => nom));
     for (const [nom, eslint, code] of desarmes) {
       expect(await messagesDe(eslint, code), nom).toBe(2);
     }
@@ -1081,7 +1359,7 @@ describe('L1 a L7 — les limites declarees sont constatees', () => {
 
   it('L4 : une dependance tierce n’est jugee par aucun de ces gardiens', async () => {
     const dependance = "import ccxt from 'ccxt';\nexport const a = ccxt;";
-    for (const [nom, eslint] of LES_CINQ) {
+    for (const [nom, eslint] of LES_GARDIENS) {
       expect(await messagesDe(eslint, dependance), nom).toBe(0);
     }
   });
