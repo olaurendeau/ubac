@@ -8,6 +8,7 @@ import type {
   RecordDecisionOutcome,
   SnapshotRecord,
 } from '../../src/adapters/db.js';
+import { PORTFOLIO_KEYS, SUSPENSION_MARKER } from '../../src/jobs/snapshot.js';
 import type { DailyCandle, DailyWindow } from '../../src/adapters/market.js';
 import type { UbacConfig } from '../../src/config/env.js';
 import { loadConfig } from '../../src/config/env.js';
@@ -92,6 +93,8 @@ interface Harnais {
   readonly depuis: Date[];
   /** Le journal `decisions`, indexe par l'index unique du §4. */
   readonly table: Map<string, DecisionToRecord>;
+  /** La table `snapshots`, indexee par sa cle primaire `run_date`. */
+  readonly photos: Map<string, SnapshotRecord>;
 }
 
 /**
@@ -123,6 +126,13 @@ function harnais(scenario: Scenario = {}): Harnais {
   const fenetres: { asset: string; window: DailyWindow }[] = [];
   const depuis: Date[] = [];
   const table = new Map<string, DecisionToRecord>();
+  /*
+   * `snapshots` a une cle primaire, pas un index unique refusant : l'adapter y
+   * remplace la ligne du jour. Le double fait exactement cela, pour que ce soit
+   * le code du run — et non le double — qui tienne la photo unique du jour.
+   */
+  const photos = new Map<string, SnapshotRecord>();
+  if (scenario.snapshot !== undefined) photos.set(scenario.snapshot.runDate, scenario.snapshot);
   const runDate = scenario.runDate ?? RUN_DATE;
   const closes = scenario.closes ?? { BTC: BTC_CLOSE, ETH: ETH_CLOSE };
 
@@ -137,6 +147,7 @@ function harnais(scenario: Scenario = {}): Harnais {
     fenetres,
     depuis,
     table,
+    photos,
     gitSha: GIT_SHA,
     clock: { today: () => runDate, instant: () => new Date(`${runDate}T07:00:00.000Z`) },
     config: loadConfig(ENV),
@@ -173,7 +184,13 @@ function harnais(scenario: Scenario = {}): Harnais {
         },
         latestSnapshot: () => {
           appels.push('latestSnapshot');
-          return Promise.resolve(scenario.snapshot);
+          const derniere = [...photos.keys()].sort().pop();
+          return Promise.resolve(derniere === undefined ? undefined : photos.get(derniere));
+        },
+        recordSnapshot: (input) => {
+          appels.push('recordSnapshot');
+          photos.set(input.runDate, input);
+          return Promise.resolve();
         },
         recentCashFlows: (since) => {
           appels.push('recentCashFlows');
@@ -252,10 +269,16 @@ describe('§8 etapes 1 a 5 — l’enchainement du run', () => {
       'dailyCandles:BTC',
       'dailyCandles:ETH',
       'recentCashFlows',
+      // Seconde lecture de la meme ligne : la reconciliation y prend les
+      // positions, l'etape 7 la valeur et l'indice. Aucun flux n'est redemande,
+      // faute de photo precedente.
+      'latestSnapshot',
       'recordDecision',
       'recordDecision',
       'recordDecision',
       'recordDecision',
+      // La photo ferme le run : un abandon rend avant d'y arriver.
+      'recordSnapshot',
     ]);
   });
 
@@ -274,6 +297,7 @@ describe('§8 etapes 1 a 5 — l’enchainement du run', () => {
     }
     expect(h.appels).not.toContain('recordDecision');
     expect(h.appels).not.toContain('dailyCandles:BTC');
+    expect(h.appels).not.toContain('recordSnapshot');
     expect(h.table.size).toBe(0);
   });
 
@@ -295,6 +319,7 @@ describe('§8 etapes 1 a 5 — l’enchainement du run', () => {
       expect.unreachable('un flux non fini doit arreter la decision');
     }
     expect(h.table.size).toBe(0);
+    expect(h.appels).not.toContain('recordSnapshot');
   });
 
   /*
@@ -316,13 +341,23 @@ describe('§8 etapes 1 a 5 — l’enchainement du run', () => {
     },
   );
 
-  it('abandonne sur un portefeuille non valorisable, sans ecrire aucune decision', async () => {
+  /*
+   * Le cas constate en reel sur le compte de l'operateur : portefeuille vide,
+   * valeur totale nulle, aucun poids definissable. Le run abandonne proprement et
+   * **n'ecrit rien** — ni decision, ni photo. Depuis la base, cet abandon reste
+   * indistinguable d'un job qui n'a pas tourne : c'est l'alerte du lot suivant qui
+   * le dira, et ce lot ne doit surtout pas aggraver la chose en photographiant un
+   * run abandonne.
+   */
+  it('abandonne sur un portefeuille non valorisable, sans ecrire ni decision ni photo', async () => {
     const h = harnais({ balances: [solde('BTC', '0'), solde('ETH', '0'), solde('USDC', '0')] });
     const result = await lance(h);
 
     expect(result.status).toBe('ABORTED');
     if (result.status === 'ABORTED') expect(result.abort.step).toBe('VALUATION');
     expect(h.table.size).toBe(0);
+    expect(h.appels).not.toContain('recordSnapshot');
+    expect(h.photos.size).toBe(0);
   });
 });
 
@@ -547,5 +582,132 @@ describe('§4 — deux runs le meme jour, une seule decision par strategie', () 
       'RECORDED',
     ]);
     expect(h.table.size).toBe(8);
+  });
+});
+
+// --- Etape 7 et suspension --------------------------------------------------
+
+/** Une photo de la veille, chainable : positions accordees et indice a 1. */
+function veille(total: string): SnapshotRecord {
+  return photo(
+    { BTC: qty('1'), ETH: qty('16'), USDC: qty('10000') },
+    {
+      runDate: PRICED_ON,
+      totalValueUsdc: new Decimal(total) as UsdcAmount,
+      benchmarks: {
+        [PORTFOLIO_KEYS.index]: new Decimal('1'),
+        [PORTFOLIO_KEYS.peak]: new Decimal('1'),
+      },
+      createdAt: new Date(`${PRICED_ON}T07:00:00.000Z`),
+    },
+  );
+}
+
+describe('§6, §8 etape 7 — la photo du jour et la suspension au drawdown', () => {
+  /*
+   * Les deux cotes du seuil sur le meme portefeuille hors bande : a 200 000 USDC
+   * la veille le recul vaut 50 %, a 130 000 il vaut 23 %. Seule la premiere
+   * ligne change de comportement, donc la difference vient bien du drawdown.
+   */
+  it('au-dela du seuil, la production est suspendue et les ombres continuent', async () => {
+    const h = harnais({ balances: HORS_BANDE, snapshot: veille('200000') });
+    const result = complete(await lance(h));
+
+    expect(result.suspension.status).toBe('ACTIVE');
+    const parNom = new Map(result.outcomes.map((o) => [o.strategy, o]));
+    expect(parNom.get('rebalance')?.intent.trigger).toBe('NONE');
+    expect(parNom.get('rebalance')?.intent.legs).toEqual([]);
+    // Les ombres ne passent aucun ordre : les suspendre couperait la comparaison
+    // au moment ou elle est la plus interessante.
+    expect(parNom.get('rebalance_ab')?.intent.trigger).toBe('CASH_BAND');
+    expect(parNom.get('rebalance_ab')?.intent.legs).toHaveLength(2);
+    expect(parNom.get('dca')?.isShadow).toBe(true);
+    expect(h.table.size).toBe(4);
+  });
+
+  /*
+   * La trace, et non le seul comportement : sans elle un jour suspendu porte
+   * exactement la meme ligne qu'un jour ou rien n'a declenche — `trigger NONE`,
+   * zero jambe — et la base ne permet plus de les distinguer.
+   */
+  it('la suspension laisse sa trace dans decisions, et le run la journalise', async () => {
+    const h = harnais({ balances: HORS_BANDE, snapshot: veille('200000') });
+    await lance(h);
+
+    const ligne = h.table.get(`${RUN_DATE}|rebalance|false`);
+    expect(ligne?.intent.reason).toContain(SUSPENSION_MARKER);
+    expect(ligne?.intent.reason).toContain('-50.00 %');
+    // La cible permanente reste lisible : la production la vise toujours.
+    expect(ligne?.intent.weightsTarget.USDC.toString()).toBe('0.3');
+    expect(h.lignes.some((l) => l.includes(SUSPENSION_MARKER))).toBe(true);
+    // Le jour sans suspension n'a aucune ligne qui porte le marqueur.
+    const sans = harnais({ balances: HORS_BANDE, snapshot: veille('130000') });
+    await lance(sans);
+    const libre = sans.table.get(`${RUN_DATE}|rebalance|false`);
+    expect(libre?.intent.trigger).toBe('CASH_BAND');
+    // Meme colonne `weights_target` suspendu ou non : la ligne reste lisible.
+    expect(libre?.intent.weightsTarget.USDC.toString()).toBe('0.3');
+  });
+
+  it('ecrit la photo du jour, avec ses poids, ses positions et ses benchmarks', async () => {
+    const h = harnais({ balances: DANS_LA_BANDE });
+    const result = complete(await lance(h));
+
+    expect(result.snapshot.status).toBe('TO_RECORD');
+    const photographie = h.photos.get(RUN_DATE);
+    expect(photographie?.totalValueUsdc.toString()).toBe('100000');
+    expect(photographie?.positions.BTC?.toString()).toBe('0.8');
+    expect(photographie?.weights.USDC.toString()).toBe('0.3');
+    expect(Object.keys(photographie?.benchmarks ?? {})).toContain(PORTFOLIO_KEYS.index);
+    // Premier run : l'indisponibilite du drawdown s'ecrit par l'absence de la cle.
+    expect(result.drawdown.status).toBe('UNAVAILABLE');
+    expect(Object.keys(photographie?.benchmarks ?? {})).not.toContain(PORTFOLIO_KEYS.drawdown);
+  });
+
+  /*
+   * Le second run est reellement lance, comme pour `decisions`. La difference
+   * est que `snapshots` a une cle primaire qui **remplace** : ce n'est donc pas
+   * la base qui tient l'unicite de la photo mais la regle d'anteriorite, et
+   * c'est l'indice de croissance — non idempotent par multiplication — qu'elle
+   * protege.
+   */
+  it('deux runs le meme jour n’ecrivent qu’une photo, et n’avancent pas l’indice', async () => {
+    const h = harnais({ balances: HORS_BANDE, snapshot: veille('100000') });
+
+    const premier = complete(await lance(h));
+    const second = complete(await lance(h));
+
+    expect(h.appels.filter((a) => a === 'recordSnapshot')).toHaveLength(1);
+    expect(h.photos.size).toBe(2);
+    expect(premier.snapshot.status).toBe('TO_RECORD');
+    expect(second.snapshot).toMatchObject({ status: 'SKIPPED', code: 'ALREADY_SNAPSHOTTED' });
+    // Le meme chiffre aux deux runs : la suspension ne peut pas basculer entre eux.
+    expect(premier.drawdown.status === 'COMPUTED' && premier.drawdown.drawdown.toString()).toBe('0');
+    expect(second.drawdown.status === 'COMPUTED' && second.drawdown.drawdown.toString()).toBe('0');
+  });
+
+  it('le lendemain chaine sa photo sur la veille, avec sa propre fenetre de flux', async () => {
+    const h = harnais({ balances: DANS_LA_BANDE });
+    await lance(h);
+
+    const lendemain: Harnais = {
+      ...h,
+      clock: { today: () => '2026-09-13', instant: () => new Date('2026-09-13T07:00:00.000Z') },
+    };
+    const result = complete(await lance(lendemain));
+
+    expect(h.photos.size).toBe(2);
+    expect(result.drawdown.status).toBe('COMPUTED');
+    /*
+     * Trois appels pour deux runs : le premier n'a demande que la fenetre de
+     * carence, le second y a ajoute celle du chainage, qui part de l'horodatage
+     * de la photo precedente et non de sept jours en arriere.
+     */
+    expect(h.appels.filter((a) => a === 'recentCashFlows')).toHaveLength(3);
+    expect(h.depuis.map((d) => d.toISOString())).toEqual([
+      '2026-09-05T00:00:00.000Z',
+      '2026-09-06T00:00:00.000Z',
+      '2026-09-12T07:00:00.000Z',
+    ]);
   });
 });
