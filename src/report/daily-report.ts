@@ -341,10 +341,24 @@ const HEAD = `${CELL};font-weight:600;color:#5a6472`;
 const NOTE = 'font-size:13px;color:#5a6472;margin:6px 0';
 const ALERT = 'background:#fdecec;border-left:3px solid #c0392b;padding:8px;margin:10px 0';
 
-const cells = (values: readonly string[], style: string): string =>
-  values.map((value) => `<td style="${style}">${value}</td>`).join('');
+/**
+ * Une cellule, etalee sur plusieurs colonnes quand une raison prend la place des
+ * chiffres. Le cas n'existe que pour une ligne sans metrique : recopier la meme
+ * phrase dans trois cellules, ou en laisser deux vides derriere elle, se lirait
+ * comme un rendu casse.
+ */
+type Cell = string | { readonly text: string; readonly span: number };
 
-const table = (header: readonly string[], rows: readonly (readonly string[])[]): string =>
+const cells = (values: readonly Cell[], style: string): string =>
+  values
+    .map((value) =>
+      typeof value === 'string'
+        ? `<td style="${style}">${value}</td>`
+        : `<td style="${style}" colspan="${String(value.span)}">${value.text}</td>`,
+    )
+    .join('');
+
+const table = (header: readonly Cell[], rows: readonly (readonly Cell[])[]): string =>
   `<table style="${TABLE}"><tr>${cells(header, HEAD)}</tr>` +
   rows.map((row) => `<tr>${cells(row, CELL)}</tr>`).join('') +
   '</table>';
@@ -431,12 +445,34 @@ function decisionSection(run: CompletedRun): string {
   return section('Decision du jour', table(['Strategie', 'Trigger', 'Jambes', 'Risque', 'Motif'], rows));
 }
 
+/** L'en-tete du tableau de comparaison : le nom, puis les colonnes de metriques. */
+const COMPARISON_HEADER: readonly string[] = [
+  '',
+  'TWR cumule',
+  'Max drawdown',
+  `Sharpe ${String(SHARPE_WINDOW)} j`,
+];
+
+/**
+ * Le §9 demande quatre comparaisons ; deux n'ont pas de courbe en phase 1, et
+ * c'est **le tableau** qui le dit, a la place exacte ou l'operateur les cherche.
+ * Une absence dont la raison vit ailleurs — note de bas de rapport, commentaire
+ * de source, page de documentation — se lit comme une panne. L'ecart avec la
+ * spec est porte par `docs/rapport-quotidien.md` §6.
+ */
+const SANS_COURBE =
+  "sans courbe en phase 1 : aucune strategie n'execute, son portefeuille simule serait le portefeuille reel";
+
+/** La raison couvre toutes les colonnes de metriques, derivees de l'en-tete : en ajouter une ne peut pas laisser la ligne courte. */
+const ombreRow = (label: string): readonly Cell[] => [
+  label,
+  { text: SANS_COURBE, span: COMPARISON_HEADER.length - 1 },
+];
+
 /**
  * Les fenetres ne coincident pas des deux cotes du tableau — hold sur la fenetre
  * OHLCV du run, portefeuille chaine depuis la premiere photo — et le rapport le
- * dit plutot que d'aligner deux chiffres qui ne se comparent pas. `ladder` et
- * `dca` n'ont pas de colonne : `snapshot.ts` n'ecrit pas leurs courbes en phase 1,
- * faute d'ordre place. Voir `docs/rapport-quotidien.md` §5.
+ * dit plutot que d'aligner deux chiffres qui ne se comparent pas.
  */
 function comparisonSection(input: DailyReportInput): string {
   const { run } = input;
@@ -453,10 +489,12 @@ function comparisonSection(input: DailyReportInput): string {
 
   /* La photo porte l'indice et son sommet, pas la serie : ni pire recul passe ni Sharpe ne s'en lisent. */
   const sansSerie = metricText(missing('la photo ne porte pas la serie'), signedPct);
-  const rows: string[][] = [
+  const rows: (readonly Cell[])[] = [
     ['Portefeuille', metricText(cumulativeReturn(run), signedPct), sansSerie, sansSerie],
     holdRow('Hold BTC', HOLD_BTC_KEYS),
     holdRow('Hold 50/50', HOLD_5050_KEYS),
+    ombreRow('Ladder (ombre)'),
+    ombreRow('DCA (ombre)'),
   ];
 
   const recul = metricText(
@@ -468,10 +506,10 @@ function comparisonSection(input: DailyReportInput): string {
 
   return section(
     'Comparaison',
-    table(['', 'TWR cumule', 'Max drawdown', `Sharpe ${String(SHARPE_WINDOW)} j`], rows) +
+    table(COMPARISON_HEADER, rows) +
       `<p style="${NOTE}">Portefeuille : TWR depuis la premiere photo. Hold : fenetre OHLCV de ${String(window.length)} jour(s), du ${escape(first)} au ${escape(last)}. Les deux periodes ne coincident pas tant que le systeme n'a pas tourne aussi longtemps que la fenetre.</p>` +
       `<p style="${NOTE}">Recul actuel depuis le plus haut : ${recul}. Ce n'est pas un max drawdown : la photo porte l'indice et son sommet, pas la serie — ni le pire recul passe ni le Sharpe du portefeuille ne s'en lisent.</p>` +
-      `<p style="${NOTE}">Ladder et DCA : aucune courbe en phase 1, aucun ordre n'etant place. Leur decision du jour figure ci-dessus.</p>`,
+      `<p style="${NOTE}">Ladder et DCA : leur decision du jour figure ci-dessus ; leur P&L demande un rejeu jour par jour, pas une photo.</p>`,
   );
 }
 

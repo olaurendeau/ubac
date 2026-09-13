@@ -32,7 +32,7 @@ Les six points du §9, dans l'ordre où ils apparaissent :
 | Distance au prochain déclenchement | poids USDC contre sa bande, ratio BTC/ETH contre la sienne quand B est armé | calculée par le rendu |
 | Décision du jour | les quatre stratégies, `trigger NONE` compris, avec le verdict de risque | `outcomes` |
 | Allocation | poids constatés contre cibles, et l'écart | `weights`, `params.targets` |
-| Comparaison | TWR, max drawdown et Sharpe 90 j, portefeuille contre hold BTC et hold 50/50 | `snapshots.benchmarks` |
+| Comparaison | TWR, max drawdown et Sharpe 90 j, portefeuille contre hold BTC et hold 50/50 ; ladder et DCA y figurent **sans courbe**, avec leur raison (section 6) | `snapshots.benchmarks` |
 | Métriques indisponibles | ce que le noyau n'a pas pu rendre, et pourquoi | `benchmarkGaps` |
 
 HTML en ligne, une colonne, largeur maximale de 520 px : ni feuille de style, ni
@@ -131,11 +131,9 @@ Quatre absences sont structurelles en phase 1 :
   Ce qui est rendu, et nommé comme tel, est le **recul actuel depuis le plus
   haut** — celui que la règle de suspension du §6 applique. Ce n'est pas un max
   drawdown, et l'appeler ainsi serait faux.
-- **Courbes ladder et DCA.** `snapshot.ts` ne les écrit pas : aucune stratégie ne
-  place d'ordre en phase 1, les trois portefeuilles simulés seraient le
-  portefeuille réel au centime près, et trois courbes identiques feraient lire
-  une comparaison là où il n'y en a aucune. Leur **décision du jour** figure bien
-  au rapport ; leur P&L viendra du rejeu historique.
+- **Courbes ladder et DCA.** `snapshot.ts` ne les écrit pas. C'est un écart
+  assumé avec le §9 de la spec, traité à part en section 6 : le rapport le dit
+  dans le tableau de comparaison, pas seulement ici.
 - **Les deux fenêtres ne coïncident pas.** Les hold sont dérivés de la fenêtre
   OHLCV du run ; l'indice du portefeuille est chaîné depuis la première photo.
   Tant que le système n'a pas tourné aussi longtemps que la fenêtre, les colonnes
@@ -144,7 +142,68 @@ Quatre absences sont structurelles en phase 1 :
 - **Aucune version texte.** Le courrier est HTML seul. Une alternative `text/plain`
   aiderait la délivrabilité ; elle n'est pas livrée.
 
-## 6. Le rendu ne connaît pas le run
+## 6. Écart assumé avec le §9 : ni courbe ladder, ni courbe DCA
+
+### La divergence
+
+| Source | Ce qui est dit, ce qui est fait |
+|---|---|
+| `docs/specs/ubac-rebalance.md` §9 | « Comparaison au hold BTC, au hold 50/50, au **ladder shadow** et au **DCA shadow**. » |
+| `docs/specs/ubac-rebalance.md` §4, `snapshots.benchmarks` | `{hold_btc, hold_5050, ladder, dca}` |
+| `src/jobs/snapshot.ts` | écrit `hold_btc` et `hold_5050` ; les clés `ladder` et `dca` sont **absentes**, pas nulles |
+| `src/report/daily-report.ts` | rend les quatre lignes ; les deux ombres portent leur raison à la place des chiffres |
+
+### Pourquoi les deux courbes ne sont pas écrites
+
+**En phase 1, aucune stratégie ne place d'ordre.** Les trois portefeuilles
+simulés seraient donc le portefeuille réel, au centime près, et trois courbes
+identiques feraient lire une comparaison là où il n'y en a aucune. Le §9 attend
+quatre comparaisons parce qu'il décrit un système qui exécute ; tant qu'il
+observe, deux d'entre elles n'ont rien à comparer.
+
+Rendre ces colonnes serait **pire que de ne pas les rendre** : une comparaison
+fausse, affichée comme une information de confiance sur un téléphone. Un
+opérateur qui lit « ladder +25,00 % » à côté de « portefeuille +25,00 % » en
+conclut que sa stratégie fait jeu égal avec son benchmark, alors qu'il regarde
+deux fois le même chiffre.
+
+### Pourquoi le rapport le dit quand même, et dans le tableau
+
+Une absence sans motif, à l'endroit où l'opérateur cherche l'information, se lit
+comme une panne. Les deux lignes figurent donc **dans le tableau de
+comparaison** — `Ladder (ombre)` et `DCA (ombre)` —, et la raison occupe les
+trois colonnes de métriques :
+
+```
+Ladder (ombre) | sans courbe en phase 1 : aucune strategie n'execute,
+                 son portefeuille simule serait le portefeuille reel
+```
+
+Ni chiffre, ni « indisponible » : « indisponible » annoncerait un trou de la
+photo, réparable, alors que c'est une absence assumée. Leur **décision du jour**
+figure bien au rapport, une section plus haut — ce qui est observable l'est.
+
+Deux sondes tiennent cette affirmation dans `test/report/daily-report.test.ts` :
+l'une constate que la mention est bien dans le tableau, entre les hold et les
+notes ; l'autre qu'aucune courbe n'est fabriquée — les lignes d'ombre ne portent
+aucun nombre, et planter une clé `ladder_twr` dans la photo ne change pas un
+octet du rendu.
+
+### Ce qui lèverait l'écart
+
+Une **simulation des ombres au jour le jour** : faire tourner ladder et DCA sur
+un portefeuille simulé propre à chacun, chaîné de photo en photo. C'est ce que
+le rejeu historique fait déjà sur une période passée — `src/replay/engine.ts`,
+résultats dans [resultats-phase-0.md](resultats-phase-0.md) ; l'amener dans le
+run quotidien n'appartient pas à la phase 1. Le jour où ces courbes existeront, les
+deux lignes devront prendre leurs chiffres, et la seconde sonde est ce qui le
+rappellera.
+
+`docs/specs/ubac-rebalance.md` n'est **pas** modifiée. Aligner la spec sur ce
+choix est une décision de l'opérateur, pas un ajustement technique de ce lot :
+la divergence est signalée ici, elle n'est pas tranchée ici.
+
+## 7. Le rendu ne connaît pas le run
 
 `eslint.config.js` interdit à `src/report/` d'importer `src/jobs/`, et la règle a
 raison : un rendu qui importerait le run ne se testerait plus sans monter un run.

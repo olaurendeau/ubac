@@ -160,9 +160,11 @@ describe('rendu — la sortie attendue, ligne a ligne', () => {
       'Portefeuille | +25.00 % | indisponible | indisponible',
       'Hold BTC | +41.23 % | -27.18 % | 1.41',
       'Hold 50/50 | +30.10 % | -31.41 % | 1.00',
+      "Ladder (ombre) | sans courbe en phase 1 : aucune strategie n'execute, son portefeuille simule serait le portefeuille reel",
+      "DCA (ombre) | sans courbe en phase 1 : aucune strategie n'execute, son portefeuille simule serait le portefeuille reel",
       "Portefeuille : TWR depuis la premiere photo. Hold : fenetre OHLCV de 3 jour(s), du 2026-09-10 au 2026-09-12. Les deux periodes ne coincident pas tant que le systeme n'a pas tourne aussi longtemps que la fenetre.",
       "Recul actuel depuis le plus haut : -3.85 %. Ce n'est pas un max drawdown : la photo porte l'indice et son sommet, pas la serie — ni le pire recul passe ni le Sharpe du portefeuille ne s'en lisent.",
-      "Ladder et DCA : aucune courbe en phase 1, aucun ordre n'etant place. Leur decision du jour figure ci-dessus.",
+      'Ladder et DCA : leur decision du jour figure ci-dessus ; leur P&L demande un rejeu jour par jour, pas une photo.',
     ]);
   });
 
@@ -304,6 +306,74 @@ describe('§9 — les metriques viennent de la photo, avec leur motif quand elle
     expect(REPORT_PORTFOLIO_KEYS).toEqual(PORTFOLIO_KEYS);
     /* Non vide : sans cette sonde, deux tables vides « s'accorderaient » aussi. */
     expect(Object.values(REPORT_BTC_KEYS)).toContain('hold_btc_twr');
+  });
+});
+
+// --- Les quatre comparaisons du §9, dont deux sans courbe -------------------
+
+/**
+ * Le §9 demande quatre comparaisons — hold BTC, hold 50/50, ladder et DCA. Deux
+ * n'ont pas de courbe en phase 1 : `snapshot.ts` ne les ecrit pas, aucune
+ * strategie ne placant d'ordre, et trois portefeuilles simules identiques au
+ * reel feraient lire une comparaison la ou il n'y en a aucune. L'ecart est
+ * assume, et porte par `docs/rapport-quotidien.md` §6 ; ces deux sondes le
+ * tiennent : la raison est **dans le tableau**, et rien n'y fabrique de chiffre.
+ */
+describe('§9 — ladder et DCA : l’absence de courbe se dit la ou on la cherche', () => {
+  const ombreLignes = (rendu: readonly string[]): readonly string[] =>
+    rendu.filter((ligne) => /^(Ladder|DCA) \(ombre\) \|/.test(ligne));
+
+  it('porte la raison dans le tableau, entre les hold et les notes', () => {
+    const mail = renderDailyReport(INPUT);
+    const rendu = lignes(mail.html);
+    const titre = rendu.indexOf('Comparaison');
+    const ladder = rendu.findIndex((ligne) => ligne.startsWith('Ladder (ombre) |'));
+    const dca = rendu.findIndex((ligne) => ligne.startsWith('DCA (ombre) |'));
+    const note = rendu.findIndex((ligne) => ligne.startsWith('Portefeuille : TWR depuis'));
+
+    /* Dans le tableau, pas apres : un operateur qui cherche ces deux lignes tombe sur la raison. */
+    expect(titre).toBeGreaterThan(-1);
+    expect(ladder).toBeGreaterThan(titre);
+    expect(dca).toBeGreaterThan(ladder);
+    expect(note).toBeGreaterThan(dca);
+
+    for (const ligne of ombreLignes(rendu)) {
+      expect(ligne).toContain("aucune strategie n'execute");
+      expect(ligne).toContain('serait le portefeuille reel');
+    }
+    /* La raison couvre les trois colonnes de metriques : sans cela, deux cellules vides se liraient comme un rendu casse. */
+    expect(mail.html).toContain('colspan="3"');
+  });
+
+  it('ne fabrique aucune courbe : la photo n’en porte pas la cle, et en poser une ne change rien', () => {
+    /* L'etat fige est bien celui que la photo ecrit : aucune cle d'ombre. */
+    expect(Object.keys(BENCHMARKS).filter((cle) => /ladder|dca/.test(cle))).toEqual([]);
+
+    const attendu = renderDailyReport(INPUT).html;
+    const ombres = ombreLignes(lignes(attendu));
+    expect(ombres).toHaveLength(2);
+    for (const ligne of ombres) {
+      /* Ni chiffre, ni pourcentage : une valeur sur ces lignes serait inventee. */
+      expect(ligne).not.toMatch(/[+-]?\d+[.,]\d+/);
+      expect(ligne).not.toContain('%');
+      /* Ni « indisponible » : ce n'est pas un trou de la photo, c'est une absence assumee. */
+      expect(ligne).not.toContain('indisponible');
+    }
+
+    /*
+     * Le rendu ne lit aucune cle d'ombre : en planter dans la photo ne fait
+     * apparaitre aucune courbe. Le jour ou le rejeu les produira, il faudra
+     * toucher ce fichier — et cette sonde est ce qui le dira.
+     */
+    const plante = avecRun({
+      benchmarks: {
+        ...BENCHMARKS,
+        ladder_twr: dec('0.99'),
+        ladder_max_drawdown: dec('-0.5'),
+        dca_twr: dec('0.42'),
+      },
+    });
+    expect(renderDailyReport(plante).html).toBe(attendu);
   });
 });
 
