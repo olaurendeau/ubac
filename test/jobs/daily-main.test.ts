@@ -131,7 +131,7 @@ describe('point d’entree du run quotidien', { timeout: 30_000 }, () => {
    * Arguments valides, environnement vide : le programme va jusqu'a la
    * configuration et s'arrete la. C'est la sonde qui etablit que la
    * configuration entre par `src/config/env.ts` — le message est celui de
-   * `ConfigError`, avec les six variables nommees et aucune valeur citee — et
+   * `ConfigError`, avec les huit variables nommees et aucune valeur citee — et
    * qu'aucun adapter n'ouvre quoi que ce soit avant elle : ni base, ni cle, ni
    * reseau.
    */
@@ -145,6 +145,8 @@ describe('point d’entree du run quotidien', { timeout: 30_000 }, () => {
       'COINBASE_API_KEY',
       'COINBASE_API_SECRET',
       'BREVO_API_KEY',
+      'NTFY_URL',
+      'NTFY_TOPIC',
       'NTFY_TOKEN',
       'HEALTHCHECK_URL',
     ]) {
