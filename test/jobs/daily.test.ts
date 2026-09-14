@@ -11,6 +11,7 @@ import type {
 import { PORTFOLIO_KEYS, SUSPENSION_MARKER } from '../../src/jobs/snapshot.js';
 import type { DailyCandle, DailyWindow } from '../../src/adapters/market.js';
 import type { HttpOutcome, HttpRequest, HttpSend } from '../../src/adapters/http.js';
+import { RUN_MARKER, openHealthcheck } from '../../src/adapters/healthcheck.js';
 import type { AlertEvent } from '../../src/adapters/notifier.js';
 import { openNotifier } from '../../src/adapters/notifier.js';
 import type { UbacConfig } from '../../src/config/env.js';
@@ -44,6 +45,13 @@ import { photo, PORTFOLIO, qty, solde } from './doubles.js';
  * garantie « une alerte qui echoue ne fait pas tomber le run » est eprouvee sur
  * le code qui la porte et non sur une imitation complaisante. Aucun reseau :
  * `openHttp` n'est jamais appele, le transport est une fonction du test.
+ *
+ * **Le healthcheck suit la meme regle**, et pour la meme raison : c'est le vrai
+ * `openHealthcheck` qui est monte, sur un second transport double, donc le corps
+ * reellement poste est lisible ici. Un double de `Healthcheck` aurait laisse
+ * passer la seule chose qui compte — le marqueur present ou absent — puisque
+ * c'est l'adapter qui le pose. Les deux transports sont distincts pour que les
+ * sondes puissent faire echouer l'un sans l'autre.
  */
 
 // --- Doubles ----------------------------------------------------------------
@@ -88,7 +96,18 @@ interface Scenario {
   readonly runDate?: string;
   /** Le transport du notifieur. Par defaut : tout part. */
   readonly transport?: HttpSend;
+  /** Le transport du healthcheck. Par defaut : le ping passe. */
+  readonly pulse?: HttpSend;
+  /**
+   * Le port qui leve, pour eprouver les chemins d'exception. Trois profondeurs
+   * de l'enchainement : avant la premiere lecture, au milieu des lectures, apres
+   * la derniere ecriture.
+   */
+  readonly panne?: 'keyPermissions' | 'dailyCandles' | 'recordSnapshot';
 }
+
+/** Ce que leve le port en panne. Reconnaissable, et sans rapport avec le metier. */
+const PANNE = 'panne simulee';
 
 interface Harnais {
   readonly ports: DailyPorts;
@@ -109,6 +128,8 @@ interface Harnais {
   readonly photos: Map<string, SnapshotRecord>;
   /** Les publications ntfy reellement tentees, corps JSON compris. */
   readonly pushes: { readonly url: string; readonly payload: NtfyPayload }[];
+  /** Les pings reellement tentes, corps en clair compris. Au plus un par run. */
+  readonly pings: { readonly url: string; readonly body: string }[];
 }
 
 /**
@@ -165,6 +186,7 @@ function harnais(scenario: Scenario = {}): Harnais {
    */
   const photos = new Map<string, SnapshotRecord>();
   const pushes: { url: string; payload: NtfyPayload }[] = [];
+  const pings: { url: string; body: string }[] = [];
   if (scenario.snapshot !== undefined) photos.set(scenario.snapshot.runDate, scenario.snapshot);
   const runDate = scenario.runDate ?? RUN_DATE;
   const closes = scenario.closes ?? { BTC: BTC_CLOSE, ETH: ETH_CLOSE };
@@ -182,6 +204,11 @@ function harnais(scenario: Scenario = {}): Harnais {
       ? { status: 'OK', httpStatus: 200 }
       : scenario.transport(request);
   };
+  const pulse: HttpSend = async (request: HttpRequest): Promise<HttpOutcome> => {
+    appels.push('ping');
+    pings.push({ url: request.url, body: request.body });
+    return scenario.pulse === undefined ? { status: 'OK', httpStatus: 200 } : scenario.pulse(request);
+  };
 
   return {
     appels,
@@ -191,6 +218,7 @@ function harnais(scenario: Scenario = {}): Harnais {
     table,
     photos,
     pushes,
+    pings,
     gitSha: GIT_SHA,
     clock: { today: () => runDate, instant: () => new Date(`${runDate}T07:00:00.000Z`) },
     config,
@@ -199,6 +227,7 @@ function harnais(scenario: Scenario = {}): Harnais {
       exchange: {
         keyPermissions: () => {
           appels.push('keyPermissions');
+          if (scenario.panne === 'keyPermissions') throw new Error(PANNE);
           return Promise.resolve(PERMISSIONS);
         },
         balances: () => {
@@ -213,6 +242,7 @@ function harnais(scenario: Scenario = {}): Harnais {
       market: {
         dailyCandles: (asset, window) => {
           appels.push(`dailyCandles:${asset}`);
+          if (scenario.panne === 'dailyCandles') throw new Error(PANNE);
           fenetres.push({ asset, window });
           const rendue =
             scenario.serie?.(asset, window) ??
@@ -232,6 +262,7 @@ function harnais(scenario: Scenario = {}): Harnais {
         },
         recordSnapshot: (input) => {
           appels.push('recordSnapshot');
+          if (scenario.panne === 'recordSnapshot') throw new Error(PANNE);
           photos.set(input.runDate, input);
           return Promise.resolve();
         },
@@ -254,9 +285,13 @@ function harnais(scenario: Scenario = {}): Harnais {
         },
       },
       notifier: openNotifier(config.secrets, transport),
+      healthcheck: openHealthcheck(config.secrets, pulse),
     },
   };
 }
+
+/** Le corps du ping du run, ou `undefined` si aucun ping n'est parti. */
+const corpsDuPing = (h: Harnais): string | undefined => h.pings[0]?.body;
 
 /** Les evenements pousses, dans l'ordre d'envoi. Premier tag, cf. `NtfyPayload`. */
 const evenements = (h: Harnais): AlertEvent[] => h.pushes.map((push) => push.payload.tags[0]);
@@ -329,6 +364,10 @@ describe('§8 etapes 1 a 5 — l’enchainement du run', () => {
       'recordDecision',
       // La photo ferme le run : un abandon rend avant d'y arriver.
       'recordSnapshot',
+      // Et le ping ferme le tout, apres la derniere ecriture comme apres la
+      // derniere alerte. Un run sans incident n'en pousse aucune, d'ou la
+      // suite directe ; le rang relatif des trois est sonde plus bas.
+      'ping',
     ]);
   });
 
@@ -996,5 +1035,189 @@ describe('§9 — les alertes push', () => {
 
     await expect(lance(h)).rejects.toThrow(DailyRunError);
     expect(evenements(h)).toEqual(['JOB_FAILED']);
+  });
+});
+
+/**
+ * Le ping de fin de run, §9. **Trois fins, trois sondes**, et la troisieme est
+ * celle qui compte : ce n'est pas l'envoi d'un ping qu'elle verifie, c'est son
+ * absence.
+ *
+ * Les corps sont relus tels quels, marqueur compris. Ce que `RUN_MARKER` vaut
+ * n'est jamais recopie ici — la constante est importee — parce que deux
+ * litteraux divergent et que celui qui n'a pas de sonde gagne.
+ */
+describe('§9 — le ping du healthcheck', () => {
+  it('pingue en dernier, apres la derniere alerte et apres la derniere ecriture', async () => {
+    const h = harnais({ balances: HORS_BANDE, snapshot: veille('200000') });
+    await lance(h);
+
+    expect(h.appels[h.appels.length - 1]).toBe('ping');
+    expect(h.appels.lastIndexOf('recordSnapshot')).toBeLessThan(h.appels.indexOf('ping'));
+    expect(h.appels.lastIndexOf('notify')).toBeLessThan(h.appels.indexOf('ping'));
+  });
+
+  it('un run conclu pingue avec le marqueur, et dit ce qui aide a investiguer', async () => {
+    const h = harnais({ balances: DANS_LA_BANDE });
+    const result = await lance(h);
+
+    expect(h.pings).toHaveLength(1);
+    expect(corpsDuPing(h)).toContain(RUN_MARKER);
+    expect(corpsDuPing(h)).toContain(`run_date=${RUN_DATE}`);
+    expect(corpsDuPing(h)).toContain(`git_sha=${GIT_SHA}`);
+    expect(corpsDuPing(h)).toContain('decisions=4');
+    expect(result.report.ping).toEqual({ status: 'PINGED', marked: true });
+  });
+
+  /*
+   * L'abandon pingue, et c'est la moitie de la regle qu'on oublie : le job a
+   * tourne, il n'a simplement pas abouti. Sans marqueur, updown.io le lit DOWN
+   * — donc exactement comme un job mort, ce qui est la lecture voulue — mais le
+   * corps, lui, dit laquelle des deux pannes a eu lieu.
+   */
+  it('un run abandonne pingue SANS le marqueur, et nomme l’etape et le code', async () => {
+    const h = harnais({ balances: [solde('BTC', '0'), solde('ETH', '0'), solde('USDC', '0')] });
+    const result = await lance(h);
+
+    expect(h.pings).toHaveLength(1);
+    expect(corpsDuPing(h)).not.toContain(RUN_MARKER);
+    expect(corpsDuPing(h)).toContain('etape=VALUATION');
+    expect(corpsDuPing(h)).toContain('code=NON_POSITIVE_VALUE');
+    expect(result.report.ping).toEqual({ status: 'PINGED', marked: false });
+  });
+
+  /*
+   * **La sonde la plus importante du lot.** Un ping d'echec est une affirmation
+   * — « j'ai tourne, je n'ai pas abouti » — et la formuler suppose que le code a
+   * survecu assez loin pour la decider. Une exception n'offre pas cette
+   * garantie : c'est l'absence de ping qui doit parler.
+   *
+   * Les deux alertes partent quand meme, elles : le canal court et la
+   * surveillance d'absence ne se remplacent pas.
+   */
+  it('une exception ne pingue PAS, meme en echec', async () => {
+    const h = harnais({ balances: DANS_LA_BANDE, runDate: '2026-02-30' });
+
+    await expect(lance(h)).rejects.toThrow(DailyRunError);
+    expect(h.pings).toEqual([]);
+    expect(evenements(h)).toEqual(['JOB_FAILED']);
+  });
+
+  /*
+   * Aucun chemin d'exception ne laisse passer un ping, et « aucun » se sonde en
+   * les prenant un par un plutot qu'en croyant la phrase. Trois exceptions
+   * levees a trois profondeurs differentes de l'enchainement : avant la
+   * premiere lecture, au milieu des lectures, et apres la derniere ecriture —
+   * la derniere etant celle qui aurait le plus de raisons de passer, le run
+   * ayant alors tout fait.
+   */
+  it.each(['keyPermissions', 'dailyCandles', 'recordSnapshot'] as const)(
+    'aucun ping quand %s leve',
+    async (port) => {
+      const h = harnais({ balances: DANS_LA_BANDE, panne: port });
+
+      await expect(lance(h)).rejects.toThrow(PANNE);
+      expect(h.pings).toEqual([]);
+    },
+  );
+
+  /*
+   * La tension du lot, tranchee et sondee. Le run a **conclu** — quatre lignes
+   * de `decisions`, sa photo — mais une alerte n'est pas partie. Le ping part
+   * sans marqueur : la panne d'une alerte est exactement la panne qu'aucune
+   * alerte ne peut signaler, et le healthcheck est le seul canal restant qui ne
+   * depende pas de ntfy.
+   *
+   * L'etat porte son propre nom, `RUN_NON_RENDU`, et non celui d'un abandon :
+   * le travail est fait, et un corps qui pretendrait le contraire enverrait
+   * l'operateur chercher une panne qui n'existe pas.
+   */
+  it('un run conclu dont une alerte n’est pas partie pingue SANS le marqueur', async () => {
+    const h = harnais({
+      balances: HORS_BANDE,
+      snapshot: veille('200000'),
+      transport: transportFaillible(1),
+    });
+    const result = complete(await lance(h));
+
+    expect(h.table.size).toBe(4);
+    expect(corpsDuPing(h)).not.toContain(RUN_MARKER);
+    expect(corpsDuPing(h)).toContain('RUN_NON_RENDU');
+    expect(corpsDuPing(h)).toContain('alertes_non_parties=1');
+    expect(result.report.ping.marked).toBe(false);
+  });
+
+  /*
+   * L'autre moitie de la tension : le ping, lui, ne change **rien** au code de
+   * sortie. Son absence est deja ce qui fait sonner la surveillance, alors
+   * qu'une alerte qui n'est pas partie ne laisse rien derriere elle. Voir
+   * `reported` et docs/healthcheck.md §4.
+   */
+  it('un ping en echec ne defait rien et ne change pas le code de sortie', async () => {
+    const h = harnais({
+      balances: DANS_LA_BANDE,
+      pulse: () =>
+        Promise.resolve<HttpOutcome>({
+          status: 'FAILED',
+          failure: { kind: 'REFUS', httpStatus: 503 },
+        }),
+    });
+    const result = complete(await lance(h));
+
+    expect(h.table.size).toBe(4);
+    expect(h.photos.size).toBe(1);
+    expect(reported(result)).toBe(true);
+    expect(result.report.ping).toEqual({
+      status: 'FAILED',
+      marked: true,
+      reason: 'refus du serveur, HTTP 503',
+    });
+  });
+
+  /*
+   * La garantie « ne rejette jamais » vit dans `healthcheck.ts`, en un seul
+   * endroit, et le run ne l'entoure d'aucun `try` : si elle cedait, le run
+   * tomberait apres avoir tout ecrit — et apres avoir alerte.
+   */
+  it('un transport de ping qui leve ne fait pas tomber le run', async () => {
+    const h = harnais({
+      balances: DANS_LA_BANDE,
+      pulse: () => {
+        throw new TypeError('socket fermee');
+      },
+    });
+    const result = complete(await lance(h));
+
+    expect(h.table.size).toBe(4);
+    expect(result.report.ping).toEqual({
+      status: 'FAILED',
+      marked: true,
+      reason: 'transport en echec',
+    });
+  });
+
+  /*
+   * Un ping qui ne part pas ne doit pas etre muet : sans sa ligne, l'operateur
+   * voit updown.io sonner sans pouvoir dire si le job est mort ou si c'est le
+   * ping qui n'a pas abouti. Et la ligne ne porte pas l'URL — c'est un secret
+   * de fait, qui la connait peut masquer un job mort.
+   */
+  it('journalise le ping, dans les deux sens, sans jamais citer l’URL', async () => {
+    const parti = harnais({ balances: DANS_LA_BANDE });
+    await lance(parti);
+    expect(parti.lignes.some((l) => l.startsWith('healthcheck : pingue'))).toBe(true);
+
+    const rate = harnais({
+      balances: DANS_LA_BANDE,
+      pulse: () =>
+        Promise.resolve<HttpOutcome>({ status: 'FAILED', failure: { kind: 'RESEAU' } }),
+    });
+    await lance(rate);
+    expect(rate.lignes.some((l) => l.includes('NON PINGUE') && l.includes('echec reseau'))).toBe(
+      true,
+    );
+    expect([...parti.lignes, ...rate.lignes].join('\n')).not.toContain(
+      ENV.HEALTHCHECK_URL,
+    );
   });
 });

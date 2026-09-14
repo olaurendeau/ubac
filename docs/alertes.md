@@ -147,7 +147,11 @@ apprend à ignorer ses alertes.
 nominal — ce qui est aussi pourquoi il ne suffit pas : un job qui ne **démarre
 pas** ne pousse rien non plus, puisqu'aucun code ne tourne pour l'émettre. C'est
 le healthcheck externe du §9 — « la surveillance ne doit pas dépendre du système
-surveillé » — qui comblera ce trou-là, et il appartient à un lot suivant.
+surveillé » — qui comble ce trou-là, depuis le lot Q6b :
+[healthcheck.md](healthcheck.md). Les deux canaux ne se remplacent pas, et le
+second tranche un cas que le premier laisse ouvert — un run abouti dont l'alerte
+n'est pas partie pingue sans son marqueur, parce que la panne d'une alerte est
+exactement la panne qu'aucune alerte ne peut signaler.
 
 ## 2 ter. Quand elles partent, et ce que vaut une alerte qui n'est pas partie
 

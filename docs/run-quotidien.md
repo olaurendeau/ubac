@@ -112,9 +112,15 @@ Aucune variable `UBAC_RISK_*` n'est acceptée : les seuils de risque vivent dans
    trace.
 7. **Benchmarks et photo du jour** dans `snapshots` : valeur totale, poids,
    positions, benchmarks. Détail ci-dessous.
-9. **Les alertes push** du §9, après la dernière écriture — et aussi sur un
-   abandon ou une exception, où les étapes précédentes n'ont pas eu lieu.
-   [alertes.md](alertes.md).
+9. **Le ping du healthcheck**, en toute dernière position. Un run conclu pingue
+   avec son marqueur, un abandon pingue sans lui, et une **exception ne pingue
+   pas du tout** : c'est l'absence qui alerte.
+   [healthcheck.md](healthcheck.md).
+
+L'étape 8 — le rapport Brevo — n'existe pas encore. Les **alertes push** du §9,
+elles, partent entre l'étape 7 et l'étape 9 : après la dernière écriture, avant
+le ping, et aussi sur un abandon ou une exception, où les étapes précédentes
+n'ont pas eu lieu. [alertes.md](alertes.md).
 
 L'étape 7 est **calculée avant l'étape 5** et **écrite après**. Calculée avant,
 parce que la suspension au drawdown est une entrée de la décision et ne peut pas
@@ -150,9 +156,11 @@ Une exception, elle, pousse `JOB_FAILED`. Voir [alertes.md](alertes.md). Les
 autres traces d'un abandon restent le journal du processus et le code de sortie
 **1**.
 
-Ce qui manque encore : un job qui ne **démarre pas** ne pousse rien, puisqu'aucun
-code ne tourne pour l'émettre. C'est le healthcheck externe qui le dira, au lot
-suivant.
+Reste le cas qu'aucune alerte ne peut couvrir : un job qui ne **démarre pas** ne
+pousse rien, puisqu'aucun code ne tourne pour l'émettre. C'est le healthcheck
+externe qui le dit, depuis le lot Q6b — un abandon pingue **sans son marqueur**,
+une exception ne pingue **pas du tout**, et c'est l'absence qui alerte. Voir
+[healthcheck.md](healthcheck.md).
 
 ### La photo du jour, le drawdown et la suspension du §6
 
@@ -216,11 +224,11 @@ noms d'`eslint.config.js` refuse dans `src/adapters/` et `src/jobs/` tout nom qu
 dénote un placement, une annulation ou un retrait. La clé Coinbase est en lecture
 seule.
 
-Le **rapport quotidien Brevo** et le **ping du healthcheck** appartiennent aux
-lots suivants et ne sont pas appelés ici. `runDaily` rend sa fenêtre OHLCV, ses
-benchmarks et son drawdown tels quels pour qu'ils les consomment. Les **alertes
-push** du §9, elles, partent bien d'ici, après la dernière écriture :
-[alertes.md](alertes.md).
+Le **rapport quotidien Brevo** appartient à un lot suivant et n'est pas appelé
+ici. `runDaily` rend sa fenêtre OHLCV, ses benchmarks et son drawdown tels quels
+pour qu'il les consomme. Les **alertes push** du §9 et le **ping du healthcheck**,
+eux, partent bien d'ici, après la dernière écriture — les alertes d'abord, le
+ping en dernier : [alertes.md](alertes.md), [healthcheck.md](healthcheck.md).
 
 ### L'annulation des ordres de plus de 24 h est reportée en phase 3
 

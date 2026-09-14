@@ -1,5 +1,6 @@
 import { ccxtTransport, openCoinbase } from '../adapters/coinbase.js';
 import { openDatabase } from '../adapters/db.js';
+import { openHealthcheck } from '../adapters/healthcheck.js';
 import { openHttp } from '../adapters/http.js';
 import { openMarketData } from '../adapters/market.js';
 import { openNotifier } from '../adapters/notifier.js';
@@ -115,6 +116,11 @@ function texte(error: unknown): string {
  * de reconciliation compris — ce n'est pas une anomalie du programme, mais ce
  * n'est pas un succes : le declencheur exterieur doit le voir rouge.
  *
+ * **Le ping du healthcheck n'entre pas dans le code de sortie**, et c'est
+ * decide : son absence est deja ce qui fait sonner la surveillance, alors qu'une
+ * alerte qui n'est pas partie ne laisse rien derriere elle. Voir `reported` et
+ * `docs/healthcheck.md` §4.
+ *
  * La regle elle-meme est `reported` dans `daily.ts`, et non ici : rien ne peut
  * importer ce fichier (A22), donc une regle ecrite ici serait une regle sans
  * sonde. Le motif de la seconde moitie est dans son en-tete.
@@ -134,14 +140,20 @@ async function main(argv: readonly string[]): Promise<number> {
   const market = openMarketData(transport);
   const db = openDatabase(config.secrets);
   /*
-   * Le notifieur n'a rien a fermer : un POST par alerte, aucune connexion
-   * retenue. Il n'entre donc pas dans le `finally` ci-dessous.
+   * **Un seul transport pour les deux canaux de surveillance.** `openHttp` ne
+   * retient rien — il ferme sa closure sur un delai, pas sur une connexion —
+   * donc en fabriquer deux ne donnerait que deux exemplaires de la meme
+   * politique, libres de diverger au premier reglage. Ni le notifieur ni le
+   * healthcheck n'ont quoi que ce soit a fermer : un POST par message, aucune
+   * connexion retenue. Aucun des deux n'entre donc dans le `finally` ci-dessous.
    */
-  const notifier = openNotifier(config.secrets, openHttp());
+  const http = openHttp();
+  const notifier = openNotifier(config.secrets, http);
+  const healthcheck = openHealthcheck(config.secrets, http);
 
   try {
     const result = await runDaily({
-      ports: { exchange, market, db, notifier },
+      ports: { exchange, market, db, notifier, healthcheck },
       clock,
       config,
       gitSha,
