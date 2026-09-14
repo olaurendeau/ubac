@@ -177,8 +177,9 @@ lit pas ne peut pas lever.
   `failure` — sont dans le `try` du filet, et `motifDe` isole de son côté la
   lecture de la variante.
 
-**Dix-sept formes** tiennent cette section, une sonde par forme, et les sept
-premières sont éprouvées deux fois — par le transport et par la publication :
+**Dix-sept formes** tiennent ce qui vient du transport, une sonde par forme, et
+les sept premières sont éprouvées deux fois — par le transport et par la
+publication :
 
 - sur ce qui est **jeté** : un getter qui lève sur `name`, sur `message`, sur
   `cause`, sur `stack`, sur `toString` ; un objet dont **toute** lecture lève ;
@@ -197,15 +198,80 @@ la boucle dans l'autre sens : un vrai délai qui expire **en jetant un objet
 illisible** reste classé `DELAI`, ce qui montre que la classification ne dépend
 plus de ce qu'on lit.
 
-**Ce qui reste non couvert, dit franchement.** Est traité comme étranger ce que
-ces deux modules ne construisent pas : ce que lève ou rend le transport, et ce
-que rend `fetch`. L'`Alert` reçue par `notify` n'en fait pas partie — sa forme est
-déclarée par le module et remplie par `src/jobs/alerts.ts` — et ses champs sont
-lus normalement, `alertKey` comprise, hors du `try`. Un appelant qui poserait sur
-l'un d'eux un getter qui lève ferait rejeter `notify`. Le couvrir demanderait un
-`AlertOutcome` sans événement, c'est-à-dire un sort qui ne dit plus de quelle
-alerte il parle ; ce qui sortirait alors serait l'objet de cet appelant, jamais le
-jeton ni l'URL, qui ne sont lus qu'après, dans le `try`.
+## 4 ter. L'alerte est étrangère aussi
+
+Le transport n'est pas le seul objet que `notifier.ts` n'a pas fabriqué :
+l'**`Alert`** en est un autre, et elle entre par la porte principale.
+
+Une version antérieure de ce document déclarait l'alerte hors du filet, au motif
+que sa forme est déclarée par le module et qu'elle serait remplie par un job à
+venir. **L'argument ne tenait pas.** Il s'appuyait sur un fichier absent du dépôt,
+donc sur rien qu'un relecteur puisse vérifier ; et il était faux de toute façon,
+puisque `notify` et `alertKey` sont exportées et acceptent l'alerte de n'importe
+quel appelant. `alertKey` lisait cinq champs **hors** du `try`, plus un
+`champ.length` par champ : un getter qui lève en citant un secret y faisait
+rejeter `notify` en emportant ce secret — exactement la classe fermée deux fois
+au-dessus, revenue par un troisième chemin.
+
+La parade est celle qui marchait déjà, appliquée au bon objet : **lire une seule
+fois, sous filet, et borner ce qu'on a lu**.
+
+- `lireAlerte` est le **seul** endroit du module qui touche à l'objet reçu. Le
+  `try` couvre la lecture des cinq champs : un getter qui lève devient
+  `undefined`, jamais une exception qui remonte, et rien de ce qu'il a jeté n'est
+  lu.
+- Ce que la lecture rend est ensuite **borné**, parce qu'une valeur qui ne lève
+  pas peut quand même être étrangère : l'événement et la priorité doivent
+  appartenir à leur vocabulaire, les trois autres champs doivent être des
+  chaînes. Sans ce second contrôle, `champ.length` rouvrait dans l'encodage de la
+  clé la porte que la lecture isolée venait de fermer.
+- Tout le reste du module travaille sur la **copie**, y compris le `catch` et
+  les trois sorts rendus. Une propriété déjà lue est une valeur, et une valeur ne
+  lève pas.
+- Une alerte illisible **ne part pas** : le transport n'est pas appelé. On n'a
+  rien de sûr à mettre dans le message.
+
+**Dix-neuf formes** tiennent cette section, une sonde par forme, et chacune est
+éprouvée deux fois — par `notify` et par `alertKey`, qui est exportée et lit donc
+l'alerte de son côté :
+
+- douze où **lire** lève ou n'a rien à lire : un getter qui lève sur `event`, sur
+  `priority`, sur `runDate`, sur `title`, sur `body` ; un objet dont toute
+  lecture lève ; un objet dont la chaîne de prototypes lève ; un objet dont
+  **seule** la chaîne de prototypes lève — il montre que ce module ne parcourt
+  jamais le prototype d'une alerte ; et quatre valeurs qui ne sont pas des objets
+  — une chaîne, un nombre, `null`, `undefined` ;
+- sept où la lecture réussit mais rend autre chose que ce qu'`Alert` déclare : un
+  événement inconnu, un événement qui n'est pas une chaîne, une priorité
+  inconnue, une priorité qui n'est pas une chaîne, un jour de run qui n'est pas
+  une chaîne, un corps qui n'est pas une chaîne, et un titre dont la **longueur**
+  lève — celui-là ne tombe que grâce au bornage.
+
+Aucune ne fait rejeter, aucune ne publie, et rien de l'objet reçu ne ressort : ni
+dans le motif, ni dans la clé, ni par une exception qui aurait emporté sa trace.
+L'égalité des sondes porte sur le sort **entier**, pas sur l'absence du jeton :
+elle interdit tout champ qui porterait quoi que ce soit de l'appelant. Remettre
+une lecture nue dans `alertKey` fait tomber dix-neuf sondes ; la remettre dans
+`lireAlerte` en fait tomber trente-huit.
+
+**Le prix, dit franchement.** `AlertOutcome` gagne un troisième sort,
+`UNREADABLE`, et c'est le seul qui ne porte pas d'événement — il n'y en a pas eu
+à lire. Deux alertes illisibles ne se distinguent donc pas l'une de l'autre, et
+une sonde le constate. Les deux autres options étaient pires : inventer un
+événement, ou recopier celui de l'appelant, c'est-à-dire faire ressortir l'objet
+même qu'on a refusé de lire. `alertKey` rend de son côté la constante
+`cle-illisible`, qu'aucun digest ne peut produire — `illisible` n'est pas de
+l'hexadécimal.
+
+**Ce qui reste non couvert, dit franchement.** Un seul point, et ce n'est pas
+l'alerte : les **secrets**, lus une fois à la construction par `openNotifier`
+— l'URL, le topic, le jeton. Cette lecture-là a le droit de lever, et c'est
+voulu : une configuration invalide doit échouer bruyamment au câblage, pas à la
+première alerte, quand il est trop tard pour le dire. Ce qui l'assure n'est pas
+une promesse faite à un appelant ni un fichier à venir, c'est
+[`loadConfig`](../src/config/env.ts), présent aujourd'hui, qui construit l'objet
+`Secrets` lui-même, champ par champ, à partir de valeurs déjà validées (§1).
+Passé la construction, `notify` n'en lit plus rien.
 
 ## 5. Écart assumé avec la règle d'idempotence
 

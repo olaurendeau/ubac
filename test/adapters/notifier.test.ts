@@ -182,6 +182,109 @@ const LECTURES_PIEGEES: readonly (readonly [string, () => unknown])[] = [
   ['un objet dont la chaine de prototypes leve', () => proxyDePrototype()],
 ];
 
+// --- l'alerte qui ne se laisse pas lire -------------------------------------
+
+/**
+ * Une alerte ordinaire, sauf que **lire** le champ nomme execute un getter qui
+ * leve — avec le jeton dedans. C'est la meme classe que `piegeSur`, tournee vers
+ * l'autre objet etranger du module : celui que l'appelant fournit.
+ */
+function alerteQuiLeveSur(champ: keyof Alert): Alert {
+  const piege: Record<string, unknown> = { ...alerte() };
+  Object.defineProperty(piege, champ, {
+    configurable: true,
+    get(): never {
+      throw new Error(`Bearer ${JETON}`);
+    },
+  });
+  return piege as unknown as Alert;
+}
+
+/**
+ * Le piege que l'encodage de la cle rouvrirait a lui seul : la valeur se lit
+ * sans lever, mais c'est `champ.length` qui leve ensuite. Un bornage pose
+ * uniquement autour de la lecture, sans controle de type, passerait ici.
+ */
+function texteDontLaLongueurLeve(): unknown {
+  const objet = {
+    toString(): string {
+      return `Bearer ${JETON}`;
+    },
+  };
+  Object.defineProperty(objet, 'length', {
+    configurable: true,
+    get(): never {
+      throw new Error(`Bearer ${JETON}`);
+    },
+  });
+  return objet;
+}
+
+/**
+ * Un objet dont **seule** la chaine de prototypes leve. Il se distingue de
+ * `proxyDePrototype` : ses lectures reussissent et rendent `undefined`. Il
+ * montre que ce module ne parcourt jamais le prototype d'une alerte — pas
+ * d'`instanceof`, pas de `Object.getPrototypeOf` — et que le repli vient alors
+ * du bornage, pas du filet.
+ */
+function proxyDePrototypeSeul(): unknown {
+  return new Proxy(
+    {},
+    {
+      getPrototypeOf(): never {
+        throw new Error(`Bearer ${JETON}`);
+      },
+    },
+  );
+}
+
+/** Une alerte valide, sauf un champ remplace par ce qu'on veut. */
+function alerteAvec(champ: string, valeur: unknown): Alert {
+  return { ...alerte(), [champ]: valeur } as unknown as Alert;
+}
+
+/**
+ * Douze variantes ou **lire** l'alerte leve, ou bien ou il n'y a pas d'objet a
+ * lire. Une par champ que le module lit, plus les trois pieges generiques et les
+ * quatre valeurs qui ne sont pas des objets.
+ */
+const ALERTES_QUI_LEVENT: readonly (readonly [string, () => Alert])[] = [
+  ['un getter event qui leve', () => alerteQuiLeveSur('event')],
+  ['un getter priority qui leve', () => alerteQuiLeveSur('priority')],
+  ['un getter runDate qui leve', () => alerteQuiLeveSur('runDate')],
+  ['un getter title qui leve', () => alerteQuiLeveSur('title')],
+  ['un getter body qui leve', () => alerteQuiLeveSur('body')],
+  ['un objet dont toute lecture leve', () => proxyQuiLeve() as Alert],
+  ['un objet dont la chaine de prototypes leve', () => proxyDePrototype() as Alert],
+  ['un objet dont seule la chaine de prototypes leve', () => proxyDePrototypeSeul() as Alert],
+  ['une chaine a la place d’un objet', () => `Bearer ${JETON}` as unknown as Alert],
+  ['un nombre a la place d’un objet', () => 42 as unknown as Alert],
+  ['null a la place d’un objet', () => null as unknown as Alert],
+  ['undefined a la place d’un objet', () => undefined as unknown as Alert],
+];
+
+/**
+ * Sept variantes ou la lecture reussit mais rend autre chose que ce qu'`Alert`
+ * declare. Les types sont effaces a l'execution : une valeur etrangere qui ne
+ * leve pas est aussi une valeur etrangere, et elle partirait sur le reseau ou
+ * dans un journal si seul l'acte de lire etait protege.
+ */
+const ALERTES_HORS_FORME: readonly (readonly [string, () => Alert])[] = [
+  ['un evenement inconnu', () => alerteAvec('event', `EVENT ${JETON}`)],
+  ['un evenement qui n’est pas une chaine', () => alerteAvec('event', 7)],
+  ['une priorite inconnue', () => alerteAvec('priority', `PRIO ${JETON}`)],
+  ['une priorite qui n’est pas une chaine', () => alerteAvec('priority', 5)],
+  ['un jour de run qui n’est pas une chaine', () => alerteAvec('runDate', null)],
+  ['un titre dont la longueur leve', () => alerteAvec('title', texteDontLaLongueurLeve())],
+  ['un corps qui n’est pas une chaine', () => alerteAvec('body', 12)],
+];
+
+/** Les dix-neuf reunies : la lecture leve, ou ce qu'elle rend est hors forme. */
+const ALERTES_ILLISIBLES: readonly (readonly [string, () => Alert])[] = [
+  ...ALERTES_QUI_LEVENT,
+  ...ALERTES_HORS_FORME,
+];
+
 /** Un transport qui enregistre ce qu'on lui donne et rend ce qu'on lui dit. */
 function transport(outcome: HttpOutcome = { status: 'OK', httpStatus: 200 }): {
   send: HttpSend;
@@ -656,6 +759,106 @@ describe('openNotifier — rien de ce qu’ecrit un transport ne ressort', () =>
   });
 });
 
+// --- l'alerte illisible : la meme classe, par la porte de l'appelant --------
+
+/**
+ * Le bloquant de la troisieme revue. Les deux premieres avaient ferme la fuite
+ * du cote du transport — ce qu'il leve, ce qu'il rend. L'`Alert` restait lue
+ * normalement, hors du filet, sur la foi d'un `src/jobs/alerts.ts` qui n'existe
+ * pas : une garantie declaree sur un fichier absent n'en est pas une, et l'API
+ * exportee accepte de toute facon l'alerte de n'importe quel appelant.
+ *
+ * Dix-neuf variantes, une par forme. Aucune ne fait rejeter, aucune ne publie,
+ * et rien de l'objet recu ne ressort — ni dans le motif, ni dans la cle, ni par
+ * une exception qui aurait emporte sa trace.
+ */
+describe('openNotifier — une alerte qu’on ne peut pas lire ne fait rien sortir', () => {
+  /*
+   * L'egalite porte sur le sort **entier** : plus fort que « le jeton n'y est
+   * pas », elle interdit tout champ qui porterait quoi que ce soit de l'objet
+   * recu. `reason` est une constante du module, et il n'y a pas d'`event` —
+   * il n'y en a pas eu a lire.
+   */
+  it.each(ALERTES_ILLISIBLES)('ne rejette pas et rend UNREADABLE sur %s', async (_forme, faire) => {
+    const { send, requests } = transport();
+
+    const sort = await openNotifier(SECRETS, send).notify(faire());
+
+    expect(sort).toEqual({ status: 'UNREADABLE', reason: 'alerte illisible' });
+    aucuneTrace(sort);
+    /* Ce qu'on ne sait pas lire ne part pas : le transport n'est pas appele. */
+    expect(requests).toEqual([]);
+  });
+
+  /*
+   * `alertKey` est exportee, donc elle recoit elle aussi l'alerte de n'importe
+   * qui, et elle la lit hors de `notify`. Elle passe par la meme lecture isolee
+   * et rend une constante qu'aucun digest ne peut produire — `illisible` n'est
+   * pas de l'hexadecimal.
+   */
+  it.each(ALERTES_ILLISIBLES)('rend une cle constante sur %s, sans lever', (_forme, faire) => {
+    const cle = alertKey(faire());
+
+    expect(cle).toBe('cle-illisible');
+    expect(cle).not.toMatch(/^cle-[0-9a-f]{12}$/);
+    aucuneTrace(cle);
+  });
+
+  /*
+   * La contrepartie du sort sans evenement, enoncee comme une sonde : deux
+   * alertes illisibles ne se distinguent pas l'une de l'autre. C'est le prix
+   * declare dans l'en-tete du module, et il est prefere a l'autre — recopier
+   * l'evenement de l'appelant aurait fait ressortir l'objet qu'on refuse de
+   * lire.
+   */
+  it('ne distingue pas deux alertes illisibles l’une de l’autre', async () => {
+    const { send } = transport();
+    const notifier = openNotifier(SECRETS, send);
+
+    const premier = await notifier.notify(alerteQuiLeveSur('title'));
+    const second = await notifier.notify(alerteAvec('event', `EVENT ${JETON}`));
+
+    expect(second).toEqual(premier);
+  });
+
+  /*
+   * Le jeton de configuration non plus ne sort pas par ce chemin. Il est lu a la
+   * construction, bien avant l'alerte, et le sort rendu ne le touche pas.
+   */
+  it('ne rend pas le jeton de configuration sur une alerte illisible', async () => {
+    const { send, requests } = transport();
+
+    const sort = await openNotifier({ ...SECRETS, ntfyToken: JETON }, send).notify(
+      alerteQuiLeveSur('body'),
+    );
+
+    expect(sort).toEqual({ status: 'UNREADABLE', reason: 'alerte illisible' });
+    aucuneTrace(sort);
+    expect(requests).toEqual([]);
+  });
+
+  /*
+   * L'autre moitie de la frontiere : une alerte conforme passe entiere. Sans
+   * cette sonde, un bornage qui rejetterait tout serait vert partout au-dessus.
+   * Les sept evenements et les deux priorites sont eprouves ailleurs ; ici on
+   * constate que rien n'est perdu au passage par la copie.
+   */
+  it('laisse passer une alerte conforme sans rien en changer', async () => {
+    const { send, requests } = transport();
+
+    const sort = await openNotifier(SECRETS, send).notify(alerte());
+
+    expect(sort).toEqual({ status: 'SENT', event: 'DRAWDOWN', key: alertKey(alerte()) });
+    expect(JSON.parse(requests[0]?.body ?? '{}')).toEqual({
+      topic: 'ubac-alertes',
+      title: 'Ubac 2026-09-12 — drawdown',
+      message: 'drawdown a -27,00 %',
+      priority: 5,
+      tags: ['DRAWDOWN', alertKey(alerte())],
+    });
+  });
+});
+
 // --- la cle deterministe ----------------------------------------------------
 
 describe('alertKey — la cle qui rend un doublon reconnaissable', () => {
@@ -707,7 +910,7 @@ describe('alertKey — la cle qui rend un doublon reconnaissable', () => {
 
     const corps = JSON.parse(requests[0]?.body ?? '{}') as { tags: string[] };
     expect(corps.tags).toEqual(['DRAWDOWN', alertKey(alerte())]);
-    expect(sort.key).toBe(alertKey(alerte()));
+    expect(sort).toEqual({ status: 'SENT', event: 'DRAWDOWN', key: alertKey(alerte()) });
   });
 
   /*
@@ -724,6 +927,7 @@ describe('alertKey — la cle qui rend un doublon reconnaissable', () => {
     const second = await notifier.notify(alerte());
 
     expect(requests).toHaveLength(2);
-    expect(second.key).toBe(premier.key);
+    expect(second).toEqual(premier);
+    expect(second).toEqual({ status: 'SENT', event: 'DRAWDOWN', key: alertKey(alerte()) });
   });
 });
