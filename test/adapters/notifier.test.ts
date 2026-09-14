@@ -103,6 +103,85 @@ const RETOURS_EMPOISONNES: readonly (readonly [string, HttpOutcome])[] = [
   ],
 ];
 
+// --- la lecture qui leve ----------------------------------------------------
+
+/**
+ * Une erreur ordinaire, sauf que **lire** la propriete nommee execute un getter
+ * qui leve — avec le jeton dedans. C'est la forme que le bornage de la sortie ne
+ * voyait pas : elle ne fait pas fuir une valeur, elle fait fuir l'acte de lire.
+ */
+function piegeSur(propriete: string): unknown {
+  const piege = new Error('echec');
+  Object.defineProperty(piege, propriete, {
+    configurable: true,
+    get(): never {
+      throw new Error(`Bearer ${JETON}`);
+    },
+  });
+  return piege;
+}
+
+/** Un objet dont l'acces a **n'importe quelle** propriete leve. */
+function proxyQuiLeve(): unknown {
+  return new Proxy(
+    {},
+    {
+      get(): never {
+        throw new Error(`Bearer ${JETON}`);
+      },
+    },
+  );
+}
+
+/**
+ * Le seul piege qui atteint `instanceof` : il ne lit aucune propriete, mais il
+ * parcourt la chaine de prototypes, et un `Proxy` peut la faire lever.
+ */
+function proxyDePrototype(): unknown {
+  return new Proxy(
+    {},
+    {
+      getPrototypeOf(): never {
+        throw new Error(`Bearer ${JETON}`);
+      },
+      get(): never {
+        throw new Error(`Bearer ${JETON}`);
+      },
+    },
+  );
+}
+
+/**
+ * Une reponse dont la lecture de la propriete nommee leve. `ok` decide du refus,
+ * `status` est ce qu'on en garde : une sonde par branche.
+ */
+function reponsePiegee(propriete: 'ok' | 'status'): unknown {
+  const reponse: Record<string, unknown> = { ok: propriete === 'status', status: 200 };
+  Object.defineProperty(reponse, propriete, {
+    configurable: true,
+    get(): never {
+      throw new Error(`Bearer ${JETON}`);
+    },
+  });
+  return reponse;
+}
+
+/**
+ * Sept facons de faire lever la **lecture** elle-meme. Une sonde par propriete
+ * qu'un classement naif lit — `name`, `message`, `cause`, `stack`, `toString` —
+ * plus les deux pieges generiques : un objet dont toute lecture leve, et un
+ * objet dont la chaine de prototypes leve.
+ */
+const LECTURES_PIEGEES: readonly (readonly [string, () => unknown])[] = [
+  ['un getter name qui leve', () => piegeSur('name')],
+  ['un getter message qui leve', () => piegeSur('message')],
+  ['un getter cause qui leve', () => piegeSur('cause')],
+  ['un getter stack qui leve', () => piegeSur('stack')],
+  ['un getter toString qui leve', () => piegeSur('toString')],
+  ['un objet dont toute lecture leve', () => proxyQuiLeve()],
+  ['un objet dont la chaine de prototypes leve', () => proxyDePrototype()],
+];
+
 /** Un transport qui enregistre ce qu'on lui donne et rend ce qu'on lui dit. */
 function transport(outcome: HttpOutcome = { status: 'OK', httpStatus: 200 }): {
   send: HttpSend;
@@ -202,6 +281,79 @@ describe('openHttp — le transport ne rejette jamais, et ne cite jamais l’URL
       status: 'FAILED',
       failure: { kind: 'INCONNU' },
     });
+  });
+
+  /*
+   * Le bloquant de la deuxieme revue. Lire une propriete **execute son getter**,
+   * et le bornage de la sortie ne protegeait que ce qui sort : un `name` qui
+   * leve en citant le jeton faisait rejeter `openHttp` en emportant ce jeton,
+   * qu'une trace ou une serialisation divulguait ensuite. L'egalite porte sur la
+   * variante entiere, pas seulement sur l'absence du jeton : elle interdit que
+   * la lecture ait seulement eu lieu.
+   */
+  it.each(LECTURES_PIEGEES)('ne rejette pas et classe en inconnu sur %s', async (_forme, piege) => {
+    vi.stubGlobal('fetch', () => Promise.reject(piege()));
+
+    const outcome = await openHttp()(REQUETE);
+    expect(outcome).toEqual({ status: 'FAILED', failure: { kind: 'INCONNU' } });
+    aucuneTrace(outcome);
+    if (outcome.status === 'FAILED') aucuneTrace(motifDe(outcome.failure));
+  });
+
+  /*
+   * Le delai ne se deduit plus de ce que le transport a bien voulu poser sur ce
+   * qu'il jette, mais de **notre** signal. La sonde le montre en avortant pour de
+   * vrai tout en jetant un objet illisible : la variante reste `DELAI`.
+   */
+  it('classe le delai sans rien lire de ce qui est jete', async () => {
+    vi.stubGlobal(
+      'fetch',
+      (_url: string, init: { signal: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          init.signal.addEventListener('abort', () => {
+            reject(proxyQuiLeve());
+          });
+        }),
+    );
+
+    const outcome = await openHttp(20)(REQUETE);
+    expect(outcome).toEqual({ status: 'FAILED', failure: { kind: 'DELAI', timeoutMs: 20 } });
+  });
+
+  /*
+   * `fetch` est une globale, et une globale se remplace : ce qui revient n'est
+   * pas force d'etre une `Response`. Une propriete par branche du code — `ok`
+   * decide du refus, `status` est ce qu'on en garde.
+   */
+  it.each(['ok', 'status'] as const)(
+    'ne propage pas un getter %s qui leve sur la reponse',
+    async (propriete) => {
+      vi.stubGlobal('fetch', () => Promise.resolve(reponsePiegee(propriete)));
+
+      const outcome = await openHttp()(REQUETE);
+      expect(outcome).toEqual({ status: 'FAILED', failure: { kind: 'INCONNU' } });
+      aucuneTrace(outcome);
+    },
+  );
+
+  /*
+   * Le statut est borne **des son entree** dans la variante, et pas seulement
+   * a l'ecriture du motif : `HttpFailure.httpStatus` se declare `number`, donc
+   * un appelant qui serialise le sort sans passer par `motifDe` ne doit rien
+   * trouver d'etranger a y lire.
+   */
+  it('borne un statut qui n’est pas un entier avant de le porter', async () => {
+    vi.stubGlobal('fetch', () => Promise.resolve({ ok: false, status: `Bearer ${JETON}` }));
+
+    const outcome = await openHttp()(REQUETE);
+    expect(outcome).toEqual({
+      status: 'FAILED',
+      failure: { kind: 'REFUS', httpStatus: Number.NaN },
+    });
+    aucuneTrace(outcome);
+    if (outcome.status === 'FAILED') {
+      expect(motifDe(outcome.failure)).toBe('refus du serveur, HTTP ?');
+    }
   });
 
   it('envoie bien un POST avec le corps et les entetes recus', async () => {
@@ -316,6 +468,55 @@ describe('openNotifier — la publication ntfy', () => {
     },
   );
 
+  /*
+   * La meme classe, cote publication : ce n'est plus la valeur jetee qui piege,
+   * c'est sa **lecture**. Le filet ne lit rien de ce qu'il attrape, donc il rend
+   * la constante quelle que soit la forme du piege.
+   */
+  it.each(LECTURES_PIEGEES)(
+    'ne rejette pas quand ce que leve le transport porte %s',
+    async (_forme, piege) => {
+      const send: HttpSend = () => {
+        throw piege();
+      };
+
+      await expect(openNotifier(SECRETS, send).notify(alerte())).resolves.toEqual({
+        status: 'FAILED',
+        event: 'DRAWDOWN',
+        key: alertKey(alerte()),
+        reason: 'transport en echec',
+      });
+    },
+  );
+
+  /*
+   * Et la meme classe encore, mais par le **retour** : lire `status` ou
+   * `failure` sur le sort d'un transport injecte execute un getter. Une sonde
+   * par lecture que fait `notify`.
+   */
+  it.each(['status', 'failure'] as const)(
+    'ne rejette pas quand lire %s du retour leve',
+    async (propriete) => {
+      const outcome: Record<string, unknown> = { status: 'FAILED', failure: { kind: 'RESEAU' } };
+      Object.defineProperty(outcome, propriete, {
+        configurable: true,
+        get(): never {
+          throw new Error(`Bearer ${JETON}`);
+        },
+      });
+      const send: HttpSend = () => Promise.resolve(outcome as unknown as HttpOutcome);
+
+      const sort = await openNotifier(SECRETS, send).notify(alerte());
+
+      expect(sort).toEqual({
+        status: 'FAILED',
+        event: 'DRAWDOWN',
+        key: alertKey(alerte()),
+        reason: 'transport en echec',
+      });
+    },
+  );
+
   it('rend l’evenement de l’alerte, quel qu’il soit', async () => {
     const { send } = transport();
     const notifier = openNotifier(SECRETS, send);
@@ -381,6 +582,31 @@ describe('motifDe — quatre variantes, et un repli pour tout le reste', () => {
       'refus du serveur, HTTP ?',
       'delai de ? ms depasse',
     ]).toContain(motif);
+  });
+
+  /*
+   * `motifDe` est exporte, et la variante qu'on lui donne n'est pas forcement de
+   * notre fabrication : lire `kind` execute un getter. Une sonde par propriete
+   * que la fonction lit, plus le piege generique.
+   */
+  it.each([
+    ['un getter kind qui leve', 'kind', { httpStatus: 401 }],
+    ['un getter httpStatus qui leve', 'httpStatus', { kind: 'REFUS' }],
+    ['un getter timeoutMs qui leve', 'timeoutMs', { kind: 'DELAI' }],
+  ])('rend le repli sur %s', (_forme, propriete, base) => {
+    const failure: Record<string, unknown> = { ...base };
+    Object.defineProperty(failure, propriete, {
+      configurable: true,
+      get(): never {
+        throw new Error(`Bearer ${JETON}`);
+      },
+    });
+
+    expect(motifDe(failure as unknown as HttpFailure)).toBe('echec de transport');
+  });
+
+  it('rend le repli quand toute lecture de la variante leve', () => {
+    expect(motifDe(proxyQuiLeve() as HttpFailure)).toBe('echec de transport');
   });
 });
 

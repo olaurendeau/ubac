@@ -12,7 +12,7 @@ import { motifDe } from './http.js';
  * attendre le lundi. » Ce module est donc le canal court ; le rapport quotidien
  * Brevo est un autre lot et un autre propos.
  *
- * Cinq choix sont poses ici, et chacun a son motif.
+ * Six choix sont poses ici, et chacun a son motif.
  *
  * 1. **Publication en JSON, pas en entetes.** ntfy accepte les deux : un POST
  *    sur `/<topic>` avec titre et priorite en entetes HTTP, ou un POST sur la
@@ -33,9 +33,25 @@ import { motifDe } from './http.js';
  *    recopie **aucune** chaine d'echec : le motif rendu vient de `motifDe`, qui
  *    ne connait qu'un vocabulaire ferme, et le filet du point 2 rend une
  *    constante. Rien de ce qu'un transport ecrit ne traverse `notify`.
- * 5. **Chaque message porte une cle deterministe.** Elle ne dedoublonne rien —
+ * 5. **Lire le sort d'un transport est aussi une prise de risque.** Borner ce
+ *    qui sort ne dit rien de l'**acte de lire** : `outcome.status` peut etre un
+ *    getter, et un getter s'execute. Les deux seules lectures de ce que rend le
+ *    transport sont donc a l'interieur du `try` du point 2 : un getter qui leve
+ *    tombe dans le meme filet qu'un transport qui leve, et rend la meme
+ *    constante. `motifDe` isole de son cote la lecture de la variante.
+ * 6. **Chaque message porte une cle deterministe.** Elle ne dedoublonne rien —
  *    voir l'ecart declare sous `alertKey` — mais elle rend un doublon
  *    reconnaissable, par un humain comme par un traitement ulterieur.
+ *
+ * **Limite declaree, et c'est la frontiere du point 5.** Est traite comme
+ * etranger ce que ce module ne construit pas : ce que leve ou rend le transport
+ * injecte. L'`Alert` recue ne l'est pas — sa forme est declaree ici et remplie
+ * par `src/jobs/alerts.ts` — et ses champs sont donc lus normalement, `alertKey`
+ * comprise, hors du `try`. Un appelant qui y poserait un getter qui leve ferait
+ * rejeter `notify` ; le couvrir demanderait un `AlertOutcome` sans evenement,
+ * c'est-a-dire un sort qui ne dit plus de quelle alerte il parle. Ce qui
+ * sortirait alors serait l'objet de cet appelant, jamais le jeton ni l'URL : ils
+ * ne sont lus qu'apres, dans le `try`.
  *
  * Ce module ne decide **rien** de ce qui merite une alerte : la liste des
  * evenements et leur redaction vivent dans `src/jobs/alerts.ts`, qui est pur.
@@ -168,6 +184,11 @@ export function openNotifier(secrets: NtfySecrets, send: HttpSend): Notifier {
          * que la variante. Un transport qui rendrait un motif en clair — le
          * `reason` d'une version anterieure de ce contrat, par exemple — le
          * verrait ignore, et c'est le but.
+         *
+         * Cette lecture-ci, comme celle de `status` juste au-dessus, est dans le
+         * `try` : ce sont les deux seuls endroits ou ce module touche a un objet
+         * qu'il n'a pas fabrique, et un getter qui leve y tombe dans le filet du
+         * `catch` au lieu de faire rejeter `notify`.
          */
         const failure: HttpFailure | undefined = outcome.failure;
         return { status: 'FAILED', event: alert.event, key, reason: motifDe(failure) };
@@ -175,9 +196,12 @@ export function openNotifier(secrets: NtfySecrets, send: HttpSend): Notifier {
         /*
          * Le filet de la propriete 2, et une **constante**. L'erreur attrapee
          * n'est pas lue du tout : ni son message, ni son nom, ni sa cause, ni sa
-         * pile. Un transport tiers qui leve en citant l'URL du topic ou le jeton
-         * ne nous fait donc rien ecrire. Limite declaree : la contrepartie est
-         * qu'un transport casse ne se distingue pas d'un autre dans le motif.
+         * pile. Pas meme pour la classer — la lire suffirait a executer un
+         * getter, et un getter qui leve en citant le jeton ferait rejeter
+         * `notify` en emportant ce jeton. Un transport tiers qui leve en citant
+         * l'URL du topic ou le jeton ne nous fait donc rien ecrire, qu'il leve
+         * la valeur ou qu'il leve a la lecture. Limite declaree : la contrepartie
+         * est qu'un transport casse ne se distingue pas d'un autre dans le motif.
          */
         return { status: 'FAILED', event: alert.event, key, reason: 'transport en echec' };
       }

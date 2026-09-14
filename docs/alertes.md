@@ -87,9 +87,12 @@ délai d'une requête est de 5 s : l'alerte part après que tout est écrit, ell
 pas le droit de retenir le processus.
 
 **Limite déclarée** : `AbortError` n'est pas traité comme un délai. Ce module
-n'avorte que par `AbortSignal.timeout`, qui lève un `TimeoutError` ; ajouter
-l'autre aurait été une promesse qu'aucune sonde ne pouvait tenir. Il tombe en
-`INCONNU`.
+n'avorte que par le délai qu'il arme lui-même ; ajouter l'autre aurait été une
+promesse qu'aucune sonde ne pouvait tenir. Il tombe en `INCONNU`.
+
+**Limite déclarée** : une panne réseau qui survient dans la même milliseconde que
+l'expiration du délai est classée en `DELAI`. Les deux se sont produites ; le
+signal tranche pour celle qu'il connaît.
 
 ## 4. Le motif d'échec : une liste de ce qui peut sortir
 
@@ -118,11 +121,17 @@ Trois propriétés en découlent, et ce sont elles que les sondes tiennent :
 
 1. **`motifDe` est le seul fabricant de chaînes d'échec.** Une variante hors
    liste, et une variante absente, rendent le repli — sans rien recopier.
-2. **Les nombres sortent entiers ou pas du tout.** Les types sont effacés à
-   l'exécution et `HttpSend` est une interface publique : ce qui se présente
-   comme un statut peut être une chaîne, donc un jeton. Un non-entier rend `?`.
-3. **L'erreur attrapée est classée, jamais lue.** `name` est *comparé* à un
-   littéral ; le `message`, la `cause` et la pile ne sont pas lus du tout. Dans
+2. **Les nombres sont bornés à l'entrée, pas seulement à la sortie.** Les types
+   sont effacés à l'exécution, `fetch` est une globale et `HttpSend` une
+   interface publique : ce qui se présente comme un statut peut être une chaîne,
+   donc un jeton. Un non-entier devient `NaN` **avant** d'entrer dans la
+   variante, et `motifDe` le rend en `?`. Le borner seulement à l'écriture du
+   motif aurait laissé la valeur étrangère dans un champ que le type déclare
+   `number` — donc dans tout journal qui sérialise le sort sans passer par
+   `motifDe`.
+3. **L'erreur attrapée n'est pas lue du tout.** Pas même pour la classer : ni
+   `name`, ni `message`, ni `cause`, ni `stack`, ni `toString`. La section
+   suivante dit pourquoi cette propriété a dû être reformulée. Dans
    `openNotifier`, le filet rend une **constante**.
 
 Neuf formes de motif portant un jeton sont éprouvées, et aucune ne ressort : côté
@@ -137,6 +146,66 @@ sonde verte qui ne garantit rien.
 sait qu'elle a eu lieu, pas de quelle classe elle était, et un transport cassé ne
 se distingue pas d'un autre. Le statut HTTP, lui, passe entier, et c'est celui
 qui distingue un jeton refusé d'un serveur injoignable.
+
+## 4 bis. Lire est un acte, pas une lecture
+
+La section 4 bornait **ce qui sort**. Elle ne disait rien de **l'acte de lire**,
+et c'est une classe entière qu'elle laissait ouverte.
+
+Lire une propriété exécute son getter. Une version antérieure de ce module
+classait avec `error.name === 'TimeoutError'` — un nom *comparé*, jamais recopié,
+ce qui semblait suffire. Un objet tiers dont le getter `name` **lève**, avec un
+jeton dans ce qu'il lève, faisait alors rejeter `send` en emportant ce jeton ;
+une trace d'exception ou une sérialisation plus haut le divulguait. Le jeton ne
+sortait pas *par* la sortie bornée : il passait à côté d'elle. Aucun élargissement
+de la liste de ce qui peut sortir n'y pouvait quoi que ce soit.
+
+La parade retenue est la plus simple qui tienne : **ne rien lire**. Ce qu'on ne
+lit pas ne peut pas lever.
+
+- Le délai ne se déduit plus de l'erreur mais du **signal que ce module a armé
+  lui-même** : `aborted` est un booléen porté par un objet de notre fabrication.
+  La classification cesse de dépendre de ce qu'un tiers a posé sur ce qu'il jette.
+- Le reste se classe par `instanceof`, qui interroge la chaîne de prototypes et
+  n'exécute aucun getter. Un `Proxy` dont le piège `getPrototypeOf` lève reste la
+  seule façon d'en faire échouer le parcours : ce contact-là est donc **isolé**,
+  et le piège échoue en silence vers `INCONNU`.
+- Ce qui reste lu ne l'est jamais hors d'un filet. Dans `openHttp`, la requête
+  reçue et la réponse rendue par `fetch` sont lues **dans le `try`** : un getter
+  qui lève y devient une variante au lieu d'une exception. Dans `openNotifier`,
+  les deux seules lectures du sort rendu par le transport injecté — `status` et
+  `failure` — sont dans le `try` du filet, et `motifDe` isole de son côté la
+  lecture de la variante.
+
+**Dix-sept formes** tiennent cette section, une sonde par forme, et les sept
+premières sont éprouvées deux fois — par le transport et par la publication :
+
+- sur ce qui est **jeté** : un getter qui lève sur `name`, sur `message`, sur
+  `cause`, sur `stack`, sur `toString` ; un objet dont **toute** lecture lève ;
+  un objet dont la chaîne de prototypes lève — le seul qui atteigne `instanceof` ;
+- sur ce que rend `fetch` : un getter qui lève sur `ok`, un getter qui lève sur
+  `status`, un statut qui n'est pas un entier ;
+- sur une variante donnée à `motifDe` : un getter qui lève sur `kind`, sur
+  `httpStatus`, sur `timeoutMs`, et une variante dont toute lecture lève ;
+- sur le sort rendu par un transport injecté : lire `status` lève, lire `failure`
+  lève.
+
+Aucune ne fait rejeter quoi que ce soit, aucune ne laisse sortir le jeton — ni
+dans le motif, ni dans la variante, ni dans une sérialisation du sort rendu — et
+toutes retombent sur `INCONNU` ou sur la constante. Une dix-septième sonde ferme
+la boucle dans l'autre sens : un vrai délai qui expire **en jetant un objet
+illisible** reste classé `DELAI`, ce qui montre que la classification ne dépend
+plus de ce qu'on lit.
+
+**Ce qui reste non couvert, dit franchement.** Est traité comme étranger ce que
+ces deux modules ne construisent pas : ce que lève ou rend le transport, et ce
+que rend `fetch`. L'`Alert` reçue par `notify` n'en fait pas partie — sa forme est
+déclarée par le module et remplie par `src/jobs/alerts.ts` — et ses champs sont
+lus normalement, `alertKey` comprise, hors du `try`. Un appelant qui poserait sur
+l'un d'eux un getter qui lève ferait rejeter `notify`. Le couvrir demanderait un
+`AlertOutcome` sans événement, c'est-à-dire un sort qui ne dit plus de quelle
+alerte il parle ; ce qui sortirait alors serait l'objet de cet appelant, jamais le
+jeton ni l'URL, qui ne sont lus qu'après, dans le `try`.
 
 ## 5. Écart assumé avec la règle d'idempotence
 
