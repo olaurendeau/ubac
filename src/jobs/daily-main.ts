@@ -1,10 +1,12 @@
 import { ccxtTransport, openCoinbase } from '../adapters/coinbase.js';
 import { openDatabase } from '../adapters/db.js';
+import { openHttp } from '../adapters/http.js';
 import { openMarketData } from '../adapters/market.js';
+import { openNotifier } from '../adapters/notifier.js';
 import { loadConfig } from '../config/env.js';
 import type { IsoDate } from '../core/types.js';
 import type { RunClock } from './daily.js';
-import { runDaily } from './daily.js';
+import { reported, runDaily } from './daily.js';
 
 /**
  * Le point d'entree du run quotidien : **la composition, et rien d'autre.**
@@ -109,9 +111,13 @@ function texte(error: unknown): string {
 }
 
 /**
- * Zero si le run a conclu, un sinon — abandon de reconciliation compris. Un
- * abandon n'est pas une anomalie du programme, mais ce n'est pas un succes : le
- * declencheur exterieur doit le voir rouge.
+ * Zero si le run a conclu **et** que ses alertes sont parties. Un sinon, abandon
+ * de reconciliation compris — ce n'est pas une anomalie du programme, mais ce
+ * n'est pas un succes : le declencheur exterieur doit le voir rouge.
+ *
+ * La regle elle-meme est `reported` dans `daily.ts`, et non ici : rien ne peut
+ * importer ce fichier (A22), donc une regle ecrite ici serait une regle sans
+ * sonde. Le motif de la seconde moitie est dans son en-tete.
  */
 async function main(argv: readonly string[]): Promise<number> {
   const { runDate, gitSha, instant } = readArguments(argv);
@@ -127,16 +133,21 @@ async function main(argv: readonly string[]): Promise<number> {
   const exchange = openCoinbase(transport);
   const market = openMarketData(transport);
   const db = openDatabase(config.secrets);
+  /*
+   * Le notifieur n'a rien a fermer : un POST par alerte, aucune connexion
+   * retenue. Il n'entre donc pas dans le `finally` ci-dessous.
+   */
+  const notifier = openNotifier(config.secrets, openHttp());
 
   try {
     const result = await runDaily({
-      ports: { exchange, market, db },
+      ports: { exchange, market, db, notifier },
       clock,
       config,
       gitSha,
       log: (line) => process.stdout.write(`${line}\n`),
     });
-    return result.status === 'COMPLETED' ? 0 : 1;
+    return reported(result) ? 0 : 1;
   } finally {
     /*
      * Les deux fermetures, chacune dans son propre essai. Un `await db.close()`

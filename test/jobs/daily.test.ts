@@ -10,12 +10,15 @@ import type {
 } from '../../src/adapters/db.js';
 import { PORTFOLIO_KEYS, SUSPENSION_MARKER } from '../../src/jobs/snapshot.js';
 import type { DailyCandle, DailyWindow } from '../../src/adapters/market.js';
+import type { HttpOutcome, HttpRequest, HttpSend } from '../../src/adapters/http.js';
+import type { AlertEvent } from '../../src/adapters/notifier.js';
+import { openNotifier } from '../../src/adapters/notifier.js';
 import type { UbacConfig } from '../../src/config/env.js';
 import { loadConfig } from '../../src/config/env.js';
 import { expectedCalendar } from '../../src/fixture/normalise.js';
 import type { Price, Quantity, UsdcAmount } from '../../src/core/types.js';
 import type { DailyPorts, DailyRunResult, RunClock } from '../../src/jobs/daily.js';
-import { DailyRunError, runDaily } from '../../src/jobs/daily.js';
+import { DailyRunError, reported, runDaily } from '../../src/jobs/daily.js';
 import { photo, PORTFOLIO, qty, solde } from './doubles.js';
 
 /**
@@ -34,6 +37,13 @@ import { photo, PORTFOLIO, qty, solde } from './doubles.js';
  * - la fenetre demandee s'arrete au dernier jour **clos** ;
  * - deux runs le meme jour ne produisent qu'une decision par strategie, parce
  *   que la **base** refuse la seconde — pas parce que le code s'abstient.
+ *
+ * Les alertes du §9 sont eprouvees **contre le vrai `openNotifier`**, monte sur
+ * un transport double. Un double de `Notifier` aurait sonde le cablage sans
+ * sonder ce qui part ; ici le corps JSON reellement publie est lisible, et la
+ * garantie « une alerte qui echoue ne fait pas tomber le run » est eprouvee sur
+ * le code qui la porte et non sur une imitation complaisante. Aucun reseau :
+ * `openHttp` n'est jamais appele, le transport est une fonction du test.
  */
 
 // --- Doubles ----------------------------------------------------------------
@@ -76,6 +86,8 @@ interface Scenario {
   /** Remplace la serie rendue : sert a produire une serie mal bornee. */
   readonly serie?: (asset: string, window: DailyWindow) => readonly DailyCandle[];
   readonly runDate?: string;
+  /** Le transport du notifieur. Par defaut : tout part. */
+  readonly transport?: HttpSend;
 }
 
 interface Harnais {
@@ -95,6 +107,24 @@ interface Harnais {
   readonly table: Map<string, DecisionToRecord>;
   /** La table `snapshots`, indexee par sa cle primaire `run_date`. */
   readonly photos: Map<string, SnapshotRecord>;
+  /** Les publications ntfy reellement tentees, corps JSON compris. */
+  readonly pushes: { readonly url: string; readonly payload: NtfyPayload }[];
+}
+
+/**
+ * Le corps JSON que `notifier.ts` publie. Relu tel quel, sans indulgence.
+ *
+ * `tags` porte deux choses et dans cet ordre — l'evenement, puis la cle
+ * deterministe de Q6a1. Le type le dit en tuple plutot qu'en tableau : une
+ * sonde qui lirait `tags[0]` sur une liste dont l'ordre aurait change passerait
+ * en silence.
+ */
+interface NtfyPayload {
+  readonly topic: string;
+  readonly title: string;
+  readonly message: string;
+  readonly priority: number;
+  readonly tags: readonly [AlertEvent, string];
 }
 
 /**
@@ -134,6 +164,7 @@ function harnais(scenario: Scenario = {}): Harnais {
    * le code du run — et non le double — qui tienne la photo unique du jour.
    */
   const photos = new Map<string, SnapshotRecord>();
+  const pushes: { url: string; payload: NtfyPayload }[] = [];
   if (scenario.snapshot !== undefined) photos.set(scenario.snapshot.runDate, scenario.snapshot);
   const runDate = scenario.runDate ?? RUN_DATE;
   const closes = scenario.closes ?? { BTC: BTC_CLOSE, ETH: ETH_CLOSE };
@@ -143,6 +174,15 @@ function harnais(scenario: Scenario = {}): Harnais {
     balances: scenario.balances ?? [],
   };
 
+  const config = loadConfig(ENV);
+  const transport: HttpSend = async (request: HttpRequest): Promise<HttpOutcome> => {
+    appels.push('notify');
+    pushes.push({ url: request.url, payload: JSON.parse(request.body) as NtfyPayload });
+    return scenario.transport === undefined
+      ? { status: 'OK', httpStatus: 200 }
+      : scenario.transport(request);
+  };
+
   return {
     appels,
     lignes,
@@ -150,9 +190,10 @@ function harnais(scenario: Scenario = {}): Harnais {
     depuis,
     table,
     photos,
+    pushes,
     gitSha: GIT_SHA,
     clock: { today: () => runDate, instant: () => new Date(`${runDate}T07:00:00.000Z`) },
-    config: loadConfig(ENV),
+    config,
     log: (line) => lignes.push(line),
     ports: {
       exchange: {
@@ -212,9 +253,16 @@ function harnais(scenario: Scenario = {}): Harnais {
           });
         },
       },
+      notifier: openNotifier(config.secrets, transport),
     },
   };
 }
+
+/** Les evenements pousses, dans l'ordre d'envoi. Premier tag, cf. `NtfyPayload`. */
+const evenements = (h: Harnais): AlertEvent[] => h.pushes.map((push) => push.payload.tags[0]);
+
+/** La cle deterministe de Q6a1 : `cle-` et douze hexadecimaux, jamais autre chose. */
+const CLE = expect.stringMatching(/^cle-[0-9a-f]{12}$/) as unknown as string;
 
 const lance = (h: Harnais): Promise<DailyRunResult> => runDaily(h);
 
@@ -347,9 +395,9 @@ describe('§8 etapes 1 a 5 — l’enchainement du run', () => {
    * Le cas constate en reel sur le compte de l'operateur : portefeuille vide,
    * valeur totale nulle, aucun poids definissable. Le run abandonne proprement et
    * **n'ecrit rien** — ni decision, ni photo. Depuis la base, cet abandon reste
-   * indistinguable d'un job qui n'a pas tourne : c'est l'alerte du lot suivant qui
-   * le dira, et ce lot ne doit surtout pas aggraver la chose en photographiant un
-   * run abandonne.
+   * indistinguable d'un job qui n'a pas tourne ; c'est l'alerte `RUN_ABORTED` qui
+   * fait desormais la difference, et le bloc « §9 » plus bas la sonde. Ce lot ne
+   * doit pas non plus aggraver la chose en photographiant un run abandonne.
    */
   it('abandonne sur un portefeuille non valorisable, sans ecrire ni decision ni photo', async () => {
     const h = harnais({ balances: [solde('BTC', '0'), solde('ETH', '0'), solde('USDC', '0')] });
@@ -711,5 +759,242 @@ describe('§6, §8 etape 7 — la photo du jour et la suspension au drawdown', (
       '2026-09-06T00:00:00.000Z',
       '2026-09-12T07:00:00.000Z',
     ]);
+  });
+});
+
+
+// --- §9, les alertes --------------------------------------------------------
+
+/**
+ * Un transport qui echoue les `combien` premiers envois, puis accepte. Permet
+ * de distinguer « l'alerte suivante part quand meme » de « l'envoi s'arrete a
+ * la premiere panne », ce qu'un transport uniformement en echec ne dirait pas.
+ */
+function transportFaillible(combien: number): HttpSend {
+  let restants = combien;
+  return () => {
+    if (restants > 0) {
+      restants -= 1;
+      return Promise.resolve<HttpOutcome>({
+        status: 'FAILED',
+        failure: { kind: 'REFUS', httpStatus: 401 },
+      });
+    }
+    return Promise.resolve<HttpOutcome>({ status: 'OK', httpStatus: 200 });
+  };
+}
+
+describe('§9 — les alertes push', () => {
+  it('ne pousse rien quand le run conclut sans incident', async () => {
+    const h = harnais({ balances: DANS_LA_BANDE });
+    const result = await lance(h);
+
+    expect(result.status).toBe('COMPLETED');
+    expect(h.pushes).toEqual([]);
+    expect(result.report.alerts).toEqual([]);
+  });
+
+  /*
+   * La phase 1 ne place rien : `executed` est toujours vide, donc le run ne peut
+   * pas produire `REBALANCE_EXECUTED`. Le chemin existe et `alerts.test.ts`
+   * l'eprouve directement ; ici on constate qu'aucun run ne l'atteint, y compris
+   * celui qui declenche un reequilibrage complet et le fait accepter.
+   */
+  it('ne pousse jamais REBALANCE_EXECUTED, meme sur un reequilibrage declenche', async () => {
+    const h = harnais({ balances: HORS_BANDE });
+    const result = complete(await lance(h));
+
+    expect(result.outcomes.some((o) => o.intent.legs.length > 0)).toBe(true);
+    expect(evenements(h)).not.toContain('REBALANCE_EXECUTED');
+  });
+
+  it('pousse RECONCILIATION_DRIFT sur une divergence, et rien d’autre', async () => {
+    const h = harnais({
+      balances: DANS_LA_BANDE,
+      snapshot: photo({ BTC: qty('0.9'), ETH: qty('12'), USDC: qty('30000') }),
+    });
+    const result = await lance(h);
+
+    expect(result.status).toBe('ABORTED');
+    expect(evenements(h)).toEqual(['RECONCILIATION_DRIFT']);
+    expect(h.pushes[0]?.payload.priority).toBe(5);
+    expect(h.pushes[0]?.payload.message).toContain('ni decision, ni photo');
+  });
+
+  /*
+   * **La raison d'etre du lot.** Portefeuille vide, valeur totale nulle : le run
+   * abandonne a l'etape de valorisation sans rien ecrire, et le §9 ne nomme
+   * d'alerte d'abandon que pour la divergence de reconciliation. Sans
+   * `RUN_ABORTED`, ce run-la reste muet et la journee est vide en base comme si
+   * le job n'avait pas tourne.
+   */
+  it('pousse RUN_ABORTED sur un portefeuille non valorisable', async () => {
+    const h = harnais({ balances: [solde('BTC', '0'), solde('ETH', '0'), solde('USDC', '0')] });
+    const result = await lance(h);
+
+    expect(result.status).toBe('ABORTED');
+    expect(evenements(h)).toEqual(['RUN_ABORTED']);
+    expect(h.pushes[0]?.payload.title).toContain('VALUATION');
+    expect(h.pushes[0]?.payload.topic).toBe('ubac-test');
+  });
+
+  it('pousse DRAWDOWN quand la suspension du §6 est active', async () => {
+    const h = harnais({ balances: HORS_BANDE, snapshot: veille('200000') });
+    const result = complete(await lance(h));
+
+    expect(result.suspension.status).toBe('ACTIVE');
+    expect(evenements(h)).toEqual(['DRAWDOWN']);
+    // Le meme texte que la ligne de `decisions` : une seule source, un seul chiffre.
+    expect(h.pushes[0]?.payload.message).toBe(h.table.get(`${RUN_DATE}|rebalance|false`)?.intent.reason);
+  });
+
+  /*
+   * Un abandon posterieur au calcul de la photo connait la suspension : les deux
+   * faits partent, dans l'ordre du catalogue. Sans la suspension portee par le
+   * resultat d'abandon, le drawdown de ce jour-la serait perdu.
+   */
+  it('pousse le drawdown ET l’abandon quand le run s’arrete apres la photo', async () => {
+    const nonFini: CashFlowRecord = {
+      ...flux('2026-09-10', '1'),
+      amount: new Decimal(Number.NaN) as UsdcAmount,
+    };
+    const h = harnais({ balances: HORS_BANDE, snapshot: veille('200000'), cashFlows: [nonFini] });
+    const result = await lance(h);
+
+    expect(result.status).toBe('ABORTED');
+    expect(evenements(h)).toEqual(['DRAWDOWN', 'RUN_ABORTED']);
+  });
+
+  /*
+   * L'ordre entier : les alertes partent **apres** la derniere ecriture. Une
+   * alerte emise en cours de route pourrait partir sur un etat que le run
+   * n'aurait finalement pas ecrit.
+   */
+  it('n’alerte qu’une fois tout ecrit', async () => {
+    const h = harnais({ balances: HORS_BANDE, snapshot: veille('200000') });
+    await lance(h);
+
+    expect(h.appels.indexOf('notify')).toBeGreaterThan(h.appels.lastIndexOf('recordSnapshot'));
+    expect(h.appels.indexOf('notify')).toBeGreaterThan(h.appels.lastIndexOf('recordDecision'));
+  });
+
+  /*
+   * Le point que le brief demandait de trancher. Une alerte qui echoue ne defait
+   * rien : le run garde son statut, ses quatre lignes et sa photo. Mais elle
+   * n'est pas silencieuse — elle laisse sa ligne de journal et revient dans le
+   * compte rendu, d'ou le point d'entree tire son code de sortie.
+   */
+  it('une alerte en echec ne defait rien du run, et ne passe pas en silence', async () => {
+    const h = harnais({
+      balances: HORS_BANDE,
+      snapshot: veille('200000'),
+      transport: () =>
+        Promise.resolve<HttpOutcome>({ status: 'FAILED', failure: { kind: 'REFUS', httpStatus: 401 } }),
+    });
+    const result = complete(await lance(h));
+
+    expect(h.table.size).toBe(4);
+    expect(h.photos.has(RUN_DATE)).toBe(true);
+    expect(result.report.alerts).toEqual([
+      { status: 'FAILED', event: 'DRAWDOWN', key: CLE, reason: 'refus du serveur, HTTP 401' },
+    ]);
+    expect(h.lignes.some((l) => l.includes('NON PARTIE') && l.includes('DRAWDOWN'))).toBe(true);
+  });
+
+  it('la panne d’une alerte n’emporte pas les suivantes', async () => {
+    const nonFini: CashFlowRecord = {
+      ...flux('2026-09-10', '1'),
+      amount: new Decimal(Number.NaN) as UsdcAmount,
+    };
+    const h = harnais({
+      balances: HORS_BANDE,
+      snapshot: veille('200000'),
+      cashFlows: [nonFini],
+      transport: transportFaillible(1),
+    });
+    const result = await lance(h);
+
+    expect(evenements(h)).toEqual(['DRAWDOWN', 'RUN_ABORTED']);
+    expect(result.report.alerts.map((a) => a.status)).toEqual(['FAILED', 'SENT']);
+  });
+
+  /*
+   * Le code de sortie du point d'entree sort de `reported`, et les trois cas
+   * sont sondes separement : un run muet vaut 1 comme un abandon, parce qu'un
+   * evenement que personne ne verra n'est pas un succes.
+   */
+  it('un run conclu dont les alertes sont parties est le seul cas rendu comme reussi', async () => {
+    const sain = await lance(harnais({ balances: DANS_LA_BANDE }));
+    expect(reported(sain)).toBe(true);
+
+    const alerte = await lance(harnais({ balances: HORS_BANDE, snapshot: veille('200000') }));
+    expect(reported(alerte)).toBe(true);
+
+    const muet = await lance(
+      harnais({
+        balances: HORS_BANDE,
+        snapshot: veille('200000'),
+        transport: () =>
+          Promise.resolve<HttpOutcome>({
+            status: 'FAILED',
+            failure: { kind: 'REFUS', httpStatus: 401 },
+          }),
+      }),
+    );
+    expect(muet.status).toBe('COMPLETED');
+    expect(reported(muet)).toBe(false);
+
+    const abandonne = await lance(
+      harnais({ balances: [solde('BTC', '0'), solde('ETH', '0'), solde('USDC', '0')] }),
+    );
+    expect(reported(abandonne)).toBe(false);
+  });
+
+  /*
+   * La garantie « ne rejette jamais » vit dans `notifier.ts`, en un seul
+   * endroit. Le run ne l'entoure d'aucun `try` : si elle cedait, le run
+   * tomberait apres avoir tout ecrit.
+   */
+  it('un transport qui leve ne fait pas tomber le run', async () => {
+    const h = harnais({
+      balances: HORS_BANDE,
+      snapshot: veille('200000'),
+      transport: () => {
+        throw new TypeError('socket fermee');
+      },
+    });
+    const result = complete(await lance(h));
+
+    expect(h.table.size).toBe(4);
+    expect(result.report.alerts).toEqual([
+      { status: 'FAILED', event: 'DRAWDOWN', key: CLE, reason: 'transport en echec' },
+    ]);
+  });
+
+  /*
+   * Une exception alerte puis **continue** : `JOB_FAILED` part, et l'erreur
+   * remonte telle quelle jusqu'au point d'entree, qui sort en 1. Alerter n'est
+   * pas rattraper — un run qui avalerait son exception rendrait un succes.
+   */
+  it('pousse JOB_FAILED sur une exception, puis releve l’erreur', async () => {
+    const h = harnais({ balances: DANS_LA_BANDE, runDate: '2026-02-30' });
+
+    await expect(lance(h)).rejects.toThrow(DailyRunError);
+    expect(evenements(h)).toEqual(['JOB_FAILED']);
+    expect(h.pushes[0]?.payload.message).toContain('2026-02-30');
+    expect(h.table.size).toBe(0);
+  });
+
+  it('n’avale pas l’exception quand l’alerte elle-meme echoue', async () => {
+    const h = harnais({
+      balances: DANS_LA_BANDE,
+      runDate: '2026-02-30',
+      transport: () => {
+        throw new TypeError('socket fermee');
+      },
+    });
+
+    await expect(lance(h)).rejects.toThrow(DailyRunError);
+    expect(evenements(h)).toEqual(['JOB_FAILED']);
   });
 });

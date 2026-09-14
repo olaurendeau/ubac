@@ -3,6 +3,7 @@ import type { Decimal } from 'decimal.js';
 import type { CoinbaseReader } from '../adapters/coinbase.js';
 import type { CashFlowRecord, RecordDecisionOutcome, UbacDatabase } from '../adapters/db.js';
 import type { DailyCandle, DailyWindow, MarketReader } from '../adapters/market.js';
+import type { AlertOutcome, Notifier } from '../adapters/notifier.js';
 import type { UbacConfig } from '../config/env.js';
 import { REBALANCE_CONFIGS } from '../core/config.js';
 import type { RebalanceStrategyName } from '../core/config.js';
@@ -25,6 +26,8 @@ import type {
   Verdict,
   Weights,
 } from '../core/types.js';
+import type { AlertInput } from './alerts.js';
+import { alertsFor } from './alerts.js';
 import type { ReconcileObservations } from './reconcile.js';
 import { reconcile } from './reconcile.js';
 import type { BenchmarkGap, DrawdownState, SnapshotWrite, Suspension } from './snapshot.js';
@@ -36,8 +39,9 @@ import { prepareSnapshot } from './snapshot.js';
  *
  * **L'etape 6, l'execution, n'existe pas.** Ce n'est pas une etape laissee vide :
  * aucun code de placement n'est ecrit ici, et le garde-fou de noms
- * d'`eslint.config.js` refuserait celui qui l'ecrirait. Les etapes 8 et 9 —
- * rapport et ping — appartiennent aux lots suivants.
+ * d'`eslint.config.js` refuserait celui qui l'ecrirait. Le rapport Brevo et le
+ * ping du healthcheck appartiennent aux lots suivants ; **les alertes push du
+ * §9, elles, partent d'ici** — voir `alerts.ts` et `docs/alertes.md`.
  *
  * Cinq proprietes gouvernent ce fichier.
  *
@@ -68,6 +72,13 @@ import { prepareSnapshot } from './snapshot.js';
  *    l'etape 7. L'ecriture, elle, reste en derniere position, ce qui donne
  *    gratuitement la propriete que la spec attend d'un abandon — **un run
  *    abandonne n'ecrit aucune photo**, parce qu'il rend avant d'y arriver.
+ *
+ * Une sixieme propriete vient des alertes. **Elles partent apres le run, jamais
+ * pendant.** `runDaily` enveloppe l'enchainement complet, le laisse rendre son
+ * resultat ou lever, puis alerte sur ce qu'il constate. Consequence voulue : une
+ * alerte ne peut pas changer ce que le run ecrit, et le run ne peut pas tomber
+ * parce qu'une alerte n'est pas partie — `notifier.ts` garantit de ne jamais
+ * rejeter, et c'est la, en un seul endroit, que la garantie vit.
  *
  * Deux branches de ce fichier sont **inatteignables par construction**, et le
  * disent la ou elles se trouvent : le franchissement d'ancre du ladder, prive
@@ -145,6 +156,8 @@ export interface DailyPorts {
     UbacDatabase,
     'recordDecision' | 'recordSnapshot' | 'latestSnapshot' | 'recentCashFlows' | 'pendingOrders'
   >;
+  /** §9 : le canal court. Il ne rejette jamais, donc il n'est jamais entoure d'un `try`. */
+  readonly notifier: Notifier;
 }
 
 export interface DailyRun {
@@ -157,6 +170,11 @@ export interface DailyRun {
 }
 
 // --- Resultat ---------------------------------------------------------------
+
+/** Ce que le run a fait savoir. Une entree par alerte emise, dans l'ordre d'emission. */
+export interface RunReport {
+  readonly alerts: readonly AlertOutcome[];
+}
 
 export type DailyAbort =
   | { readonly step: 'RECONCILE'; readonly code: 'RECONCILIATION_DRIFT'; readonly reason: string }
@@ -176,8 +194,24 @@ export interface StrategyOutcome {
   readonly recorded: RecordDecisionOutcome;
 }
 
-export type DailyRunResult =
-  | { readonly status: 'ABORTED'; readonly runDate: IsoDate; readonly abort: DailyAbort }
+/**
+ * Le resultat de l'enchainement seul, **avant** que la moindre alerte parte.
+ * C'est ce que `runDaily` enveloppe : la separation est ce qui rend impossible
+ * qu'une alerte modifie ce que le run a conclu.
+ */
+type DailyOutcome =
+  | {
+      readonly status: 'ABORTED';
+      readonly runDate: IsoDate;
+      readonly abort: DailyAbort;
+      /**
+       * Ce que le run savait de la suspension au moment d'abandonner. `INACTIVE`
+       * pour un abandon anterieur a l'etape 4bis, qui la calcule ; l'abandon
+       * d'une strategie indecidable, lui, survient apres, et un drawdown au
+       * seuil ce jour-la doit alerter meme si le run s'arrete.
+       */
+      readonly suspension: Suspension;
+    }
   | {
       readonly status: 'COMPLETED';
       readonly runDate: IsoDate;
@@ -202,6 +236,8 @@ export type DailyRunResult =
       readonly suspension: Suspension;
       readonly snapshot: SnapshotWrite;
     };
+
+export type DailyRunResult = DailyOutcome & { readonly report: RunReport };
 
 // --- Prix -------------------------------------------------------------------
 
@@ -419,11 +455,12 @@ function decideAll(
 // --- Le run -----------------------------------------------------------------
 
 /**
- * §8, etapes 1 a 5. Rend un resultat ; ne leve que sur une entree qui ne
+ * §8, etapes 1 a 5 et 7. Rend un resultat ; ne leve que sur une entree qui ne
  * ressemble pas a ce que le type promet — une serie de bougies qui ne finit pas
- * ou l'on a demande, par exemple.
+ * ou l'on a demande, par exemple. **N'alerte pas** : c'est `runDaily` qui le
+ * fait, une fois que celui-ci a rendu ou leve.
  */
-export async function runDaily(run: DailyRun): Promise<DailyRunResult> {
+async function executeRun(run: DailyRun): Promise<DailyOutcome> {
   const { ports, clock, config, gitSha, log } = run;
   const runDate = clock.today();
 
@@ -441,6 +478,8 @@ export async function runDaily(run: DailyRun): Promise<DailyRunResult> {
       status: 'ABORTED',
       runDate,
       abort: { step: 'RECONCILE', code: reconciled.code, reason: reconciled.reason },
+      // L'etape 4bis n'a pas eu lieu : il n'y a pas encore de drawdown a connaitre.
+      suspension: { status: 'INACTIVE' },
     };
   }
   const { holdings } = reconciled.balances;
@@ -466,6 +505,7 @@ export async function runDaily(run: DailyRun): Promise<DailyRunResult> {
       status: 'ABORTED',
       runDate,
       abort: { step: 'VALUATION', code: valuation.code, reason: valuation.reason },
+      suspension: { status: 'INACTIVE' },
     };
   }
   const depuis = dayStart(
@@ -508,7 +548,11 @@ export async function runDaily(run: DailyRun): Promise<DailyRunResult> {
   const decided = decideAll(run, holdings, prices, valuation.weights, cashFlows, step.suspension);
   if (!decided.ok) {
     log(`abandon : ${decided.abort.reason}`);
-    return { status: 'ABORTED', runDate, abort: decided.abort };
+    /*
+     * Seul abandon posterieur a l'etape 4bis : la suspension est connue, et un
+     * drawdown au seuil ce jour-la doit alerter meme si le run s'arrete la.
+     */
+    return { status: 'ABORTED', runDate, abort: decided.abort, suspension: step.suspension };
   }
 
   const outcomes: StrategyOutcome[] = [];
@@ -584,4 +628,139 @@ export async function runDaily(run: DailyRun): Promise<DailyRunResult> {
     suspension: step.suspension,
     snapshot: step.write,
   };
+}
+
+// --- Les alertes ------------------------------------------------------------
+
+/** Le texte d'une erreur, sans supposer que c'en est une. */
+function texte(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Ce que `alerts.ts` regarde, lu sur ce que le run a conclu. Un seul endroit
+ * fait cette traduction, et il est ici : `alerts.ts` reste pur et ne connait pas
+ * `DailyOutcome`.
+ *
+ * `executed` est **vide, toujours**, et ce n'est pas un raccourci : la phase 1
+ * ne place rien, donc aucun reequilibrage n'a jamais ete execute. Meme motif que
+ * les deux ancres nulles de l'etape 5. Le champ se remplira de la table `orders`
+ * quand elle portera des executions.
+ */
+function alertInputOf(outcome: DailyOutcome): AlertInput {
+  if (outcome.status === 'ABORTED') {
+    return {
+      runDate: outcome.runDate,
+      ending: {
+        status: 'ABORTED',
+        step: outcome.abort.step,
+        code: outcome.abort.code,
+        reason: outcome.abort.reason,
+      },
+      suspension: outcome.suspension,
+      // Aucun verdict : un abandon survient avant que la couche risque ne parle.
+      outcomes: [],
+      executed: [],
+    };
+  }
+  return {
+    runDate: outcome.runDate,
+    ending: { status: 'COMPLETED' },
+    suspension: outcome.suspension,
+    outcomes: outcome.outcomes.map(({ strategy, isShadow, verdict }) => ({
+      strategy,
+      isShadow,
+      verdict,
+    })),
+    executed: [],
+  };
+}
+
+/**
+ * Les alertes du run, envoyees une par une et dans l'ordre. **Sequentiel et non
+ * en parallele** : l'ordre du catalogue est ce qui met le plus urgent en tete de
+ * l'ecran verrouille, et un `Promise.all` le perdrait.
+ *
+ * Aucun `try` ici, et c'est voulu : `notify` garantit de ne jamais rejeter. Un
+ * echec revient donc en valeur, il est journalise sur sa propre ligne — **une
+ * alerte qui ne part pas ne doit pas etre silencieuse** — et l'envoi continue
+ * avec la suivante. Une panne de ntfy ne doit pas faire perdre les six autres
+ * alertes du jour en plus de la premiere.
+ */
+async function announce(run: DailyRun, input: AlertInput): Promise<readonly AlertOutcome[]> {
+  const outcomes: AlertOutcome[] = [];
+  for (const alert of alertsFor(input)) {
+    const sent = await run.ports.notifier.notify(alert);
+    /*
+     * L'evenement journalise est lu sur **notre** alerte, pas sur le sort rendu.
+     * Deux raisons, et la seconde est la vraie. La premiere : `alertsFor` vient
+     * de la fabriquer, donc cette lecture-la ne peut rien reserver. La seconde :
+     * `UNREADABLE` ne porte pas d'evenement — c'est l'ecart declare de
+     * `notifier.ts` §4 ter — et le lire sur le sort obligerait a une branche
+     * qu'aucune sonde ne pourrait atteindre d'ici, nos alertes etant toutes
+     * lisibles par construction. Un journal qui nomme l'alerte tentee dit de
+     * toute facon plus qu'un journal qui nomme ce que le canal a su en relire.
+     */
+    run.log(
+      sent.status === 'SENT'
+        ? `alerte ${alert.event} : partie (${sent.key})`
+        : `alerte ${alert.event} : NON PARTIE — ${sent.reason}`,
+    );
+    outcomes.push(sent);
+  }
+  return outcomes;
+}
+
+/**
+ * Le run a-t-il conclu **et** rendu compte.
+ *
+ * Les deux moities sont voulues, et la seconde demande un mot. Une alerte qui
+ * echoue ne fait pas echouer le *travail* du run : rien n'est defait, rien n'est
+ * reecrit, le statut reste `COMPLETED`. Mais elle fait echouer son *compte
+ * rendu*, et ce sont deux choses differentes. Une alerte qui n'est pas partie
+ * est un evenement que personne ne verra ; la compter comme un succes rendrait
+ * le systeme muet exactement quand il a quelque chose a dire.
+ *
+ * La regle vit ici et non dans le point d'entree : `daily-main.ts` n'apparait a
+ * aucun rapport de couverture — rien ne peut l'importer (A22) — donc une regle
+ * ecrite la-bas serait une regle sans sonde. Ici elle en a.
+ */
+export function reported(result: DailyRunResult): boolean {
+  return result.status === 'COMPLETED' && result.report.alerts.every((a) => a.status === 'SENT');
+}
+
+/**
+ * Le run quotidien, alertes comprises.
+ *
+ * L'enveloppe est mince et fait exactement deux choses que l'enchainement ne
+ * peut pas faire lui-meme.
+ *
+ * 1. **Elle alerte sur un abandon.** Un run abandonne n'ecrit rien — ni
+ *    decision, ni photo — donc depuis la base il est indistinguable d'un job qui
+ *    n'a pas tourne. C'est arrive en reel, sur un portefeuille vide. L'alerte
+ *    est desormais la seule difference, et c'est la raison d'etre de ce lot.
+ * 2. **Elle alerte sur une exception, puis la releve.** `JOB_FAILED` part, et
+ *    l'erreur continue son chemin telle quelle : le point d'entree doit toujours
+ *    la voir et sortir en 1. Alerter n'est pas rattraper.
+ *
+ * Ce qu'elle ne fait pas : changer ce que le run a conclu. Le statut, les
+ * ecritures et les valeurs rendues sont ceux d'`executeRun`, alertes ou pas.
+ */
+export async function runDaily(run: DailyRun): Promise<DailyRunResult> {
+  const runDate = run.clock.today();
+  let outcome: DailyOutcome;
+  try {
+    outcome = await executeRun(run);
+  } catch (error) {
+    await announce(run, {
+      runDate,
+      ending: { status: 'FAILED', reason: texte(error) },
+      suspension: { status: 'INACTIVE' },
+      outcomes: [],
+      executed: [],
+    });
+    throw error;
+  }
+  const alerts = await announce(run, alertInputOf(outcome));
+  return { ...outcome, report: { alerts } };
 }

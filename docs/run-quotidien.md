@@ -6,8 +6,9 @@ configuration, ouvre les adaptateurs, appelle `runDaily` de `src/jobs/daily.ts`
 et ferme ce qu'il a ouvert. Toute la logique est dans `daily.ts`, qui ne connaît
 des adaptateurs que leurs types.
 
-Lots Q4b1, Q4b1-bis et Q4b2 de la phase 1. La réconciliation qu'il appelle est décrite dans
-[reconciliation.md](reconciliation.md) ; les frontières de la phase sont dans
+Lots Q4b1, Q4b1-bis, Q4b2 et Q6a de la phase 1. La réconciliation qu'il appelle
+est décrite dans [reconciliation.md](reconciliation.md) ; les alertes push dans
+[alertes.md](alertes.md) ; les frontières de la phase sont dans
 [phase-1-frontieres.md](phase-1-frontieres.md).
 
 ## 1. Lancer le job
@@ -62,19 +63,29 @@ qui est la clé, et elle est passée à part.
 
 | Code | Signification |
 |---|---|
-| 0 | le run a conclu — `COMPLETED`, les quatre lignes de `decisions` écrites ou déjà présentes, et la photo du jour prise ou déjà prise. |
-| 1 | tout le reste : arguments refusés, configuration invalide, abandon de réconciliation, erreur. |
+| 0 | le run a conclu **et** rendu compte — `COMPLETED`, les quatre lignes de `decisions` écrites ou déjà présentes, la photo du jour prise ou déjà prise, et toutes les alertes du jour parties. |
+| 1 | tout le reste : arguments refusés, configuration invalide, abandon de réconciliation, alerte non partie, erreur. |
 
 Un abandon de réconciliation rend **1**. Ce n'est pas une anomalie du programme,
 mais ce n'est pas un succès : le déclencheur extérieur doit le voir rouge.
 
+Une **alerte non partie** rend 1 elle aussi, alors même que le run a fait tout
+son travail. Le motif est dans [alertes.md](alertes.md) section 2 ter : le travail du
+run et son compte rendu sont deux choses différentes, et une alerte que personne
+ne verra n'est pas un succès. Rien n'est défait pour autant — les lignes et la
+photo restent écrites.
+
 ## 2. La configuration entre par `src/config/env.ts`, et par lui seul
 
-Les six variables du §10 sont requises et sans défaut : `DATABASE_URL`,
+Huit variables sont requises et sans défaut : les six du §10 — `DATABASE_URL`,
 `COINBASE_API_KEY`, `COINBASE_API_SECRET`, `BREVO_API_KEY`, `NTFY_TOKEN`,
-`HEALTHCHECK_URL`. Une absente arrête le démarrage, et le message **nomme la
-variable sans jamais citer sa valeur** — `DATABASE_URL` porte un mot de passe, et
-un message d'erreur finit dans un journal.
+`HEALTHCHECK_URL` — plus `NTFY_URL` et `NTFY_TOPIC`, sans lesquelles un ntfy
+auto-hébergé n'est joignable nulle part. L'écart avec le §10 est assumé et motivé
+dans [alertes.md](alertes.md) section 1.
+
+Une absente arrête le démarrage, et le message **nomme la variable sans jamais
+citer sa valeur** — `DATABASE_URL` porte un mot de passe, et un message d'erreur
+finit dans un journal.
 
 Le point d'entrée ne lit **jamais** `process.env`. Il appelle `loadConfig()`, et
 c'est tout : `test/jobs/purete.test.ts` (A13, A14, A18) refuse toute mention de
@@ -85,7 +96,7 @@ refus du préfixe `UBAC_RISK_` et le filtre des littéraux décimaux.
 Aucune variable `UBAC_RISK_*` n'est acceptée : les seuils de risque vivent dans
 `src/core/risk.ts`, couverts à 100 %, et n'ont pas de mode de contournement.
 
-## 3. Ce que le run fait : les étapes 1 à 5 et 7
+## 3. Ce que le run fait : les étapes 1 à 5, 7 et 9
 
 1. **Healthcheck de démarrage.** La clé répond, et le run dit ce qu'il est.
 2. **Réconciliation**, avant toute décision. Un abandon arrête le run **avant la
@@ -101,6 +112,9 @@ Aucune variable `UBAC_RISK_*` n'est acceptée : les seuils de risque vivent dans
    trace.
 7. **Benchmarks et photo du jour** dans `snapshots` : valeur totale, poids,
    positions, benchmarks. Détail ci-dessous.
+9. **Les alertes push** du §9, après la dernière écriture — et aussi sur un
+   abandon ou une exception, où les étapes précédentes n'ont pas eu lieu.
+   [alertes.md](alertes.md).
 
 L'étape 7 est **calculée avant l'étape 5** et **écrite après**. Calculée avant,
 parce que la suspension au drawdown est une entrée de la décision et ne peut pas
@@ -123,14 +137,22 @@ stratégie indécidable — **n'écrit rien du tout** : ni décision, ni photo. 
 volontaire : le run s'arrête avant la première écriture, et rien de partiel ne
 reste derrière lui.
 
-La conséquence est à connaître : **depuis la base, un abandon est
+La conséquence serait à craindre : **depuis la base, un abandon est
 indistinguable d'un job qui n'a pas tourné.** Les deux laissent la journée vide.
 Le cas s'est produit en réel sur le compte de l'opérateur — portefeuille vide,
 valeur totale nulle, aucun poids définissable, run abandonné proprement, aucune
-ligne écrite. La spec prévoit qu'un abandon déclenche une **alerte** (§9) et
-c'est l'alerte, pas la base, qui fera la différence ; elle arrive au lot suivant.
-D'ici là, la seule trace d'un abandon est le journal du processus et son code de
-sortie **1**.
+ligne écrite.
+
+C'est l'**alerte** du §9 qui fait la différence, et elle existe depuis le lot
+Q6a2 : tout abandon pousse `RECONCILIATION_DRIFT` ou `RUN_ABORTED`, quelle qu'en
+soit la cause — divergence, portefeuille non valorisable, stratégie indécidable.
+Une exception, elle, pousse `JOB_FAILED`. Voir [alertes.md](alertes.md). Les
+autres traces d'un abandon restent le journal du processus et le code de sortie
+**1**.
+
+Ce qui manque encore : un job qui ne **démarre pas** ne pousse rien, puisqu'aucun
+code ne tourne pour l'émettre. C'est le healthcheck externe qui le dira, au lot
+suivant.
 
 ### La photo du jour, le drawdown et la suspension du §6
 
@@ -194,9 +216,11 @@ noms d'`eslint.config.js` refuse dans `src/adapters/` et `src/jobs/` tout nom qu
 dénote un placement, une annulation ou un retrait. La clé Coinbase est en lecture
 seule.
 
-Les étapes 8 et 9 — rapport Brevo et ping du healthcheck — appartiennent aux lots
-suivants et ne sont pas appelées ici. `runDaily` rend sa fenêtre OHLCV, ses
-benchmarks et son drawdown tels quels pour qu'ils les consomment.
+Le **rapport quotidien Brevo** et le **ping du healthcheck** appartiennent aux
+lots suivants et ne sont pas appelés ici. `runDaily` rend sa fenêtre OHLCV, ses
+benchmarks et son drawdown tels quels pour qu'ils les consomment. Les **alertes
+push** du §9, elles, partent bien d'ici, après la dernière écriture :
+[alertes.md](alertes.md).
 
 ### L'annulation des ordres de plus de 24 h est reportée en phase 3
 
