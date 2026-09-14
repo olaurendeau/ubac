@@ -185,6 +185,27 @@ Règle retenue pour tout garde-fou livré, quel qu'il soit :
 6. Le rapport porte le tableau affirmation / variantes / sondes / résultat. La
    revue le vérifie au lieu de le reconstituer.
 
+### Révision du 2026-09-14 : proportionner l'audit au risque
+
+L'exigence d'audit variante par variante a trouvé un défaut réel dans chaque lot
+où elle s'est appliquée. Elle a aussi fait dépasser le plafond à **sept lots sur
+huit**, de 14 à 96 %, et porté un seul lot — le canal d'alerte — à cinq cycles
+de revue. Le coût n'était pas soutenable sur l'ensemble d'une phase, et
+l'arbitrage n'avait pas été soumis à l'opérateur.
+
+Décision de l'opérateur : **proportionner l'exigence au risque.**
+
+| | exigé |
+|---|---|
+| Tout lot | la **preuve par mutation** dans le rapport du constructeur |
+| Lot touchant un secret, de l'argent ou un garde-fou | **plus** l'audit affirmation / variantes / sondes |
+
+Un lot qui consomme une configuration déjà validée, rend du HTML ou pingue une
+URL n'entre pas dans la seconde catégorie. Un lot qui manipule une clé, calcule
+un ordre, ou porte une garantie structurelle, si.
+
+La règle d'arrêt reste entière, et vaut pour les deux catégories.
+
 Corollaire sur l'arrêt : un garde-fou statique est contournable par
 construction, et ce dépôt l'écrit déjà pour la couche risque et pour la
 frontière de phase. Une fois les affirmations vraies et les limites déclarées,
