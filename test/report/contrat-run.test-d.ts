@@ -108,7 +108,23 @@ rendre({
  * alors dire ici si le rapport doit rendre ce champ ou non.
  */
 type NonLus = Exclude<keyof Completed, keyof CompletedRun>;
-type NonLusAttendus = 'status' | 'gitSha' | 'prices' | 'cashFlows' | 'observations' | 'snapshot';
+/**
+ * `report` rejoint la liste en Q6a2, et c'est une decision, pas un oubli : il
+ * porte le sort des alertes push, qui sont le canal **court**. Le rapport
+ * quotidien est le canal long ; y recopier ce qui vient d'etre pousse sur le
+ * telephone donnerait la meme nouvelle deux fois, la seconde avec un jour de
+ * retard. Ce qui manque au rapport d'un abandon, c'est le rapport lui-meme —
+ * un run abandonne n'en produit aucun — et cela se regle par l'alerte, pas par
+ * une colonne de plus.
+ */
+type NonLusAttendus =
+  | 'status'
+  | 'gitSha'
+  | 'prices'
+  | 'cashFlows'
+  | 'observations'
+  | 'snapshot'
+  | 'report';
 type MemeEnsemble<A extends B, B> = A;
 declare const nonLus: [MemeEnsemble<NonLus, NonLusAttendus>, MemeEnsemble<NonLusAttendus, NonLus>];
 void nonLus;

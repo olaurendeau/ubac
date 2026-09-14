@@ -4,16 +4,24 @@ Les alertes de la spec §9, en push immédiat sur **ntfy auto-hébergé**. « Le
 est un mauvais canal d'alerte : un drawdown le dimanche ne doit pas attendre le
 lundi. » Le rapport quotidien Brevo est un autre canal et un autre lot.
 
-Lot **Q6a1** de la phase 1 : **le canal**, et lui seul. La configuration est
-validée, le transport est éprouvé, et on peut publier une alerte. **Rien n'en
-émet encore** — quel événement mérite un push, et le câblage dans le run
-quotidien, arrivent au lot Q6a2. Ce document grandira avec eux.
+Deux lots de la phase 1, et la séparation des deux est celle des fichiers.
+**Q6a1** a posé le canal : la configuration est validée, le transport est
+éprouvé, et on peut publier une alerte. **Q6a2** pose ce qui mérite un push et le
+greffe dans le run quotidien.
 
-Deux fichiers, deux rôles :
+Quatre fichiers, quatre rôles :
 
 - `src/adapters/http.ts` — le transport : un POST, un délai, et **aucune
   exception**. Il ne sait pas ce qu'il transporte.
 - `src/adapters/notifier.ts` — la publication ntfy. Il ne décide de rien.
+- `src/jobs/alerts.ts` — le **catalogue** : quel fait produit quelle alerte, à
+  quelle priorité, dans quel ordre. Module **pur** — aucune IO, aucune horloge,
+  aucun envoi. Il prend l'état d'un run et rend une liste d'alertes.
+- `src/jobs/daily.ts` — la greffe : il les fait partir, après la dernière
+  écriture. Voir [run-quotidien.md](run-quotidien.md).
+
+Cette séparation n'est pas décorative : elle permet d'éprouver « quel événement
+déclenche quoi » sans réseau, sans jeton et sans double de transport.
 
 ## 1. Huit variables, et pourquoi pas six
 
@@ -65,8 +73,134 @@ déterministe** de la section 5.
 Deux priorités, pas cinq. `urgent` traverse le mode « ne pas déranger »
 d'Android ; il est réservé à ce qui ne peut pas attendre le lendemain matin.
 Tout mettre en urgent reviendrait à n'avoir qu'un niveau, et l'opérateur
-apprendrait à les ignorer tous. Les sept événements et leur priorité arrivent au
-lot Q6a2 ; leurs noms sont déjà figés dans `ALERT_EVENTS`.
+apprendrait à les ignorer tous. Les noms des sept événements sont figés dans
+`ALERT_EVENTS` ; leur priorité et leur déclencheur sont la section suivante.
+
+## 2 bis. Les sept événements
+
+Le §9 en nomme six. Un ajout est assumé, et un nom est élargi.
+
+| Événement | Priorité | Se déclenche quand |
+|---|---|---|
+| `REBALANCE_EXECUTED` | high | un rééquilibrage a été passé |
+| `DRAWDOWN` | urgent | la suspension du §6 est active |
+| `REBALANCE_TOO_LARGE` | urgent | un rejet porte ce code |
+| `RECONCILIATION_DRIFT` | urgent | le run abandonne à l'étape `RECONCILE` |
+| `RISK_REJECTED` | high | un verdict est rejeté pour tout autre code |
+| `RUN_ABORTED` | urgent | le run abandonne à toute **autre** étape |
+| `JOB_FAILED` | urgent | une exception a échappé au run |
+
+`urgent` est réservé à ce qui ne peut pas attendre le lendemain matin — le
+capital bouge mal, ou le système ne fait pas son travail. `high` va à ce qui
+marche comme prévu et se raconte : un rééquilibrage passé, un garde-fou qui a
+mordu.
+
+La table de `src/jobs/alerts.ts` est indexée par `AlertEvent`, donc un événement
+ajouté sans priorité ne compile pas ; et c'est son **ordre de déclaration** qui
+donne l'ordre d'émission, relu par `Object.keys` plutôt que recopié. Une sonde —
+pas un import, `src/jobs/` ne connaissant des adaptateurs que leurs types —
+vérifie que ce catalogue et `ALERT_EVENTS` disent la même chose dans le même
+ordre.
+
+**`RUN_ABORTED` est ajouté**, et c'est la raison d'être du lot. Le §9 ne prévoit
+d'alerte d'abandon que pour la divergence de réconciliation. Or un run abandonné
+n'écrit **rien** — ni décision, ni photo — donc depuis la base il est
+indistinguable d'un job qui n'a pas tourné. Le cas s'est produit en réel sur le
+compte de l'opérateur : portefeuille vide, valeur totale nulle, abandon propre à
+l'étape de **valorisation**, aucune trace. Un événement qui n'aurait couvert que
+la divergence aurait laissé ce run-là muet. Les deux se **partagent** les
+abandons : jamais deux alertes pour un même abandon, jamais zéro.
+
+**`RISK_REJECTED` est plus large que « jambe rejetée »** du §9. La couche risque
+rejette aussi au niveau du run, sans indice de jambe — `MIN_CASH` et
+`MAX_EXPOSURE` en particulier, qui disent que le portefeuille est hors de ses
+propres limites. S'en tenir littéralement à la jambe les aurait rendus
+silencieux. Les codes d'un verdict rejeté se partagent donc eux aussi :
+`REBALANCE_TOO_LARGE` d'un côté, tous les autres de l'autre, **aucun code deux
+fois, aucun perdu**. Les neuf codes de `RejectionCode` sont sondés un par un, et
+leur complétude est tenue à la compilation : un dixième code ajouté au noyau sans
+être repris dans la sonde ne compile plus.
+
+**`REBALANCE_EXECUTED` est inatteignable en phase 1.** Rien ne s'exécute, donc la
+liste d'exécutions que lit `alertsFor` est toujours vide, et `daily.ts` le dit à
+l'endroit où il la passe. Le chemin existe et est éprouvé directement ; il
+s'alimentera de la table `orders` en phase 3. Une sonde du run le constate dans
+l'autre sens : même un rééquilibrage complet déclenché et accepté ne pousse pas
+cet événement.
+
+**Le drawdown ne définit pas son propre seuil.** L'alerte part exactement quand
+la suspension du §6 est active, et son corps est le texte que porte la ligne de
+`decisions` du jour — produit une seule fois par `src/jobs/snapshot.ts`. L'alerte
+et la base ne peuvent donc pas raconter deux chiffres différents, et il n'existe
+pas un second seuil qui pourrait dériver du premier. Conséquence : la borne est
+**incluse** comme au §6, et non « plus de 25 % » comme le §9 pourrait se lire.
+
+### Ce qui n'alerte pas
+
+`verdict.ignored` ne déclenche rien. Une jambe résiduelle de 12 USDC écartée en
+`LEG_TOO_SMALL` n'est pas un rejet : c'est le fonctionnement normal, et
+`src/core/types.ts` sépare les deux listes précisément pour qu'on ne les confonde
+pas. Les confondre donnerait un push quasi quotidien, donc un opérateur qui
+apprend à ignorer ses alertes.
+
+**Un run qui conclut sans incident ne pousse rien.** Le silence est le cas
+nominal — ce qui est aussi pourquoi il ne suffit pas : un job qui ne **démarre
+pas** ne pousse rien non plus, puisqu'aucun code ne tourne pour l'émettre. C'est
+le healthcheck externe du §9 — « la surveillance ne doit pas dépendre du système
+surveillé » — qui comblera ce trou-là, et il appartient à un lot suivant.
+
+## 2 ter. Quand elles partent, et ce que vaut une alerte qui n'est pas partie
+
+**Après le run, jamais pendant.** `runDaily` enveloppe l'enchaînement complet, le
+laisse rendre son résultat ou lever, puis alerte sur ce qu'il constate. Une
+alerte ne peut donc pas partir sur un état que le run n'aurait finalement pas
+écrit, et la dernière écriture précède toujours le premier envoi — une sonde
+compare les rangs d'appel plutôt que de croire la phrase.
+
+Les envois sont **séquentiels et dans l'ordre du tableau ci-dessus** : c'est lui
+qui met le plus urgent en tête de l'écran verrouillé, et un `Promise.all` le
+perdrait.
+
+Sur une exception, `JOB_FAILED` part **puis l'erreur est relevée** telle quelle :
+le point d'entrée doit toujours la voir et sortir en 1. Alerter n'est pas
+rattraper.
+
+Une exception qui survient **après** le calcul de la photo emporte avec elle un
+drawdown déjà connu : le résultat d'abandon porte donc la suspension, et les deux
+alertes partent. Sans ce champ, le drawdown de ce jour-là serait perdu.
+
+### La tension, et comment elle est tranchée
+
+Les deux règles se tendent l'une l'autre :
+
+- **Une alerte en échec ne défait rien.** Le run garde son statut, ses quatre
+  lignes de `decisions` et sa photo. Le travail est fait ; une panne de ntfy ne
+  doit pas le remettre en cause. La panne d'une alerte n'emporte pas non plus les
+  suivantes : l'envoi continue, et une sonde l'établit avec un transport qui
+  n'échoue que sur le premier envoi.
+- **Mais elle n'est pas silencieuse.** Elle laisse sa ligne de journal — `alerte
+  X : NON PARTIE — motif` — elle revient dans le compte rendu du run, et **le
+  code de sortie passe à 1**.
+
+Le motif : une alerte qui n'est pas partie est un événement que personne ne
+verra. La compter comme un succès rendrait le système muet exactement quand il a
+quelque chose à dire. Le travail du run et son compte rendu sont deux choses
+différentes, et c'est le code de sortie qui porte la seconde.
+
+La règle vit dans `reported()` de `src/jobs/daily.ts`, et non dans le point
+d'entrée : rien ne peut importer `daily-main.ts` (A22), donc une règle écrite
+là-bas serait une règle sans sonde.
+
+Aucun `try` n'entoure l'envoi, et c'est voulu : la garantie « `notify` ne rejette
+jamais » vit en **un seul endroit**, `notifier.ts`. Une sonde du run le vérifie
+là où ça compte — transport qui lève, run qui tient quand même, quatre lignes
+écrites.
+
+**Ce que le journal nomme**, enfin : l'événement de l'alerte **tentée**, lu sur
+l'alerte que `alertsFor` vient de fabriquer, et non sur le sort rendu. Le sort
+`UNREADABLE` ne porte pas d'événement (section 4 ter), et nos alertes sont
+lisibles par construction : le lire là aurait ajouté une branche qu'aucune sonde
+n'aurait pu atteindre depuis le run.
 
 ## 3. Ce que le transport garantit, et ce qu'il ne dit pas
 
@@ -346,7 +480,11 @@ make check      # npm ci + typecheck + test
 ```
 
 Aucune sonde n'ouvre de connexion : les tests de `http.ts` remplacent `fetch` par
-un double, et `openNotifier` reçoit un transport de test. Le délai est éprouvé
+un double, et `openNotifier` reçoit un transport de test. `test/jobs/alerts.test.ts`
+n'ouvre rien du tout et ne connaît pas ntfy — c'est un module pur. Les sondes du
+§9 dans `test/jobs/daily.test.ts` montent le **vrai** `openNotifier` sur un
+transport double : un double de `Notifier` aurait sondé le câblage sans sonder ce
+qui part, alors qu'ici le corps JSON réellement publié est relu. Le délai est éprouvé
 sur un **vrai** `AbortSignal.timeout`, pas sur un `TimeoutError` fabriqué que le
 module n'aurait jamais vu passer. Une seule sonde remplace cette globale, celle
 de la limite déclarée au §3, et c'est pour montrer ce qui arrive quand elle ment.
