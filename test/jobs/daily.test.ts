@@ -109,6 +109,8 @@ const ENV = {
   BREVO_API_KEY: 'brevo-de-test',
   NTFY_TOKEN: 'ntfy-de-test',
   HEALTHCHECK_URL: 'https://exemple.invalid/ping',
+  NTFY_URL: 'https://exemple.invalid/ntfy',
+  NTFY_TOPIC: 'ubac-test',
 };
 
 const PERMISSIONS: KeyPermissions = { canView: true, canTrade: false, portfolioUuid: PORTFOLIO };

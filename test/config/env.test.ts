@@ -15,6 +15,8 @@ const SECRETS: Env = {
   COINBASE_API_KEY: 'cle-de-test',
   COINBASE_API_SECRET: 'secret-de-test',
   BREVO_API_KEY: 'brevo-de-test',
+  NTFY_URL: 'https://ntfy.test',
+  NTFY_TOPIC: 'ubac-de-test',
   NTFY_TOKEN: 'ntfy-de-test',
   HEALTHCHECK_URL: 'https://hc.test/ping/0000',
 };
@@ -53,6 +55,8 @@ describe('un environnement complet donne les defauts du noyau', () => {
       coinbaseApiKey: SECRETS['COINBASE_API_KEY'],
       coinbaseApiSecret: SECRETS['COINBASE_API_SECRET'],
       brevoApiKey: SECRETS['BREVO_API_KEY'],
+      ntfyUrl: SECRETS['NTFY_URL'],
+      ntfyTopic: SECRETS['NTFY_TOPIC'],
       ntfyToken: SECRETS['NTFY_TOKEN'],
       healthcheckUrl: SECRETS['HEALTHCHECK_URL'],
     });
@@ -78,10 +82,16 @@ describe('un secret absent ou mal forme arrete le demarrage', () => {
     for (const issue of issues) expect(issue).toContain(nom);
   });
 
-  // Corriger six variables a six redemarrages est ce qui pousse a poser un
+  // Corriger huit variables a huit redemarrages est ce qui pousse a poser un
   // defaut « en attendant ». Elles sortent donc toutes du meme appel.
-  it('remonte les six variables manquantes en une fois', () => {
+  //
+  // Huit et non six : le §10 de la spec en fige six, et ntfy auto-heberge en
+  // demande deux de plus — son URL et son topic, sans lesquels il n'y a rien a
+  // joindre. L'ecart est assume et documente dans docs/alertes.md. Le compte est
+  // asserte sur la table elle-meme, pour qu'il ne puisse pas diverger en silence.
+  it('remonte les huit variables manquantes en une fois', () => {
     const issues = issuesOf(() => loadConfig({}));
+    expect(SECRET_NAMES).toHaveLength(8);
     expect(issues).toHaveLength(SECRET_NAMES.length);
     for (const nom of SECRET_NAMES) {
       expect(issues.join('\n')).toContain(nom);
@@ -96,6 +106,55 @@ describe('un secret absent ou mal forme arrete le demarrage', () => {
   it('refuse un HEALTHCHECK_URL en clair', () => {
     const issues = issuesOf(() => loadConfig(env({ HEALTHCHECK_URL: 'http://hc.test/ping' })));
     expect(issues).toEqual([expect.stringContaining('HEALTHCHECK_URL')]);
+  });
+
+  /*
+   * Meme controle de protocole que les deux autres URL du fichier : une alerte
+   * qui part en clair expose le jeton porteur qui l'accompagne.
+   */
+  it.each(['http://ntfy.test', 'ntfy.test', 'ftp://ntfy.test'])(
+    'refuse NTFY_URL « %s », qui n’est pas une URL https',
+    (valeur) => {
+      const issues = issuesOf(() => loadConfig(env({ NTFY_URL: valeur })));
+      expect(issues).toEqual([expect.stringContaining('NTFY_URL')]);
+    },
+  );
+
+  /*
+   * Quatre formes fautives, une par variante de la regle : la barre oblique —
+   * qui publierait sur un autre chemin que celui configure —, l'espace, le
+   * caractere hors jeu, et le depassement de longueur. Un topic accepte a tort
+   * ne se distingue pas d'une alerte jamais partie.
+   */
+  it.each(['ubac/alertes', 'ubac alertes', 'ubac#alertes', 'u'.repeat(65)])(
+    'refuse NTFY_TOPIC « %s », qui n’est pas un nom de topic',
+    (valeur) => {
+      const issues = issuesOf(() => loadConfig(env({ NTFY_TOPIC: valeur })));
+      expect(issues).toEqual([expect.stringContaining('NTFY_TOPIC')]);
+    },
+  );
+
+  it.each(['ubac', 'ubac-alertes_2', 'U'.repeat(64)])(
+    'accepte le topic bien forme « %s »',
+    (valeur) => {
+      expect(loadConfig(env({ NTFY_TOPIC: valeur })).secrets.ntfyTopic).toBe(valeur);
+    },
+  );
+
+  /*
+   * Les deux sont des secrets de fait : qui connait l'URL du topic lit les
+   * alertes. Le message nomme donc la variable et ne recopie pas sa valeur,
+   * comme pour DATABASE_URL.
+   */
+  it('ne recopie ni l’URL ntfy ni le topic dans le message', () => {
+    const issues = issuesOf(() =>
+      loadConfig(env({ NTFY_URL: 'http://ntfy-prive.test', NTFY_TOPIC: 'topic/secret' })),
+    );
+    const tout = issues.join('\n');
+    expect(tout).toContain('NTFY_URL');
+    expect(tout).toContain('NTFY_TOPIC');
+    expect(tout).not.toContain('ntfy-prive');
+    expect(tout).not.toContain('topic/secret');
   });
 
   /*

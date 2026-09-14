@@ -56,14 +56,28 @@ export class ConfigError extends Error {
 // --- Formes exposees --------------------------------------------------------
 
 /**
- * Les six variables secretes du §10 de la spec, sous les noms exacts que
- * Scaleway leur donne. Aucune n'a de defaut.
+ * Les variables secretes du §10 de la spec, sous les noms exacts que Scaleway
+ * leur donne. Aucune n'a de defaut.
+ *
+ * **Ecart assume avec le §10, qui en fige six.** Il en manque deux : ntfy est
+ * auto-heberge (§3), et un serveur auto-heberge ne se joint pas sans son
+ * adresse. `NTFY_TOKEN` seul ne suffit donc pas a publier — il faut aussi
+ * l'URL du serveur et le nom du topic. Les deux sont des secrets de fait : qui
+ * connait l'URL du topic lit les alertes, et les poser en constantes du depot
+ * les rendrait publiquement lisibles. Elles rejoignent donc les autres, sous
+ * les noms que le `.env` de l'operateur porte deja.
+ *
+ * L'ecart est documente dans `docs/alertes.md` et **non** corrige dans la
+ * spec : aligner celle-ci est une decision de l'operateur, pas un ajustement
+ * technique. Meme traitement que la divergence MIN_CASH 22 % / 15 %.
  */
 export interface Secrets {
   readonly databaseUrl: string;
   readonly coinbaseApiKey: string;
   readonly coinbaseApiSecret: string;
   readonly brevoApiKey: string;
+  readonly ntfyUrl: string;
+  readonly ntfyTopic: string;
   readonly ntfyToken: string;
   readonly healthcheckUrl: string;
 }
@@ -134,6 +148,14 @@ const DECIMAL_TEXT = /^-?(?:0|[1-9]\d*)(?:\.\d+)?$/;
 const INTEGER_TEXT = /^(?:0|[1-9]\d*)$/;
 
 /**
+ * Un topic ntfy : ce que le serveur accepte comme dernier segment d'URL. Le
+ * controle n'est pas cosmetique — un topic qui porte une barre oblique publie
+ * sur un autre chemin que celui que l'operateur croit avoir configure, et une
+ * alerte partie ailleurs ne se distingue pas d'une alerte jamais partie.
+ */
+const NTFY_TOPIC_TEXT = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
  * Un secret : requis, non vide, et dont aucun message ne cite la valeur.
  * `z.string()` suffirait fonctionnellement, mais son message par defaut parle
  * de types et pas de la variable que l'operateur doit aller poser.
@@ -144,6 +166,13 @@ function secret(name: string) {
     .refine((value) => value.trim().length > 0, {
       error: () => `${name} : variable requise, valeur vide`,
     });
+}
+
+/** Secret dont la forme est imposee. La valeur n'est jamais recopiee. */
+function secretShaped(name: string, motif: RegExp, forme: string) {
+  return secret(name).refine((value) => motif.test(value), {
+    error: () => `${name} : ${forme} (valeur masquee)`,
+  });
 }
 
 /** URL dont le protocole est impose. La valeur n'est jamais recopiee. */
@@ -273,6 +302,12 @@ const schema = z.object({
   COINBASE_API_KEY: secret('COINBASE_API_KEY'),
   COINBASE_API_SECRET: secret('COINBASE_API_SECRET'),
   BREVO_API_KEY: secret('BREVO_API_KEY'),
+  NTFY_URL: secretUrl('NTFY_URL', ['https:'], 'URL https:// du serveur ntfy'),
+  NTFY_TOPIC: secretShaped(
+    'NTFY_TOPIC',
+    NTFY_TOPIC_TEXT,
+    'nom de topic ntfy attendu : lettres, chiffres, tiret ou souligne, 64 au plus',
+  ),
   NTFY_TOKEN: secret('NTFY_TOKEN'),
   HEALTHCHECK_URL: secretUrl('HEALTHCHECK_URL', ['https:'], 'URL https://'),
 
@@ -492,6 +527,8 @@ export function loadConfig(env: Env = process.env): UbacConfig {
       coinbaseApiKey: parsed.data.COINBASE_API_KEY,
       coinbaseApiSecret: parsed.data.COINBASE_API_SECRET,
       brevoApiKey: parsed.data.BREVO_API_KEY,
+      ntfyUrl: parsed.data.NTFY_URL,
+      ntfyTopic: parsed.data.NTFY_TOPIC,
       ntfyToken: parsed.data.NTFY_TOKEN,
       healthcheckUrl: parsed.data.HEALTHCHECK_URL,
     },
