@@ -94,6 +94,26 @@ promesse qu'aucune sonde ne pouvait tenir. Il tombe en `INCONNU`.
 l'expiration du délai est classée en `DELAI`. Les deux se sont produites ; le
 signal tranche pour celle qu'il connaît.
 
+**Limite déclarée** : la plateforme est tenue pour acquise. Tout ce qui précède
+tient contre ce qui vient d'un appelant et contre ce qui vient du réseau. Rien
+n'y tient contre un **runtime remplacé** : `http.ts` appelle lui-même deux
+globales, `fetch` et `AbortSignal.timeout`, et il les croit sur parole — que
+`fetch` parle bien au serveur nommé, que le signal s'arme et expire au temps
+demandé. Piéger l'une des deux suppose de contrôler déjà le processus, et à ce
+moment-là rien de ce qui est écrit ici ne protège quoi que ce soit : ce qui lit
+les secrets et ce qui écrit le journal sont tombés avec. C'est une **hypothèse**,
+pas une garantie, et le dépôt la déclare plutôt que de prétendre la tenir.
+
+Ce qui est couvert malgré tout : ce que ces globales **rendent** reste traité
+comme étranger. La réponse de `fetch` est lue sous le `try` (§4 bis), et la
+lecture d'`aborted` sur notre propre signal passe par `aExpire` — trois lignes,
+parce qu'une lecture qui lève est une façon de rejeter comme une autre et que
+`send` ne rejette jamais. Une sonde le montre : signal piégé, `send` rend
+`RESEAU` au lieu de `DELAI`, et rien du piège n'en ressort. Ce qui n'est **pas**
+couvert, et ne peut pas l'être d'ici : un `fetch` qui envoie ailleurs, un signal
+qui n'expire jamais. Aucune sonde de ce module ne l'attraperait, et aucune ne
+prétend le faire.
+
 ## 4. Le motif d'échec : une liste de ce qui peut sortir
 
 `AGENTS.md` : « aucun secret en clair dans le dépôt ». La règle ne s'arrête pas
@@ -263,8 +283,8 @@ même qu'on a refusé de lire. `alertKey` rend de son côté la constante
 `cle-illisible`, qu'aucun digest ne peut produire — `illisible` n'est pas de
 l'hexadécimal.
 
-**Ce qui reste non couvert, dit franchement.** Un seul point, et ce n'est pas
-l'alerte : les **secrets**, lus une fois à la construction par `openNotifier`
+**Ce qui reste non couvert, dit franchement.** Un seul point dans ce module, et
+ce n'est pas l'alerte : les **secrets**, lus une fois à la construction par `openNotifier`
 — l'URL, le topic, le jeton. Cette lecture-là a le droit de lever, et c'est
 voulu : une configuration invalide doit échouer bruyamment au câblage, pas à la
 première alerte, quand il est trop tard pour le dire. Ce qui l'assure n'est pas
@@ -328,7 +348,9 @@ make check      # npm ci + typecheck + test
 Aucune sonde n'ouvre de connexion : les tests de `http.ts` remplacent `fetch` par
 un double, et `openNotifier` reçoit un transport de test. Le délai est éprouvé
 sur un **vrai** `AbortSignal.timeout`, pas sur un `TimeoutError` fabriqué que le
-module n'aurait jamais vu passer. Vérifié réseau coupé :
+module n'aurait jamais vu passer. Une seule sonde remplace cette globale, celle
+de la limite déclarée au §3, et c'est pour montrer ce qui arrive quand elle ment.
+Vérifié réseau coupé :
 
 ```sh
 docker run --rm --network none -v "$PWD":/workspace \

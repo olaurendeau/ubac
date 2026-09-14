@@ -30,7 +30,25 @@
  *    une serialisation divulguait ensuite. Borner la sortie n'y pouvait rien,
  *    parce que la fuite passait a cote de la sortie. Aucune propriete de
  *    l'erreur attrapee n'est donc lue, et ce qui reste lu est isole ou borne —
- *    le detail est sous `echecDe` et sous `openHttp`. Voir `docs/alertes.md` §4.
+ *    le detail est sous `aExpire`, sous `echecDe` et sous `openHttp`. Voir
+ *    `docs/alertes.md` §4.
+ *
+ * **Limite declaree : la plateforme est tenue pour acquise.** Les quatre
+ * proprietes ci-dessus tiennent contre ce qui vient d'un appelant et contre ce
+ * qui vient du reseau. Aucune ne tient contre un runtime remplace : ce module
+ * appelle lui-meme deux globales, `fetch` et `AbortSignal.timeout`, et il les
+ * croit sur parole — que `fetch` parle bien au serveur nomme, que le signal
+ * s'arme et expire au temps demande. Pieger l'une des deux suppose de controler
+ * deja le processus, et a ce moment-la rien de ce qui est ecrit ici ne protege
+ * quoi que ce soit : ce qui lit les secrets et ce qui ecrit le journal sont
+ * tombes avec. C'est une **hypothese**, pas une garantie, et elle est declaree
+ * plutot que tenue.
+ *
+ * Ce qu'on couvre malgre tout : ce que ces globales **rendent** reste traite
+ * comme etranger — la reponse de `fetch` est lue sous le `try`, et la lecture
+ * d'`aborted` sur notre propre signal est isolee. Ce qu'on ne couvre pas, et
+ * qu'aucune sonde d'ici n'attraperait : un `fetch` qui envoie ailleurs, un
+ * signal qui n'expire jamais.
  *
  * Ce module ne connait ni ntfy ni le healthcheck : il ne sait pas ce qu'il
  * transporte. C'est ce qui le rend eprouvable contre un `fetch` double, sans
@@ -135,6 +153,22 @@ function estReseau(error: unknown): boolean {
 }
 
 /**
+ * Le delai se lit sur **notre** signal — et se lit quand meme sous filet. Ce
+ * signal vient d'`AbortSignal.timeout`, la globale que l'en-tete declare croire
+ * sur parole ; ce `try` ne leve pas cette limite et ne pretend pas le faire. Il
+ * ferme seulement ce qui coute trois lignes a fermer : une lecture qui leve est
+ * une facon de rejeter comme une autre, et `send` ne rejette jamais. Le faux
+ * qu'il rend fait retomber l'echec sur les branches suivantes.
+ */
+function aExpire(signal: AbortSignal | undefined): boolean {
+  try {
+    return signal?.aborted === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Classer sans lire. Une propriete se lit par un **getter**, et un getter
  * s'execute : un objet tiers dont le getter `name` leve, en citant un jeton,
  * faisait rejeter `send` en emportant ce jeton. Aucune propriete de l'erreur
@@ -144,7 +178,8 @@ function estReseau(error: unknown): boolean {
  * Le delai ne se deduit plus de l'erreur mais de **notre** signal : c'est ce
  * module qui a arme `AbortSignal.timeout`, et `aborted` est un booleen porte par
  * un objet qu'il a fabrique. La classification cesse ainsi de dependre de ce
- * qu'un tiers a bien voulu poser sur ce qu'il jette.
+ * qu'un tiers a bien voulu poser sur ce qu'il jette. Cette lecture-la passe par
+ * `aExpire`, qui l'isole sans pour autant lever la limite declaree en tete.
  *
  * **Limite declaree** : une panne reseau qui survient dans la meme milliseconde
  * que l'expiration du delai est classee en `DELAI`. Les deux se sont produites ;
@@ -155,7 +190,7 @@ function estReseau(error: unknown): boolean {
  * tenir ; il tombe donc en `INCONNU`.
  */
 function echecDe(error: unknown, signal: AbortSignal | undefined, timeoutMs: number): HttpFailure {
-  if (signal?.aborted === true) return { kind: 'DELAI', timeoutMs };
+  if (aExpire(signal)) return { kind: 'DELAI', timeoutMs };
   if (estReseau(error)) return { kind: 'RESEAU' };
   return { kind: 'INCONNU' };
 }

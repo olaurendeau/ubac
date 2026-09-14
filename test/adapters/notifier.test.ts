@@ -459,6 +459,30 @@ describe('openHttp — le transport ne rejette jamais, et ne cite jamais l’URL
     }
   });
 
+  /*
+   * La limite declaree en tete de `http.ts` : ce module croit `fetch` et
+   * `AbortSignal.timeout` sur parole. Elle ne l'autorise pas a rejeter pour
+   * autant. La sonde remplace la globale par un signal dont la lecture
+   * d'`aborted` leve : la classification perd le delai — elle n'a plus de quoi
+   * le voir — mais `send` rend un sort, et rien du piege n'en ressort. La sonde
+   * n'est pas une preuve contre un runtime compromis ; elle montre le seul
+   * morceau de cette classe qui coutait trois lignes a fermer.
+   */
+  it('ne rejette pas quand la lecture de notre propre signal leve', async () => {
+    vi.stubGlobal('AbortSignal', {
+      timeout: (): unknown => ({
+        get aborted(): boolean {
+          throw new Error(`Bearer ${JETON}`);
+        },
+      }),
+    });
+    vi.stubGlobal('fetch', () => Promise.reject(new TypeError('fetch failed')));
+
+    const outcome = await openHttp(20)(REQUETE);
+    expect(outcome).toEqual({ status: 'FAILED', failure: { kind: 'RESEAU' } });
+    aucuneTrace(outcome);
+  });
+
   it('envoie bien un POST avec le corps et les entetes recus', async () => {
     const appels: { url: string; init: RequestInit }[] = [];
     vi.stubGlobal('fetch', (url: string, init: RequestInit) => {
