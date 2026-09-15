@@ -2,6 +2,7 @@ import type { Decimal } from 'decimal.js';
 
 import type { CoinbaseReader } from '../adapters/coinbase.js';
 import type { CashFlowRecord, RecordDecisionOutcome, UbacDatabase } from '../adapters/db.js';
+import type { Healthcheck, PingOutcome, RunPulse } from '../adapters/healthcheck.js';
 import type { DailyCandle, DailyWindow, MarketReader } from '../adapters/market.js';
 import type { AlertOutcome, Notifier } from '../adapters/notifier.js';
 import type { UbacConfig } from '../config/env.js';
@@ -39,9 +40,10 @@ import { prepareSnapshot } from './snapshot.js';
  *
  * **L'etape 6, l'execution, n'existe pas.** Ce n'est pas une etape laissee vide :
  * aucun code de placement n'est ecrit ici, et le garde-fou de noms
- * d'`eslint.config.js` refuserait celui qui l'ecrirait. Le rapport Brevo et le
- * ping du healthcheck appartiennent aux lots suivants ; **les alertes push du
- * §9, elles, partent d'ici** — voir `alerts.ts` et `docs/alertes.md`.
+ * d'`eslint.config.js` refuserait celui qui l'ecrirait. Le rapport Brevo
+ * appartient a un lot suivant ; **les alertes push du §9 et le ping du
+ * healthcheck, eux, partent d'ici** — voir `alerts.ts` et `docs/alertes.md`,
+ * `healthcheck.ts` et `docs/healthcheck.md`.
  *
  * Cinq proprietes gouvernent ce fichier.
  *
@@ -79,6 +81,13 @@ import { prepareSnapshot } from './snapshot.js';
  * alerte ne peut pas changer ce que le run ecrit, et le run ne peut pas tomber
  * parce qu'une alerte n'est pas partie — `notifier.ts` garantit de ne jamais
  * rejeter, et c'est la, en un seul endroit, que la garantie vit.
+ *
+ * Une septieme vient du healthcheck, et elle se lit a l'envers des six autres :
+ * **c'est l'absence de ping qui alerte.** Le ping part en toute derniere
+ * position, apres les alertes, et une exception n'en envoie **aucun** — pas meme
+ * un ping d'echec. Le motif est sous `runDaily`, et il est le coeur du lot :
+ * un ping d'echec suppose que le code a survecu assez pour le decider, et une
+ * exception n'offre pas cette garantie.
  *
  * Deux branches de ce fichier sont **inatteignables par construction**, et le
  * disent la ou elles se trouvent : le franchissement d'ancre du ladder, prive
@@ -158,6 +167,8 @@ export interface DailyPorts {
   >;
   /** §9 : le canal court. Il ne rejette jamais, donc il n'est jamais entoure d'un `try`. */
   readonly notifier: Notifier;
+  /** §9 : la surveillance d'absence. Elle ne rejette jamais non plus, meme motif. */
+  readonly healthcheck: Healthcheck;
 }
 
 export interface DailyRun {
@@ -171,9 +182,18 @@ export interface DailyRun {
 
 // --- Resultat ---------------------------------------------------------------
 
-/** Ce que le run a fait savoir. Une entree par alerte emise, dans l'ordre d'emission. */
+/**
+ * Ce que le run a fait savoir, sur ses deux canaux. Une entree par alerte emise,
+ * dans l'ordre d'emission, puis le sort du ping de fin de run.
+ *
+ * `ping` est **toujours present** ici, et c'est ce qui le rend lisible : ce type
+ * ne decrit que les runs qui ont rendu un resultat, et tous pinguent. Le seul
+ * chemin qui ne pingue pas est l'exception, qui ne rend pas de `RunReport` du
+ * tout — elle releve. Un `ping` optionnel aurait laisse croire le contraire.
+ */
 export interface RunReport {
   readonly alerts: readonly AlertOutcome[];
+  readonly ping: PingOutcome;
 }
 
 export type DailyAbort =
@@ -711,6 +731,21 @@ async function announce(run: DailyRun, input: AlertInput): Promise<readonly Aler
   return outcomes;
 }
 
+// --- Le healthcheck ---------------------------------------------------------
+
+/**
+ * Toutes les alertes du run sont-elles parties.
+ *
+ * Extraite pour une seule raison : **`reported` et `pulseOf` posent la meme
+ * question**, l'un pour le code de sortie, l'autre pour ce que la surveillance
+ * lira. Deux predicats voisins auraient diverge, et c'est celui des deux qu'on
+ * ne relit pas — le ping, parti chez un tiers — qui se serait tu le jour ou il
+ * fallait qu'il parle.
+ */
+function toutesParties(alerts: readonly AlertOutcome[]): boolean {
+  return alerts.every((a) => a.status === 'SENT');
+}
+
 /**
  * Le run a-t-il conclu **et** rendu compte.
  *
@@ -724,27 +759,131 @@ async function announce(run: DailyRun, input: AlertInput): Promise<readonly Aler
  * La regle vit ici et non dans le point d'entree : `daily-main.ts` n'apparait a
  * aucun rapport de couverture — rien ne peut l'importer (A22) — donc une regle
  * ecrite la-bas serait une regle sans sonde. Ici elle en a.
+ *
+ * **Le sort du ping n'en fait pas partie, et c'est decide.** Un ping qui n'est
+ * pas parti se signale tout seul : son absence est precisement ce qui fait
+ * sonner la surveillance. Une alerte qui n'est pas partie, elle, ne laisse rien
+ * derriere — d'ou l'asymetrie. Le motif complet est dans `docs/healthcheck.md`
+ * §4.
  */
 export function reported(result: DailyRunResult): boolean {
-  return result.status === 'COMPLETED' && result.report.alerts.every((a) => a.status === 'SENT');
+  return result.status === 'COMPLETED' && toutesParties(result.report.alerts);
 }
 
 /**
- * Le run quotidien, alertes comprises.
+ * Ce que le run raconte a sa surveillance, lu sur ce qu'il a conclu. Meme role
+ * qu'`alertInputOf`, et meme motif : un seul endroit fait la traduction, et
+ * `healthcheck.ts` n'a pas a connaitre `DailyOutcome`.
  *
- * L'enveloppe est mince et fait exactement deux choses que l'enchainement ne
+ * **Trois fins, et la troisieme est la tension du lot tranchee.** Un run conclu
+ * dont une alerte n'est pas partie n'est pas `CONCLU` : le corps ne portera pas
+ * le marqueur, et la surveillance le lira `DOWN`. C'est le meme predicat que le
+ * code de sortie — `toutesParties` — et ce n'est pas une coincidence.
+ *
+ * Le motif tient en une phrase : **la panne d'une alerte est exactement la panne
+ * qu'aucune alerte ne peut signaler.** Si ntfy est tombe, le canal court est
+ * muet par definition ; le healthcheck est le seul canal restant qui ne depende
+ * pas de lui, et se taire la reviendrait a faire dependre la surveillance du
+ * systeme surveille — c'est-a-dire a perdre la raison d'etre du lot. Le travail
+ * du run n'est pas defait pour autant : les quatre lignes de `decisions` et la
+ * photo restent ecrites, et le statut reste `COMPLETED`. Ce que le pulse
+ * rapporte n'est pas « le travail a echoue », c'est « ce run n'a pas rendu
+ * compte » — d'ou un etat a lui, `NON_RENDU`, plutot qu'un abandon simule.
+ *
+ * Le `gitSha` vient de `run` et non de l'`outcome` : un abandon n'en porte pas,
+ * et c'est justement une fin dont on veut savoir quel code l'a produite.
+ */
+function pulseOf(
+  run: DailyRun,
+  outcome: DailyOutcome,
+  alerts: readonly AlertOutcome[],
+): RunPulse {
+  const entete = { runDate: outcome.runDate, gitSha: run.gitSha };
+  if (outcome.status === 'ABORTED') {
+    return {
+      ...entete,
+      ending: { kind: 'ABANDONNE', step: outcome.abort.step, code: outcome.abort.code },
+    };
+  }
+  if (!toutesParties(alerts)) {
+    const nonParties = alerts.filter((a) => a.status !== 'SENT').length;
+    return { ...entete, ending: { kind: 'NON_RENDU', alertsFailed: nonParties } };
+  }
+  return {
+    ...entete,
+    ending: { kind: 'CONCLU', decisions: outcome.outcomes.length, alerts: alerts.length },
+  };
+}
+
+/**
+ * Le ping, et sa ligne de journal.
+ *
+ * Aucun `try` ici, exactement comme pour les alertes : `ping` garantit de ne
+ * jamais rejeter, et la garantie vit en un seul endroit, `healthcheck.ts`. Un
+ * echec revient donc en valeur — le run a deja tout ecrit, et une surveillance
+ * injoignable n'a pas a defaire son travail.
+ *
+ * **Mais il ne doit pas etre muet.** Un ping qui n'est pas parti est le debut
+ * d'une fausse alerte d'absence : l'operateur verra sonner updown.io sans savoir
+ * si le job est mort ou si c'est le ping qui n'a pas abouti. La ligne de journal
+ * est ce qui separe les deux, et elle ne porte jamais `HEALTHCHECK_URL` — le
+ * motif sort de `motifDe`, dont le vocabulaire est ferme.
+ */
+async function signal(run: DailyRun, pulse: RunPulse): Promise<PingOutcome> {
+  const sent = await run.ports.healthcheck.ping(pulse);
+  run.log(
+    sent.status === 'PINGED'
+      ? `healthcheck : pingue (${pulse.ending.kind})`
+      : `healthcheck : NON PINGUE — ${sent.reason}`,
+  );
+  return sent;
+}
+
+/**
+ * Le run quotidien, alertes et ping compris.
+ *
+ * L'enveloppe est mince et fait exactement trois choses que l'enchainement ne
  * peut pas faire lui-meme.
  *
  * 1. **Elle alerte sur un abandon.** Un run abandonne n'ecrit rien — ni
  *    decision, ni photo — donc depuis la base il est indistinguable d'un job qui
  *    n'a pas tourne. C'est arrive en reel, sur un portefeuille vide. L'alerte
- *    est desormais la seule difference, et c'est la raison d'etre de ce lot.
+ *    est la premiere difference ; le ping d'echec ci-dessous en est une seconde,
+ *    et elle ne passe pas par le systeme surveille.
  * 2. **Elle alerte sur une exception, puis la releve.** `JOB_FAILED` part, et
  *    l'erreur continue son chemin telle quelle : le point d'entree doit toujours
  *    la voir et sortir en 1. Alerter n'est pas rattraper.
+ * 3. **Elle pingue le healthcheck, en toute derniere position.**
  *
  * Ce qu'elle ne fait pas : changer ce que le run a conclu. Le statut, les
- * ecritures et les valeurs rendues sont ceux d'`executeRun`, alertes ou pas.
+ * ecritures et les valeurs rendues sont ceux d'`executeRun`, alertes ou pas,
+ * ping ou pas.
+ *
+ * ### Les trois fins, et pourquoi la troisieme ne pingue pas
+ *
+ * Un run **conclu** pingue avec le marqueur ; un run **abandonne** pingue sans
+ * lui, parce que le job a bien tourne et que la difference doit se voir cote
+ * surveillance ; une **exception ne pingue pas du tout**.
+ *
+ * Ce troisieme cas est le plus important du lot, et c'est pour lui que le
+ * `throw` ci-dessous ne passe par aucun ping. Un ping d'echec est une
+ * **affirmation** : il dit « j'ai tourne, je n'ai pas abouti ». Or le formuler
+ * suppose que le code a survecu assez loin pour le decider — ce qu'une exception
+ * ne garantit pas, et ce qu'un processus tue, un conteneur evince ou une memoire
+ * epuisee ne garantissent pas davantage. Une surveillance qui croirait un ping
+ * d'echec la ou le programme est en train de mourir apprendrait a distinguer
+ * deux etats qu'elle ne sait pas distinguer.
+ *
+ * C'est donc **l'absence de ping** qui parle, et elle a la propriete qu'aucune
+ * ligne de code n'aura jamais : elle ne demande a rien de fonctionner. Un job
+ * qui ne demarre pas, un job tue a la seconde etape et un job qui leve
+ * produisent tous le meme silence, et ce silence est lu de l'exterieur.
+ *
+ * ### Pourquoi apres les alertes
+ *
+ * Le ping est en derniere position pour une raison de fond : il rapporte ce que
+ * le run a **fait savoir**, et les alertes en font partie — voir `pulseOf`. Le
+ * placer avant aurait oblige a pinguer sur un compte rendu pas encore rendu.
  */
 export async function runDaily(run: DailyRun): Promise<DailyRunResult> {
   const runDate = run.clock.today();
@@ -759,8 +898,15 @@ export async function runDaily(run: DailyRun): Promise<DailyRunResult> {
       outcomes: [],
       executed: [],
     });
+    /*
+     * **Aucun ping ici, et c'est la seule ligne de ce fichier dont l'absence de
+     * code est la fonctionnalite.** Voir l'en-tete ci-dessus : ajouter un ping
+     * d'echec sur ce chemin rendrait muette la seule chose que la surveillance
+     * sait vraiment constater.
+     */
     throw error;
   }
   const alerts = await announce(run, alertInputOf(outcome));
-  return { ...outcome, report: { alerts } };
+  const ping = await signal(run, pulseOf(run, outcome, alerts));
+  return { ...outcome, report: { alerts, ping } };
 }
