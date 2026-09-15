@@ -59,23 +59,36 @@ export class ConfigError extends Error {
  * Les variables secretes du §10 de la spec, sous les noms exacts que Scaleway
  * leur donne. Aucune n'a de defaut.
  *
- * **Ecart assume avec le §10, qui en fige six.** Il en manque deux : ntfy est
- * auto-heberge (§3), et un serveur auto-heberge ne se joint pas sans son
- * adresse. `NTFY_TOKEN` seul ne suffit donc pas a publier — il faut aussi
- * l'URL du serveur et le nom du topic. Les deux sont des secrets de fait : qui
- * connait l'URL du topic lit les alertes, et les poser en constantes du depot
- * les rendrait publiquement lisibles. Elles rejoignent donc les autres, sous
- * les noms que le `.env` de l'operateur porte deja.
+ * **Ecart assume avec le §10, qui en fige six.** Il en manque quatre, deux par
+ * canal de notification.
  *
- * L'ecart est documente dans `docs/alertes.md` et **non** corrige dans la
- * spec : aligner celle-ci est une decision de l'operateur, pas un ajustement
- * technique. Meme traitement que la divergence MIN_CASH 22 % / 15 %.
+ * - **ntfy est auto-heberge (§3)**, et un serveur auto-heberge ne se joint pas
+ *   sans son adresse. `NTFY_TOKEN` seul ne suffit donc pas a publier — il faut
+ *   aussi l'URL du serveur et le nom du topic. Les deux sont des secrets de
+ *   fait : qui connait l'URL du topic lit les alertes, et les poser en
+ *   constantes du depot les rendrait publiquement lisibles.
+ * - **`BREVO_API_KEY` ne dit ni de qui part le courrier, ni a qui il va.**
+ *   L'expediteur doit vivre sur le domaine authentifie SPF et DKIM (§9), qui
+ *   appartient a l'operateur : le figer en constante du depot figerait son
+ *   domaine dans le code. Le destinataire est son adresse personnelle, et une
+ *   adresse personnelle n'a pas sa place dans un depot. Les deux entrent donc
+ *   par l'environnement, comme les autres.
+ *
+ * Toutes quatre sont posees sous les noms que le `.env` de l'operateur porte
+ * deja. L'ecart est documente dans `docs/alertes.md` et
+ * `docs/rapport-quotidien.md`, et **non** corrige dans la spec : aligner
+ * celle-ci est une decision de l'operateur, pas un ajustement technique. Meme
+ * traitement que la divergence MIN_CASH 22 % / 15 %.
  */
 export interface Secrets {
   readonly databaseUrl: string;
   readonly coinbaseApiKey: string;
   readonly coinbaseApiSecret: string;
   readonly brevoApiKey: string;
+  /** Expediteur du rapport quotidien. Sur le domaine authentifie SPF et DKIM. */
+  readonly brevoSender: string;
+  /** Destinataire du rapport quotidien. Une adresse, pas une liste. */
+  readonly brevoRecipient: string;
   readonly ntfyUrl: string;
   readonly ntfyTopic: string;
   readonly ntfyToken: string;
@@ -154,6 +167,24 @@ const INTEGER_TEXT = /^(?:0|[1-9]\d*)$/;
  * alerte partie ailleurs ne se distingue pas d'une alerte jamais partie.
  */
 const NTFY_TOPIC_TEXT = /^[A-Za-z0-9_-]{1,64}$/;
+
+/**
+ * Une adresse de courrier, reduite a ce que l'API Brevo exige : une partie
+ * locale, un `@`, un domaine pointe, et aucun des caracteres qui font d'une
+ * adresse deux adresses ou une adresse plus un nom d'affichage.
+ *
+ * Le controle n'est pas cosmetique. Brevo refuse **l'envoi entier** sur une
+ * adresse mal formee : une virgule a la place d'un point dans `BREVO_RECIPIENT`
+ * ne donne pas un rapport mal adresse, elle donne un rapport perdu, un jour sur
+ * deux, sans que la difference se voie autrement que dans un code HTTP. Le
+ * refuser au demarrage coute un redemarrage ; le laisser passer coute un
+ * silence.
+ *
+ * Ce motif ne pretend pas valider une adresse au sens de la RFC 5322, qui
+ * accepte des formes que personne n'ecrit. Il refuse ce qui casse l'envoi et
+ * laisse passer le reste.
+ */
+const EMAIL_TEXT = /^[^\s@,;<>"]+@[^\s@,;<>".]+(?:\.[^\s@,;<>".]+)+$/;
 
 /**
  * Un secret : requis, non vide, et dont aucun message ne cite la valeur.
@@ -302,6 +333,16 @@ const schema = z.object({
   COINBASE_API_KEY: secret('COINBASE_API_KEY'),
   COINBASE_API_SECRET: secret('COINBASE_API_SECRET'),
   BREVO_API_KEY: secret('BREVO_API_KEY'),
+  BREVO_SENDER: secretShaped(
+    'BREVO_SENDER',
+    EMAIL_TEXT,
+    'adresse de courrier attendue, sur le domaine authentifie SPF et DKIM (§9)',
+  ),
+  BREVO_RECIPIENT: secretShaped(
+    'BREVO_RECIPIENT',
+    EMAIL_TEXT,
+    'adresse de courrier attendue, une seule et sans nom d’affichage',
+  ),
   NTFY_URL: secretUrl('NTFY_URL', ['https:'], 'URL https:// du serveur ntfy'),
   NTFY_TOPIC: secretShaped(
     'NTFY_TOPIC',
@@ -527,6 +568,8 @@ export function loadConfig(env: Env = process.env): UbacConfig {
       coinbaseApiKey: parsed.data.COINBASE_API_KEY,
       coinbaseApiSecret: parsed.data.COINBASE_API_SECRET,
       brevoApiKey: parsed.data.BREVO_API_KEY,
+      brevoSender: parsed.data.BREVO_SENDER,
+      brevoRecipient: parsed.data.BREVO_RECIPIENT,
       ntfyUrl: parsed.data.NTFY_URL,
       ntfyTopic: parsed.data.NTFY_TOPIC,
       ntfyToken: parsed.data.NTFY_TOKEN,
