@@ -15,6 +15,8 @@ const SECRETS: Env = {
   COINBASE_API_KEY: 'cle-de-test',
   COINBASE_API_SECRET: 'secret-de-test',
   BREVO_API_KEY: 'brevo-de-test',
+  BREVO_SENDER: 'ubac@exemple.test',
+  BREVO_RECIPIENT: 'operateur@exemple.test',
   NTFY_URL: 'https://ntfy.test',
   NTFY_TOPIC: 'ubac-de-test',
   NTFY_TOKEN: 'ntfy-de-test',
@@ -55,6 +57,8 @@ describe('un environnement complet donne les defauts du noyau', () => {
       coinbaseApiKey: SECRETS['COINBASE_API_KEY'],
       coinbaseApiSecret: SECRETS['COINBASE_API_SECRET'],
       brevoApiKey: SECRETS['BREVO_API_KEY'],
+      brevoSender: SECRETS['BREVO_SENDER'],
+      brevoRecipient: SECRETS['BREVO_RECIPIENT'],
       ntfyUrl: SECRETS['NTFY_URL'],
       ntfyTopic: SECRETS['NTFY_TOPIC'],
       ntfyToken: SECRETS['NTFY_TOKEN'],
@@ -82,16 +86,19 @@ describe('un secret absent ou mal forme arrete le demarrage', () => {
     for (const issue of issues) expect(issue).toContain(nom);
   });
 
-  // Corriger huit variables a huit redemarrages est ce qui pousse a poser un
+  // Corriger dix variables a dix redemarrages est ce qui pousse a poser un
   // defaut « en attendant ». Elles sortent donc toutes du meme appel.
   //
-  // Huit et non six : le §10 de la spec en fige six, et ntfy auto-heberge en
-  // demande deux de plus — son URL et son topic, sans lesquels il n'y a rien a
-  // joindre. L'ecart est assume et documente dans docs/alertes.md. Le compte est
-  // asserte sur la table elle-meme, pour qu'il ne puisse pas diverger en silence.
-  it('remonte les huit variables manquantes en une fois', () => {
+  // Dix et non six : le §10 de la spec en fige six, et les deux canaux de
+  // notification en demandent deux chacun. ntfy est auto-heberge, donc son URL
+  // et son topic sans lesquels il n'y a rien a joindre (docs/alertes.md) ; Brevo
+  // a une cle d'API qui ne dit ni de qui part le courrier ni a qui il va, donc
+  // l'expediteur et le destinataire (docs/rapport-quotidien.md). Les deux ecarts
+  // sont assumes. Le compte est asserte sur la table elle-meme, pour qu'il ne
+  // puisse pas diverger en silence.
+  it('remonte les dix variables manquantes en une fois', () => {
     const issues = issuesOf(() => loadConfig({}));
-    expect(SECRET_NAMES).toHaveLength(8);
+    expect(SECRET_NAMES).toHaveLength(10);
     expect(issues).toHaveLength(SECRET_NAMES.length);
     for (const nom of SECRET_NAMES) {
       expect(issues.join('\n')).toContain(nom);
@@ -140,6 +147,70 @@ describe('un secret absent ou mal forme arrete le demarrage', () => {
       expect(loadConfig(env({ NTFY_TOPIC: valeur })).secrets.ntfyTopic).toBe(valeur);
     },
   );
+
+  /*
+   * Les deux adresses Brevo, variante par variante. Brevo refuse **l'envoi
+   * entier** sur une adresse mal formee : le rapport du jour n'arrive pas mal
+   * adresse, il n'arrive pas du tout, et la difference ne se lit que dans un
+   * code HTTP. Les onze formes ci-dessous sont celles qu'on ecrit vraiment — la
+   * virgule qui fait deux adresses, le nom d'affichage recopie d'un client de
+   * courrier, l'espace de copier-coller, le domaine sans point.
+   */
+  const ADRESSES_REFUSEES = [
+    'ubac',
+    'ubac@',
+    '@exemple.test',
+    'ubac@exemple',
+    'ubac@exemple.',
+    'ubac@@exemple.test',
+    'ubac@exemple.test,autre@exemple.test',
+    'ubac@exemple.test;autre@exemple.test',
+    'Ubac <ubac@exemple.test>',
+    ' ubac@exemple.test',
+    'ubac@exemple.test ',
+  ];
+
+  it.each(ADRESSES_REFUSEES)('refuse BREVO_SENDER « %s »', (valeur) => {
+    const issues = issuesOf(() => loadConfig(env({ BREVO_SENDER: valeur })));
+    expect(issues).toEqual([expect.stringContaining('BREVO_SENDER')]);
+  });
+
+  it.each(ADRESSES_REFUSEES)('refuse BREVO_RECIPIENT « %s »', (valeur) => {
+    const issues = issuesOf(() => loadConfig(env({ BREVO_RECIPIENT: valeur })));
+    expect(issues).toEqual([expect.stringContaining('BREVO_RECIPIENT')]);
+  });
+
+  /*
+   * Ce qui doit passer, sans quoi la regle ci-dessus ne dirait rien : une
+   * adresse ordinaire, une adresse etiquetee — `+quotidien` sert justement a
+   * filtrer un rapport quotidien dans une boite —, et un sous-domaine.
+   */
+  it.each(['ubac@exemple.test', 'ubac+quotidien@exemple.test', 'prenom.nom@sous.exemple.test'])(
+    'accepte l’adresse bien formee « %s »',
+    (valeur) => {
+      const config = loadConfig(env({ BREVO_SENDER: valeur, BREVO_RECIPIENT: valeur }));
+      expect(config.secrets.brevoSender).toBe(valeur);
+      expect(config.secrets.brevoRecipient).toBe(valeur);
+    },
+  );
+
+  /*
+   * Une adresse de courrier est une donnee personnelle, et un message d'erreur
+   * finit dans un journal. Meme traitement que DATABASE_URL : le message nomme
+   * la variable, jamais sa valeur.
+   */
+  it('ne recopie ni l’expediteur ni le destinataire dans le message', () => {
+    const issues = issuesOf(() =>
+      loadConfig(
+        env({ BREVO_SENDER: 'prive-expediteur', BREVO_RECIPIENT: 'prive-destinataire' }),
+      ),
+    );
+    const tout = issues.join('\n');
+    expect(tout).toContain('BREVO_SENDER');
+    expect(tout).toContain('BREVO_RECIPIENT');
+    expect(tout).not.toContain('prive-expediteur');
+    expect(tout).not.toContain('prive-destinataire');
+  });
 
   /*
    * Les deux sont des secrets de fait : qui connait l'URL du topic lit les

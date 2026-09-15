@@ -2,7 +2,8 @@
 
 Les alertes de la spec §9, en push immédiat sur **ntfy auto-hébergé**. « Le mail
 est un mauvais canal d'alerte : un drawdown le dimanche ne doit pas attendre le
-lundi. » Le rapport quotidien Brevo est un autre canal et un autre lot.
+lundi. » Le rapport quotidien Brevo est un autre canal :
+[rapport-quotidien.md](rapport-quotidien.md).
 
 Deux lots de la phase 1, et la séparation des deux est celle des fichiers.
 **Q6a1** a posé le canal : la configuration est validée, le transport est
@@ -46,6 +47,11 @@ Le contrôle de forme du topic n'est pas cosmétique. Un topic qui porte une bar
 oblique publierait sur un autre chemin que celui que l'opérateur croit avoir
 configuré, et une alerte partie ailleurs ne se distingue pas d'une alerte jamais
 partie.
+
+Le compte de ce tableau est celui **de ce lot**, pas celui du dépôt : le rapport
+quotidien en a ajouté deux de son côté, pour le même motif et avec le même
+traitement ([rapport-quotidien.md](rapport-quotidien.md) section 8). Le total
+requis au démarrage est dans [run-quotidien.md](run-quotidien.md) section 2.
 
 **La spec n'est pas modifiée.** L'aligner est une décision de l'opérateur, pas un
 ajustement technique. Le dépôt porte déjà deux écarts documentés de cette façon,
@@ -148,10 +154,10 @@ nominal — ce qui est aussi pourquoi il ne suffit pas : un job qui ne **démarr
 pas** ne pousse rien non plus, puisqu'aucun code ne tourne pour l'émettre. C'est
 le healthcheck externe du §9 — « la surveillance ne doit pas dépendre du système
 surveillé » — qui comble ce trou-là, depuis le lot Q6b :
-[healthcheck.md](healthcheck.md). Les deux canaux ne se remplacent pas, et le
-second tranche un cas que le premier laisse ouvert — un run abouti dont l'alerte
-n'est pas partie pingue sans son marqueur, parce que la panne d'une alerte est
-exactement la panne qu'aucune alerte ne peut signaler.
+[healthcheck.md](healthcheck.md). Les trois canaux ne se remplacent pas, et le
+dernier tranche un cas que les deux autres laissent ouvert — un run abouti dont
+l'alerte **ou le rapport** n'est pas parti pingue sans son marqueur, parce que la
+panne d'un canal est exactement la panne que ce canal ne peut pas signaler.
 
 ## 2 ter. Quand elles partent, et ce que vaut une alerte qui n'est pas partie
 
@@ -183,8 +189,9 @@ Les deux règles se tendent l'une l'autre :
   suivantes : l'envoi continue, et une sonde l'établit avec un transport qui
   n'échoue que sur le premier envoi.
 - **Mais elle n'est pas silencieuse.** Elle laisse sa ligne de journal — `alerte
-  X : NON PARTIE — motif` — elle revient dans le compte rendu du run, et **le
-  code de sortie passe à 1**.
+  X : NON PARTIE — motif` — elle revient dans le compte rendu du run, **le code
+  de sortie passe à 1**, et **le ping du healthcheck part sans son marqueur**
+  ([healthcheck.md](healthcheck.md) §4).
 
 Le motif : une alerte qui n'est pas partie est un événement que personne ne
 verra. La compter comme un succès rendrait le système muet exactement quand il a
@@ -193,7 +200,10 @@ différentes, et c'est le code de sortie qui porte la seconde.
 
 La règle vit dans `reported()` de `src/jobs/daily.ts`, et non dans le point
 d'entrée : rien ne peut importer `daily-main.ts` (A22), donc une règle écrite
-là-bas serait une règle sans sonde.
+là-bas serait une règle sans sonde. Elle lit `toutParti`, **le seul prédicat qui
+dise ce qu'est un compte rendu parti** — alertes et rapport ensemble —, et le
+pulse du healthcheck lit le même. Deux prédicats voisins auraient divergé, et
+c'est celui qu'on ne relit pas qui se serait tu.
 
 Aucun `try` n'entoure l'envoi, et c'est voulu : la garantie « `notify` ne rejette
 jamais » vit en **un seul endroit**, `notifier.ts`. Une sonde du run le vérifie

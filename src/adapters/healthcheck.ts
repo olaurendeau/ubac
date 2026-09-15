@@ -101,11 +101,22 @@ const MOTIF_TRANSPORT = 'transport en echec';
  * `NON_RENDU` est la troisieme variante, et elle demande un mot : c'est un run
  * qui a **conclu** son travail mais dont le compte rendu n'est pas parti. Le
  * motif de ne pas la confondre avec `CONCLU` est dans `docs/healthcheck.md` §3.
+ *
+ * Elle porte **les deux canaux du compte rendu**, et pas un seul : une alerte
+ * perdue et un rapport perdu font toutes deux un run non rendu, et l'operateur
+ * qui lit le corps sur updown doit pouvoir dire laquelle des deux a eu lieu. Les
+ * deux champs voyagent donc ensemble, et `alertsFailed` peut valoir zero pendant
+ * que `reportFailed` vaut vrai — c'est meme le cas le plus probable, ntfy et
+ * Brevo ne tombant pas ensemble.
  */
 export type RunEnding =
   | { readonly kind: 'CONCLU'; readonly decisions: number; readonly alerts: number }
   | { readonly kind: 'ABANDONNE'; readonly step: string; readonly code: string }
-  | { readonly kind: 'NON_RENDU'; readonly alertsFailed: number };
+  | {
+      readonly kind: 'NON_RENDU';
+      readonly alertsFailed: number;
+      readonly reportFailed: boolean;
+    };
 
 /** Ce que le run raconte a sa surveillance. Le jour, le code qui tournait, la fin. */
 export interface RunPulse {
@@ -163,6 +174,17 @@ function entierDe(valeur: unknown): string {
   return typeof valeur === 'number' && Number.isInteger(valeur) ? String(valeur) : '?';
 }
 
+/**
+ * Le pendant de `motDe` pour un oui-non. Meme motif, meme repli : un booleen
+ * annonce reste un `unknown` a l'execution, et un `String(valeur)` naif ferait
+ * sortir n'importe quoi — une chaine venue d'ailleurs, un secret compris — dans
+ * un corps qui part chez un tiers.
+ */
+function ouiNonDe(valeur: unknown): string {
+  if (valeur === true) return 'oui';
+  return valeur === false ? 'non' : '?';
+}
+
 // --- Le corps ---------------------------------------------------------------
 
 interface Corps {
@@ -209,7 +231,12 @@ function corpsDe(pulse: RunPulse): Corps {
   if (ending?.kind === 'ABANDONNE') {
     lignes = [ETAT_ABANDONNE, ...entete, `etape=${motDe(ending.step)}`, `code=${motDe(ending.code)}`];
   } else if (ending?.kind === 'NON_RENDU') {
-    lignes = [ETAT_NON_RENDU, ...entete, `alertes_non_parties=${entierDe(ending.alertsFailed)}`];
+    lignes = [
+      ETAT_NON_RENDU,
+      ...entete,
+      `alertes_non_parties=${entierDe(ending.alertsFailed)}`,
+      `rapport_non_parti=${ouiNonDe(ending.reportFailed)}`,
+    ];
   } else {
     lignes = [ETAT_ILLISIBLE, ...entete];
   }

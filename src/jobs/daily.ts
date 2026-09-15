@@ -1,8 +1,14 @@
 import type { Decimal } from 'decimal.js';
 
 import type { CoinbaseReader } from '../adapters/coinbase.js';
-import type { CashFlowRecord, RecordDecisionOutcome, UbacDatabase } from '../adapters/db.js';
+import type {
+  CashFlowRecord,
+  RecordDecisionOutcome,
+  SnapshotRecord,
+  UbacDatabase,
+} from '../adapters/db.js';
 import type { Healthcheck, PingOutcome, RunPulse } from '../adapters/healthcheck.js';
+import type { MailOutcome, Mailer } from '../adapters/mailer.js';
 import type { DailyCandle, DailyWindow, MarketReader } from '../adapters/market.js';
 import type { AlertOutcome, Notifier } from '../adapters/notifier.js';
 import type { UbacConfig } from '../config/env.js';
@@ -27,6 +33,7 @@ import type {
   Verdict,
   Weights,
 } from '../core/types.js';
+import { renderDailyReport } from '../report/daily-report.js';
 import type { AlertInput } from './alerts.js';
 import { alertsFor } from './alerts.js';
 import type { ReconcileObservations } from './reconcile.js';
@@ -35,15 +42,15 @@ import type { BenchmarkGap, DrawdownState, SnapshotWrite, Suspension } from './s
 import { prepareSnapshot } from './snapshot.js';
 
 /**
- * Le run quotidien de la spec §8, **etapes 1 a 5 et 7**. Il lit, il decide, il
- * journalise, il photographie, et il ne place rien.
+ * Le run quotidien de la spec §8, **etapes 1 a 5 et 7 a 9**. Il lit, il decide,
+ * il journalise, il photographie, il rend compte, et il ne place rien.
  *
  * **L'etape 6, l'execution, n'existe pas.** Ce n'est pas une etape laissee vide :
  * aucun code de placement n'est ecrit ici, et le garde-fou de noms
- * d'`eslint.config.js` refuserait celui qui l'ecrirait. Le rapport Brevo
- * appartient a un lot suivant ; **les alertes push du §9 et le ping du
- * healthcheck, eux, partent d'ici** — voir `alerts.ts` et `docs/alertes.md`,
- * `healthcheck.ts` et `docs/healthcheck.md`.
+ * d'`eslint.config.js` refuserait celui qui l'ecrirait. **Tout le §9 part
+ * d'ici** : les alertes push (`alerts.ts`, `docs/alertes.md`), le rapport
+ * quotidien (`src/report/daily-report.ts`, `docs/rapport-quotidien.md`) et le
+ * ping du healthcheck (`healthcheck.ts`, `docs/healthcheck.md`).
  *
  * Cinq proprietes gouvernent ce fichier.
  *
@@ -75,12 +82,20 @@ import { prepareSnapshot } from './snapshot.js';
  *    gratuitement la propriete que la spec attend d'un abandon — **un run
  *    abandonne n'ecrit aucune photo**, parce qu'il rend avant d'y arriver.
  *
- * Une sixieme propriete vient des alertes. **Elles partent apres le run, jamais
- * pendant.** `runDaily` enveloppe l'enchainement complet, le laisse rendre son
- * resultat ou lever, puis alerte sur ce qu'il constate. Consequence voulue : une
- * alerte ne peut pas changer ce que le run ecrit, et le run ne peut pas tomber
- * parce qu'une alerte n'est pas partie — `notifier.ts` garantit de ne jamais
- * rejeter, et c'est la, en un seul endroit, que la garantie vit.
+ * Une sixieme propriete vient de ce qui se raconte. **Alertes et rapport partent
+ * apres le run, jamais pendant.** `runDaily` enveloppe l'enchainement complet,
+ * le laisse rendre son resultat ou lever, puis rend compte de ce qu'il constate.
+ * Consequence voulue : rien de ce qui se raconte ne peut changer ce que le run
+ * ecrit, et le run ne peut pas tomber parce qu'un compte rendu n'est pas parti —
+ * `notifier.ts` et `mailer.ts` garantissent chacun de ne jamais rejeter, et
+ * c'est la, en un seul endroit par canal, que la garantie vit.
+ *
+ * **Les deux canaux ne disent pas la meme chose, et l'ordre le dit.** Les
+ * alertes partent d'abord : c'est le canal court, celui qui reveille. Le rapport
+ * suit : c'est le canal long, celui qui se lit au petit dejeuner. Un run qui
+ * n'a rien a alerter envoie quand meme son rapport — `trigger NONE` compris —,
+ * parce qu'un operateur qui ne recoit rien ne distingue pas un systeme qui n'a
+ * rien eu a faire d'un systeme qui n'a pas tourne.
  *
  * Une septieme vient du healthcheck, et elle se lit a l'envers des six autres :
  * **c'est l'absence de ping qui alerte.** Le ping part en toute derniere
@@ -167,6 +182,8 @@ export interface DailyPorts {
   >;
   /** §9 : le canal court. Il ne rejette jamais, donc il n'est jamais entoure d'un `try`. */
   readonly notifier: Notifier;
+  /** §9 : le canal long. Meme garantie, meme absence de `try`. */
+  readonly mailer: Mailer;
   /** §9 : la surveillance d'absence. Elle ne rejette jamais non plus, meme motif. */
   readonly healthcheck: Healthcheck;
 }
@@ -183,8 +200,18 @@ export interface DailyRun {
 // --- Resultat ---------------------------------------------------------------
 
 /**
- * Ce que le run a fait savoir, sur ses deux canaux. Une entree par alerte emise,
- * dans l'ordre d'emission, puis le sort du ping de fin de run.
+ * Le sort du rapport quotidien. `SKIPPED` n'est pas un echec : c'est le seul
+ * sort d'un run **abandonne**, et il porte son motif plutot que de se deviner a
+ * l'absence des deux autres.
+ */
+export type ReportDelivery =
+  | MailOutcome
+  | { readonly status: 'SKIPPED'; readonly reason: string };
+
+/**
+ * Ce que le run a fait savoir, sur ses trois canaux, **dans l'ordre ou il l'a
+ * fait savoir** : les alertes une par une, puis le rapport, puis le ping qui
+ * rapporte le sort des deux premiers.
  *
  * `ping` est **toujours present** ici, et c'est ce qui le rend lisible : ce type
  * ne decrit que les runs qui ont rendu un resultat, et tous pinguent. Le seul
@@ -193,6 +220,7 @@ export interface DailyRun {
  */
 export interface RunReport {
   readonly alerts: readonly AlertOutcome[];
+  readonly mail: ReportDelivery;
   readonly ping: PingOutcome;
 }
 
@@ -244,6 +272,15 @@ type DailyOutcome =
       /** La fenetre du §8, rendue telle quelle : les benchmarks la consommeront. */
       readonly history: Readonly<Record<PricedAsset, readonly DailyCandle[]>>;
       readonly cashFlows: readonly CashFlow[];
+      /**
+       * La photo lue **avant** ce run, ou `undefined` au premier. Le P&L du jour
+       * du §9 est le quotient de deux indices consecutifs : il demande celui de
+       * la veille, et relire `latestSnapshot()` apres l'etape 7 rendrait la
+       * photo d'aujourd'hui — le quotient vaudrait 1 et le rapport annoncerait
+       * une journee plate qui n'a pas eu lieu. Elle est donc portee ici, pas
+       * relue.
+       */
+      readonly previousSnapshot: SnapshotRecord | undefined;
       readonly observations: ReconcileObservations;
       readonly outcomes: readonly StrategyOutcome[];
       readonly totalValue: UsdcAmount;
@@ -639,6 +676,7 @@ async function executeRun(run: DailyRun): Promise<DailyOutcome> {
     weights: valuation.weights,
     history,
     cashFlows,
+    previousSnapshot: previous,
     observations: reconciled.observations,
     outcomes,
     totalValue: valuation.total,
@@ -731,30 +769,138 @@ async function announce(run: DailyRun, input: AlertInput): Promise<readonly Aler
   return outcomes;
 }
 
-// --- Le healthcheck ---------------------------------------------------------
+// --- Le rapport quotidien ---------------------------------------------------
 
 /**
- * Toutes les alertes du run sont-elles parties.
+ * **Un run abandonne n'envoie pas de rapport, et c'est une decision.**
  *
- * Extraite pour une seule raison : **`reported` et `pulseOf` posent la meme
- * question**, l'un pour le code de sortie, l'autre pour ce que la surveillance
- * lira. Deux predicats voisins auraient diverge, et c'est celui des deux qu'on
- * ne relit pas — le ping, parti chez un tiers — qui se serait tu le jour ou il
- * fallait qu'il parle.
+ * Le rendu attend un run **conclu** : sa forme `CompletedRun` exige la valeur
+ * totale, les poids, les benchmarks et la photo, qu'un abandon n'a jamais
+ * calcules — `test/report/contrat-run.test-d.ts` refuse d'ailleurs l'assignation
+ * par le typage. Restait a choisir entre fabriquer un second rendu, « rapport
+ * d'abandon », et ne rien envoyer.
+ *
+ * C'est la seconde qui est retenue, pour deux raisons.
+ *
+ * 1. **L'abandon est deja dit, et mieux.** `RECONCILIATION_DRIFT` ou
+ *    `RUN_ABORTED` part en push dans la minute, en priorite `URGENT`, avec
+ *    l'etape, le code et le motif. Un courrier qui repeterait la meme nouvelle
+ *    au petit dejeuner arriverait apres la bataille. Le silence que le §9
+ *    craignait — un abandon indistinguable d'un job qui n'a pas tourne — est
+ *    ferme par l'alerte, pas par le rapport.
+ * 2. **Un rapport d'abandon serait un rapport a trous.** Distance au
+ *    declenchement, allocation, comparaison, P&L : rien de tout cela n'existe
+ *    quand le run s'arrete a la reconciliation. Un courrier dont cinq sections
+ *    sur six disent « indisponible » apprend a ne plus ouvrir le courrier.
+ *
+ * Ce qui n'est pas retenu non plus : laisser le cas se resoudre tout seul.
+ * L'abandon prend une branche nommee, qui journalise son motif et rend
+ * `SKIPPED` — pas une absence de branche, dont on ne saurait pas dire si elle a
+ * ete voulue.
  */
-function toutesParties(alerts: readonly AlertOutcome[]): boolean {
-  return alerts.every((a) => a.status === 'SENT');
+const MOTIF_ABANDON =
+  "run abandonne : le rendu du §9 demande un run conclu, et l'abandon est deja parti en alerte push.";
+
+/**
+ * Les cibles et bandes de la **production**, celles que le rapport confronte aux
+ * poids constates. Les deux configurations de rebalance partagent tout sauf
+ * `ratioBandEnabled` (C13), et c'est justement ce drapeau que la section
+ * « distance au prochain declenchement » lit pour savoir si la bande de ratio
+ * est surveillee : prendre `config.rebalance` tel quel afficherait une bande B
+ * que la production n'arbitre pas.
+ *
+ * `env.ts` ne laisse passer que ces deux noms pour `UBAC_STRATEGY` ; le repli
+ * est celui de la production.
+ */
+function productionParams(config: UbacConfig): RebalanceParams {
+  const name: RebalanceStrategyName =
+    config.rebalance.strategy === 'rebalance_ab' ? 'rebalance_ab' : 'rebalance';
+  return rebalanceParams(name, config);
+}
+
+/**
+ * Le rapport du §9 : rendu ici, poste par `mailer.ts`.
+ *
+ * Aucun `try`, comme pour les alertes, et pour les deux memes motifs. Le rendu
+ * est **pur et total** — `daily-report.ts` ne porte pas un seul `throw`, et
+ * aucune de ses branches ne rend `undefined` : un run conclu produit toujours un
+ * courrier, `trigger NONE` compris. L'envoi, lui, garantit de ne jamais rejeter,
+ * et la garantie vit dans `mailer.ts`. Un echec revient donc en valeur, il est
+ * journalise sur sa propre ligne — **un rapport qui ne part pas ne doit pas etre
+ * silencieux** — et le run garde son statut : ce qu'il avait a ecrire est ecrit.
+ */
+async function deliverReport(run: DailyRun, outcome: DailyOutcome): Promise<ReportDelivery> {
+  if (outcome.status === 'ABORTED') {
+    run.log(`rapport quotidien non envoye — ${MOTIF_ABANDON}`);
+    return { status: 'SKIPPED', reason: MOTIF_ABANDON };
+  }
+  const mail = renderDailyReport({
+    run: outcome,
+    params: productionParams(run.config),
+    previous: outcome.previousSnapshot,
+  });
+  const sent = await run.ports.mailer.sendReport(mail);
+  run.log(
+    sent.status === 'SENT'
+      ? `rapport quotidien : parti (HTTP ${String(sent.httpStatus)}) — ${mail.subject}`
+      : `rapport quotidien : NON PARTI — ${sent.reason}`,
+  );
+  return sent;
+}
+
+// --- Ce que le run a fait savoir --------------------------------------------
+
+/**
+ * **Le compte rendu du run est-il entierement parti** — ses alertes et son
+ * rapport.
+ *
+ * Un seul predicat, et c'est la seule chose qui compte ici. **Trois lecteurs
+ * posent la meme question** : `reported` pour le code de sortie, `pulseOf` pour
+ * ce que la surveillance lira, et l'operateur pour savoir s'il a tout recu.
+ * Trois predicats voisins auraient diverge, et c'est celui qu'on ne relit
+ * jamais — le ping, parti chez un tiers — qui se serait tu le jour ou il fallait
+ * qu'il parle.
+ *
+ * Les deux canaux y entrent au meme titre, et pour la meme raison : **la panne
+ * d'un canal est exactement la panne que ce canal ne peut pas signaler.** ntfy
+ * tombe, le canal court est muet ; Brevo tombe, le canal long l'est aussi. Dans
+ * les deux cas le healthcheck est le seul temoin qui ne depende pas du canal en
+ * panne, et le code de sortie la seule trace qui reste sur la machine.
+ *
+ * `SKIPPED` rend faux, et ce n'est **jamais lu comme un echec** : il n'apparait
+ * que sur un abandon, et les deux appelants tranchent l'abandon avant d'arriver
+ * ici — `reported` exige `COMPLETED`, `pulseOf` rend `ABANDONNE` d'abord. Un
+ * `SKIPPED` qui rendrait vrai serait pire : il ferait dire « tout est parti » a
+ * un run qui n'a rien envoye.
+ */
+function toutParti(alerts: readonly AlertOutcome[], mail: ReportDelivery): boolean {
+  return alerts.every((a) => a.status === 'SENT') && mail.status === 'SENT';
 }
 
 /**
  * Le run a-t-il conclu **et** rendu compte.
  *
- * Les deux moities sont voulues, et la seconde demande un mot. Une alerte qui
- * echoue ne fait pas echouer le *travail* du run : rien n'est defait, rien n'est
- * reecrit, le statut reste `COMPLETED`. Mais elle fait echouer son *compte
+ * Les deux moities sont voulues, et la seconde demande un mot. Un compte rendu
+ * qui echoue ne fait pas echouer le *travail* du run : rien n'est defait, rien
+ * n'est reecrit, le statut reste `COMPLETED`. Mais il fait echouer son *compte
  * rendu*, et ce sont deux choses differentes. Une alerte qui n'est pas partie
- * est un evenement que personne ne verra ; la compter comme un succes rendrait
- * le systeme muet exactement quand il a quelque chose a dire.
+ * est un evenement que personne ne verra ; un rapport qui n'est pas parti est
+ * une journee entiere que personne ne lira. Les compter comme des succes
+ * rendrait le systeme muet exactement quand il a quelque chose a dire.
+ *
+ * **Le rapport y entre au meme titre que les alertes**, et c'est le seul endroit
+ * ou son echec se voie de l'exterieur : le catalogue des sept evenements du §9
+ * n'a pas d'entree pour « rapport non envoye », et en detourner une — `JOB_FAILED`
+ * pousserait « une exception a echappe au run » — dirait quelque chose de faux
+ * sur le canal le plus urgent. Le code de sortie, lui, ne ment pas : il dit que
+ * la journee n'a pas ete entierement racontee, et c'est exactement le cas.
+ *
+ * **Le predicat est partage avec le ping**, et ce n'est pas une economie de
+ * lignes : `toutParti` est le seul endroit qui dise ce qu'est un compte rendu
+ * parti, pour que le code de sortie et le corps du pulse ne puissent pas
+ * diverger. Le motif est sous `toutParti`, et il est teste par enumeration —
+ * voir `test/jobs/daily.test.ts`, « la coherence du code de sortie et du
+ * marqueur ».
  *
  * La regle vit ici et non dans le point d'entree : `daily-main.ts` n'apparait a
  * aucun rapport de couverture — rien ne peut l'importer (A22) — donc une regle
@@ -767,7 +913,7 @@ function toutesParties(alerts: readonly AlertOutcome[]): boolean {
  * §4.
  */
 export function reported(result: DailyRunResult): boolean {
-  return result.status === 'COMPLETED' && toutesParties(result.report.alerts);
+  return result.status === 'COMPLETED' && toutParti(result.report.alerts, result.report.mail);
 }
 
 /**
@@ -776,19 +922,27 @@ export function reported(result: DailyRunResult): boolean {
  * `healthcheck.ts` n'a pas a connaitre `DailyOutcome`.
  *
  * **Trois fins, et la troisieme est la tension du lot tranchee.** Un run conclu
- * dont une alerte n'est pas partie n'est pas `CONCLU` : le corps ne portera pas
- * le marqueur, et la surveillance le lira `DOWN`. C'est le meme predicat que le
- * code de sortie — `toutesParties` — et ce n'est pas une coincidence.
+ * dont un compte rendu n'est pas parti — une alerte, le rapport, ou les deux —
+ * n'est pas `CONCLU` : le corps ne portera pas le marqueur, et la surveillance
+ * le lira `DOWN`. C'est le meme predicat que le code de sortie — `toutParti` —
+ * et ce n'est pas une coincidence.
  *
- * Le motif tient en une phrase : **la panne d'une alerte est exactement la panne
- * qu'aucune alerte ne peut signaler.** Si ntfy est tombe, le canal court est
- * muet par definition ; le healthcheck est le seul canal restant qui ne depende
- * pas de lui, et se taire la reviendrait a faire dependre la surveillance du
- * systeme surveille — c'est-a-dire a perdre la raison d'etre du lot. Le travail
- * du run n'est pas defait pour autant : les quatre lignes de `decisions` et la
- * photo restent ecrites, et le statut reste `COMPLETED`. Ce que le pulse
- * rapporte n'est pas « le travail a echoue », c'est « ce run n'a pas rendu
- * compte » — d'ou un etat a lui, `NON_RENDU`, plutot qu'un abandon simule.
+ * Le motif tient en une phrase : **la panne d'un canal est exactement la panne
+ * que ce canal ne peut pas signaler.** Si ntfy est tombe, le canal court est
+ * muet par definition ; si Brevo est tombe, le canal long l'est aussi. Le
+ * healthcheck est le seul canal restant qui ne depende ni de l'un ni de l'autre,
+ * et se taire la reviendrait a faire dependre la surveillance du systeme
+ * surveille — c'est-a-dire a perdre la raison d'etre du lot. Le travail du run
+ * n'est pas defait pour autant : les quatre lignes de `decisions` et la photo
+ * restent ecrites, et le statut reste `COMPLETED`. Ce que le pulse rapporte
+ * n'est pas « le travail a echoue », c'est « ce run n'a pas rendu compte » —
+ * d'ou un etat a lui, `NON_RENDU`, plutot qu'un abandon simule.
+ *
+ * **Le corps dit lequel des deux canaux a manque**, et ce n'est pas du confort :
+ * l'operateur qui voit sonner updown doit savoir s'il lui manque une alerte ou
+ * son courrier du matin, et les deux pannes n'ont ni la meme cause ni la meme
+ * urgence. `alertsFailed` et `reportFailed` voyagent donc ensemble, et l'un peut
+ * valoir zero pendant que l'autre vaut vrai.
  *
  * Le `gitSha` vient de `run` et non de l'`outcome` : un abandon n'en porte pas,
  * et c'est justement une fin dont on veut savoir quel code l'a produite.
@@ -797,6 +951,7 @@ function pulseOf(
   run: DailyRun,
   outcome: DailyOutcome,
   alerts: readonly AlertOutcome[],
+  mail: ReportDelivery,
 ): RunPulse {
   const entete = { runDate: outcome.runDate, gitSha: run.gitSha };
   if (outcome.status === 'ABORTED') {
@@ -805,9 +960,16 @@ function pulseOf(
       ending: { kind: 'ABANDONNE', step: outcome.abort.step, code: outcome.abort.code },
     };
   }
-  if (!toutesParties(alerts)) {
+  if (!toutParti(alerts, mail)) {
     const nonParties = alerts.filter((a) => a.status !== 'SENT').length;
-    return { ...entete, ending: { kind: 'NON_RENDU', alertsFailed: nonParties } };
+    return {
+      ...entete,
+      ending: {
+        kind: 'NON_RENDU',
+        alertsFailed: nonParties,
+        reportFailed: mail.status !== 'SENT',
+      },
+    };
   }
   return {
     ...entete,
@@ -840,9 +1002,9 @@ async function signal(run: DailyRun, pulse: RunPulse): Promise<PingOutcome> {
 }
 
 /**
- * Le run quotidien, alertes et ping compris.
+ * Le run quotidien, alertes, rapport et ping compris.
  *
- * L'enveloppe est mince et fait exactement trois choses que l'enchainement ne
+ * L'enveloppe est mince et fait exactement quatre choses que l'enchainement ne
  * peut pas faire lui-meme.
  *
  * 1. **Elle alerte sur un abandon.** Un run abandonne n'ecrit rien — ni
@@ -852,11 +1014,15 @@ async function signal(run: DailyRun, pulse: RunPulse): Promise<PingOutcome> {
  *    et elle ne passe pas par le systeme surveille.
  * 2. **Elle alerte sur une exception, puis la releve.** `JOB_FAILED` part, et
  *    l'erreur continue son chemin telle quelle : le point d'entree doit toujours
- *    la voir et sortir en 1. Alerter n'est pas rattraper.
- * 3. **Elle pingue le healthcheck, en toute derniere position.**
+ *    la voir et sortir en 1. Alerter n'est pas rattraper. Ni rapport ni ping ne
+ *    partent dans ce cas : le run n'a rien rendu dont il y aurait un rapport a
+ *    rendre, et le motif du ping est plus bas.
+ * 3. **Elle envoie le rapport du §9**, apres les alertes et jamais avant : le
+ *    canal court passe devant le canal long.
+ * 4. **Elle pingue le healthcheck, en toute derniere position.**
  *
  * Ce qu'elle ne fait pas : changer ce que le run a conclu. Le statut, les
- * ecritures et les valeurs rendues sont ceux d'`executeRun`, alertes ou pas,
+ * ecritures et les valeurs rendues sont ceux d'`executeRun`, alertes, rapport et
  * ping ou pas.
  *
  * ### Les trois fins, et pourquoi la troisieme ne pingue pas
@@ -879,11 +1045,25 @@ async function signal(run: DailyRun, pulse: RunPulse): Promise<PingOutcome> {
  * qui ne demarre pas, un job tue a la seconde etape et un job qui leve
  * produisent tous le meme silence, et ce silence est lu de l'exterieur.
  *
- * ### Pourquoi apres les alertes
+ * ### L'ordre des trois, et pourquoi il n'est pas interchangeable
  *
- * Le ping est en derniere position pour une raison de fond : il rapporte ce que
- * le run a **fait savoir**, et les alertes en font partie — voir `pulseOf`. Le
- * placer avant aurait oblige a pinguer sur un compte rendu pas encore rendu.
+ * Alertes, puis rapport, puis ping — et chaque cran a son motif.
+ *
+ * Les **alertes d'abord** : c'est le canal court, celui qui reveille, et rien de
+ * ce qui suit ne doit retarder une alerte `URGENT`.
+ *
+ * Le **rapport ensuite** : c'est le canal long, celui qui se lit au petit
+ * dejeuner. Un run qui n'a rien a alerter envoie quand meme son rapport —
+ * `trigger NONE` compris —, parce qu'un operateur qui ne recoit rien ne
+ * distingue pas un systeme qui n'a rien eu a faire d'un systeme qui n'a pas
+ * tourne.
+ *
+ * Le **ping en dernier**, et c'est le cran qui ne se deplace pas : il rapporte
+ * ce que le run a **fait savoir**, alertes et rapport compris — voir `pulseOf`.
+ * Le placer avant l'envoi du rapport l'obligerait a pinguer sur un courrier pas
+ * encore parti, donc a affirmer « tout est rendu » sans l'avoir seulement
+ * tente ; la seule facon de dire qu'un rapport n'est pas parti est d'avoir
+ * essaye de l'envoyer d'abord.
  */
 export async function runDaily(run: DailyRun): Promise<DailyRunResult> {
   const runDate = run.clock.today();
@@ -907,6 +1087,7 @@ export async function runDaily(run: DailyRun): Promise<DailyRunResult> {
     throw error;
   }
   const alerts = await announce(run, alertInputOf(outcome));
-  const ping = await signal(run, pulseOf(run, outcome, alerts));
-  return { ...outcome, report: { alerts, ping } };
+  const mail = await deliverReport(run, outcome);
+  const ping = await signal(run, pulseOf(run, outcome, alerts, mail));
+  return { ...outcome, report: { alerts, mail, ping } };
 }

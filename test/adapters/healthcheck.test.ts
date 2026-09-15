@@ -37,7 +37,14 @@ function pulse(ending: RunPulse['ending'], overrides: Partial<RunPulse> = {}): R
 
 const CONCLU = pulse({ kind: 'CONCLU', decisions: 4, alerts: 0 });
 const ABANDONNE = pulse({ kind: 'ABANDONNE', step: 'RECONCILE', code: 'RECONCILIATION_DRIFT' });
-const NON_RENDU = pulse({ kind: 'NON_RENDU', alertsFailed: 2 });
+/**
+ * Un run conclu dont le compte rendu n'est pas parti. Les deux canaux y sont
+ * nommes separement : une alerte perdue et un rapport perdu ne sont pas la meme
+ * panne, et le corps doit dire laquelle.
+ */
+const NON_RENDU = pulse({ kind: 'NON_RENDU', alertsFailed: 2, reportFailed: false });
+const RAPPORT_PERDU = pulse({ kind: 'NON_RENDU', alertsFailed: 0, reportFailed: true });
+const LES_DEUX_PERDUS = pulse({ kind: 'NON_RENDU', alertsFailed: 2, reportFailed: true });
 
 interface Envoi {
   readonly requetes: HttpRequest[];
@@ -85,7 +92,27 @@ describe('le marqueur — present si et seulement si le run a abouti', () => {
    */
   it.each([
     ['un abandon', ABANDONNE, ['RUN_ABANDONNE', 'etape=RECONCILE', 'code=RECONCILIATION_DRIFT']],
-    ['un compte rendu manquant', NON_RENDU, ['RUN_NON_RENDU', 'alertes_non_parties=2']],
+    [
+      'une alerte manquante',
+      NON_RENDU,
+      ['RUN_NON_RENDU', 'alertes_non_parties=2', 'rapport_non_parti=non'],
+    ],
+    /*
+     * Le cas que la greffe en deux fois avait failli laisser passer : aucune
+     * alerte perdue, et pourtant le run n'a pas rendu compte. Sans lui, un
+     * echec d'envoi Brevo pingait avec le marqueur pendant que le code de
+     * sortie valait 1 — deux verdicts opposes sur le meme run.
+     */
+    [
+      'un rapport manquant, sans aucune alerte perdue',
+      RAPPORT_PERDU,
+      ['RUN_NON_RENDU', 'alertes_non_parties=0', 'rapport_non_parti=oui'],
+    ],
+    [
+      'les deux canaux manquants',
+      LES_DEUX_PERDUS,
+      ['RUN_NON_RENDU', 'alertes_non_parties=2', 'rapport_non_parti=oui'],
+    ],
   ])('%s ne porte pas le marqueur et nomme sa cause', async (_cas, entree, attendus) => {
     const corps = await corpsDe(entree);
 
@@ -99,6 +126,22 @@ describe('le marqueur — present si et seulement si le run a abouti', () => {
    * verdict n'est pas « on suppose que c'est un succes » : face a une fin qu'on
    * ne sait pas lire, la surveillance doit sonner.
    */
+  /*
+   * `reportFailed` est borne comme les autres champs, et pour la meme raison :
+   * les types sont effaces, `ping` est une interface publique, et un
+   * `String(valeur)` naif ferait sortir dans le corps une chaine venue
+   * d'ailleurs — un secret compris. Ce qui n'est ni `true` ni `false` sort en
+   * `?`, et jamais en clair.
+   */
+  it('un rapport_non_parti qui n\'est pas un booleen sort en ?', async () => {
+    const pipe = { kind: 'NON_RENDU', alertsFailed: 0, reportFailed: URL_PULSE };
+    const corps = await corpsDe(pulse(pipe as unknown as RunPulse['ending']));
+
+    expect(corps).toContain('rapport_non_parti=?');
+    expect(corps).not.toContain(URL_PULSE);
+    expect(corps).not.toContain(RUN_MARKER);
+  });
+
   it('une fin illisible ne porte pas le marqueur', async () => {
     const inconnue = { kind: 'AUTRE_CHOSE' } as unknown as RunPulse['ending'];
     const corps = await corpsDe(pulse(inconnue));

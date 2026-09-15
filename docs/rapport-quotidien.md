@@ -1,26 +1,44 @@
 # Rapport quotidien
 
-Le rapport email de la spec §9. `src/report/daily-report.ts` le **rend** ;
-l'envoi par l'API Brevo et le branchement dans le run quotidien appartiennent au
-lot suivant. Rendre et envoyer sont séparés pour une raison précise : le rendu
-est pur, donc il se compare à une sortie attendue sans réseau, sans clé et sans
-run. `test/report/daily-report.test.ts` rend le rapport entier sur un état figé
-et le compare ligne à ligne.
+Le rapport email de la spec §9, en trois fichiers et trois responsabilités :
+
+| Fichier | Ce qu'il fait |
+|---|---|
+| `src/report/daily-report.ts` | **rend** le courrier — sujet, HTML, tags |
+| `src/adapters/mailer.ts` | **l'envoie**, par l'API HTTP Brevo `/v3/smtp/email` |
+| `src/jobs/daily.ts` | **décide qu'il part**, une fois le run conclu et les alertes poussées |
+
+Rendre et envoyer sont séparés pour une raison précise : le rendu est pur, donc
+il se compare à une sortie attendue sans réseau, sans clé et sans run.
+`test/report/daily-report.test.ts` rend le rapport entier sur un état figé et le
+compare ligne à ligne ; `test/adapters/mailer.test.ts` relit le corps
+réellement publié contre un transport double ; `test/jobs/daily.test.ts` tient
+le branchement.
 
 Le run quotidien est décrit dans [run-quotidien.md](run-quotidien.md) ; les
-métriques que le rapport consomme viennent de `src/jobs/snapshot.ts`.
+métriques que le rapport consomme viennent de `src/jobs/snapshot.ts`. Le canal
+court — les alertes push — est dans [alertes.md](alertes.md).
 
 ## 1. Condition de réception : SPF et DKIM
 
-**Le domaine d'envoi doit être authentifié SPF et DKIM sur `olalpinesolutions`,
-sinon les rapports finissent en spam** (§9). Ce n'est pas une affaire de code :
-ce sont deux enregistrements DNS à poser, et c'est l'opérateur qui s'en charge
-dans la console Brevo.
+**Le domaine d'envoi doit être authentifié SPF et DKIM, sinon les rapports
+finissent en spam** (§9). Ce n'est pas une affaire de code : ce sont deux
+enregistrements DNS à poser, et c'est l'opérateur qui s'en charge dans la
+console Brevo. C'est fait, et vérifié en réel — Brevo a rendu 201 et l'événement
+`delivered` est confirmé.
+
+**Le domaine n'est pas dans le dépôt, et le nom que la spec avance n'est pas
+celui en service.** Le §9 écrit `olalpinesolutions` ; l'adresse réellement
+utilisée arrive par `BREVO_SENDER`. Aligner la spec est une décision de
+l'opérateur, pas un ajustement technique : l'écart est signalé ici, il n'est pas
+tranché ici. Figer le domaine en constante du dépôt aurait de toute façon été le
+mauvais choix — il appartient à l'opérateur, pas au code.
 
 Aucun test de ce dépôt n'en dépend, et c'est délibéré : le rendu ne parle à
-personne, et l'envoi sera testé contre un double de transport. Un rapport qui
+personne, et l'envoi est testé contre un double de transport. Un rapport qui
 part sans SPF ni DKIM part quand même — il arrive simplement en indésirable, ce
-qu'aucune assertion locale ne peut constater.
+qu'aucune assertion locale ne peut constater. Ce que les tests **peuvent** dire
+s'arrête au 201 ; la réception est affaire de DNS.
 
 ## 2. Ce que le rapport contient
 
@@ -40,8 +58,11 @@ image, ni police distante. Un client mobile qui bloque les ressources externes �
 c'est le défaut de la plupart — rend le même rapport. Le corps est **sans
 accent**, comme les `reason` du noyau qu'il cite telles quelles.
 
-Tag `daily-report` sur chaque envoi (§9), figé dans `REPORT_TAG` et consommé par
-l'envoi : deux littéraux divergeraient.
+Tag `daily-report` sur chaque envoi (§9), figé dans `REPORT_TAG` et **imposé**
+par l'envoi : `mailer.ts` importe la constante — deux littéraux divergeraient —
+et l'ajoute en tête de ce qu'il reçoit plutôt que de le retransmettre. Le §9 dit
+« sur chaque envoi », et le seul endroit qui sache ce qu'est un envoi est
+celui-là ; un rendu qui oublierait le tag part quand même tagué.
 
 ### Un rapport part même quand rien ne se passe
 
@@ -58,6 +79,74 @@ Un run sans action doit laisser une trace : sans elle, l'opérateur ne distingue
 pas un système qui n'a rien eu à faire d'un système qui n'a pas tourné. La
 surveillance de l'absence, elle, ne passe pas par le mail — c'est le healthcheck
 du §9, et il appartient au lot Q6.
+
+**Ce n'est pas seulement une propriété du rendu, c'est une propriété de l'envoi.**
+`deliverReport` n'a aucune condition sur le trigger : tout run conclu poste son
+courrier. La sonde du branchement le vérifie sur un run dont les quatre
+stratégies rendent `NONE`.
+
+## 2 bis. Un run abandonné n'envoie pas de rapport
+
+Tranché, et pas laissé au hasard : `deliverReport` prend une **branche nommée**
+qui journalise son motif et rend `SKIPPED`.
+
+| Fin du run | Rapport | Ce qui prévient l'opérateur |
+|---|---|---|
+| `COMPLETED` | envoyé, `trigger NONE` compris | le rapport lui-même |
+| `ABORTED` (réconciliation) | `SKIPPED` | alerte `RECONCILIATION_DRIFT`, priorité `URGENT` |
+| `ABORTED` (valorisation, stratégie indécidable) | `SKIPPED` | alerte `RUN_ABORTED`, priorité `URGENT` |
+| exception | aucun | alerte `JOB_FAILED`, puis l'erreur remonte |
+
+Deux raisons, et la première suffirait.
+
+1. **L'abandon est déjà dit, et mieux dit.** Un push part dans la minute, avec
+   l'étape, le code et le motif. Un courrier qui répéterait la même nouvelle au
+   petit déjeuner arriverait après la bataille. Le silence que le §9 craignait —
+   un abandon indistinguable d'un job qui n'a pas tourné — est fermé par
+   l'alerte : [alertes.md](alertes.md) §2 bis, et `RUN_ABORTED` existe pour ça.
+2. **Un rapport d'abandon serait un rapport à trous.** Distance au
+   déclenchement, allocation, comparaison, P&L : rien de tout cela n'existe
+   quand le run s'arrête à la réconciliation. `CompletedRun` les exige tous, et
+   `test/report/contrat-run.test-d.ts` refuse un run abandonné **par le typage**.
+   Un courrier dont cinq sections sur six diraient « indisponible » apprendrait
+   à ne plus ouvrir le courrier.
+
+Ce qui lèverait la décision : un rendu d'abandon qui **ne serait pas** le rapport
+quotidien amputé — une page qui dit l'étape, l'état lu et ce qu'il aurait fallu
+pour continuer. C'est un autre objet, et un autre lot.
+
+## 2 ter. Un échec d'envoi ne fait pas échouer le run
+
+Le rapport part **après** que tout est écrit — décisions, photo, alertes. Un
+refus de Brevo, une panne réseau ou un délai dépassé ne défont donc rien : le
+statut reste `COMPLETED`, les quatre lignes de `decisions` et la photo du jour
+sont là.
+
+Mais l'envoi n'est pas silencieux pour autant, sur trois canaux :
+
+- une **ligne de journal** dédiée, `rapport quotidien : NON PARTI — <motif>` ;
+- le **code de sortie**. `reported()` exige un run conclu, ses alertes parties
+  **et** son rapport parti ; le point d'entrée sort en 1 sinon, et le
+  déclencheur extérieur le voit rouge.
+- le **ping du healthcheck**, qui part sans son marqueur : updown.io lit `DOWN`,
+  et le corps du pulse dit `rapport_non_parti=oui`.
+  [healthcheck.md](healthcheck.md) §4.
+
+Les deux derniers sortent du **même prédicat**, `toutParti` dans `daily.ts`, et
+c'est délibéré : le code de sortie se lit sur la machine, le marqueur se lit chez
+updown.io, et un opérateur qui verrait `UP` d'un côté et rouge de l'autre ne
+saurait pas lequel croire. C'est aussi ce qui impose l'ordre du run — **alertes,
+rapport, ping** : la seule façon de dire qu'un rapport n'est pas parti est
+d'avoir essayé de l'envoyer d'abord.
+
+Ce qui n'est **pas** fait : pousser une alerte. Le catalogue des sept événements
+n'a pas d'entrée pour « rapport non envoyé », et en détourner une — `JOB_FAILED`
+pousserait « une exception a échappé au run » — dirait quelque chose de faux sur
+le canal le plus urgent, celui qui traverse le mode « ne pas déranger ». Le code
+de sortie et le pulse, eux, ne mentent pas.
+
+La garantie « ne rejette jamais » vit dans `src/adapters/mailer.ts`, en un seul
+endroit, comme celle de `notifier.ts` : le run n'entoure l'envoi d'aucun `try`.
 
 ## 3. La distance au prochain déclenchement
 
@@ -220,3 +309,67 @@ Même motif pour les clés de `snapshots.benchmarks`, recopiées faute de pouvoi
 être importées : un rapport qui lirait `holdbtc_twr` pendant que la photo écrit
 `hold_btc_twr` n'afficherait pas une erreur, il afficherait « indisponible ». Un
 test confronte les deux tables.
+
+## 8. L'envoi : l'API HTTP, et le transport qu'on ne réécrit pas
+
+`src/adapters/mailer.ts` fait un POST sur `https://api.brevo.com/v3/smtp/email`
+et rien d'autre. Le corps porte cinq champs, et c'est **exactement la forme qui a
+été éprouvée en réel** contre le compte de l'opérateur avant d'être écrite :
+
+```json
+{
+  "sender": { "email": "<BREVO_SENDER>" },
+  "to": [{ "email": "<BREVO_RECIPIENT>" }],
+  "subject": "…",
+  "htmlContent": "…",
+  "tags": ["daily-report"]
+}
+```
+
+Quatre choix, et leur motif.
+
+**SMTP est écarté.** Le job tourne en serverless (§10) : une session SMTP ouvre
+une connexion longue, négocie STARTTLS et attend des réponses ligne à ligne, sur
+un port que la plupart des plateformes ferment en sortie. Aucune bibliothèque
+SMTP n'entre dans ce dépôt.
+
+**Le transport est `src/adapters/http.ts`, pas un second client.** Le bornage des
+erreurs, le délai de 5 s et la garantie « ne rejette jamais » y vivent déjà,
+relus — voir [alertes.md](alertes.md) §4. En écrire un second aurait doublé la
+surface où une clé peut fuir, et c'est celui qui n'a pas été relu qui fuit. La
+contrepartie est déclarée : `HttpOutcome` ne rend pas le corps de la réponse,
+donc le `messageId` du 201 n'est pas lisible. Le statut suffit à dire « parti »
+ou « pas parti » ; retracer un courrier précis se fait dans la console Brevo,
+avec le tag.
+
+**Un destinataire, dans une liste d'un élément.** Plusieurs destinataires seront
+une décision, pas une conséquence de ponctuation — et une liste les rendrait
+visibles les uns des autres sans qu'aucune ligne de code ne le dise.
+
+**La clé ne sort que par l'en-tête `api-key`.** `mailer.ts` ne fabrique
+**aucune** chaîne d'échec : le motif vient de `motifDe`, vocabulaire fermé de
+quatre variantes, et le filet du `catch` rend une constante sans jamais lire ce
+qui a été jeté. Les sondes de fuite de `test/adapters/mailer.test.ts` font
+circuler une clé factice dans tout ce qu'un transport peut lever ou rendre, et
+la cherchent partout — message, nom, cause, pile, propriétés non énumérables.
+
+### Les trois variables
+
+| Variable | Rôle | Forme exigée |
+|---|---|---|
+| `BREVO_API_KEY` | authentifie le POST | non vide |
+| `BREVO_SENDER` | expéditeur, sur le domaine SPF/DKIM | une adresse |
+| `BREVO_RECIPIENT` | destinataire | une adresse, une seule |
+
+Les deux dernières sont un **écart assumé avec le §10**, qui ne fige que la clé :
+une clé d'API ne dit ni de qui part le courrier ni à qui il va. Même traitement
+que `NTFY_URL` et `NTFY_TOPIC` ([alertes.md](alertes.md)), et même conséquence —
+`.env.example` les porte sans valeur, et `loadConfig()` refuse de démarrer sans
+elles.
+
+Le contrôle de forme n'est pas cosmétique : Brevo refuse **l'envoi entier** sur
+une adresse mal formée. Une virgule à la place d'un point ne donne pas un
+rapport mal adressé, elle donne un rapport perdu, et la différence ne se lit que
+dans un code HTTP. Le message d'erreur nomme la variable et **ne cite jamais sa
+valeur** : une adresse est une donnée personnelle, et un message d'erreur finit
+dans un journal.

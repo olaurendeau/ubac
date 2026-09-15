@@ -2,6 +2,7 @@ import { ccxtTransport, openCoinbase } from '../adapters/coinbase.js';
 import { openDatabase } from '../adapters/db.js';
 import { openHealthcheck } from '../adapters/healthcheck.js';
 import { openHttp } from '../adapters/http.js';
+import { openMailer } from '../adapters/mailer.js';
 import { openMarketData } from '../adapters/market.js';
 import { openNotifier } from '../adapters/notifier.js';
 import { loadConfig } from '../config/env.js';
@@ -112,14 +113,15 @@ function texte(error: unknown): string {
 }
 
 /**
- * Zero si le run a conclu **et** que ses alertes sont parties. Un sinon, abandon
- * de reconciliation compris — ce n'est pas une anomalie du programme, mais ce
- * n'est pas un succes : le declencheur exterieur doit le voir rouge.
+ * Zero si le run a conclu **et** qu'il a rendu compte — alertes parties, rapport
+ * quotidien parti. Un sinon, abandon de reconciliation compris : ce n'est pas
+ * une anomalie du programme, mais ce n'est pas un succes, et le declencheur
+ * exterieur doit le voir rouge.
  *
  * **Le ping du healthcheck n'entre pas dans le code de sortie**, et c'est
- * decide : son absence est deja ce qui fait sonner la surveillance, alors qu'une
- * alerte qui n'est pas partie ne laisse rien derriere elle. Voir `reported` et
- * `docs/healthcheck.md` §4.
+ * decide : son absence est deja ce qui fait sonner la surveillance, alors qu'un
+ * compte rendu qui n'est pas parti — alerte ou rapport — ne laisse rien derriere
+ * lui. Voir `reported` et `docs/healthcheck.md` §4.
  *
  * La regle elle-meme est `reported` dans `daily.ts`, et non ici : rien ne peut
  * importer ce fichier (A22), donc une regle ecrite ici serait une regle sans
@@ -140,20 +142,23 @@ async function main(argv: readonly string[]): Promise<number> {
   const market = openMarketData(transport);
   const db = openDatabase(config.secrets);
   /*
-   * **Un seul transport pour les deux canaux de surveillance.** `openHttp` ne
-   * retient rien — il ferme sa closure sur un delai, pas sur une connexion —
-   * donc en fabriquer deux ne donnerait que deux exemplaires de la meme
-   * politique, libres de diverger au premier reglage. Ni le notifieur ni le
-   * healthcheck n'ont quoi que ce soit a fermer : un POST par message, aucune
-   * connexion retenue. Aucun des deux n'entre donc dans le `finally` ci-dessous.
+   * **Un seul transport pour les trois canaux du §9.** `openHttp` ne retient
+   * rien — il ferme sa closure sur un delai, pas sur une connexion — donc en
+   * fabriquer trois ne donnerait que trois exemplaires de la meme politique,
+   * libres de diverger au premier reglage. Partager la closure ne couple rien :
+   * chaque appel ouvre et referme sa propre requete, et un Brevo injoignable ne
+   * change rien a ce que ntfy repond. Aucun des trois n'a quoi que ce soit a
+   * fermer — un POST par message, aucune connexion retenue —, donc aucun
+   * n'entre dans le `finally` ci-dessous.
    */
   const http = openHttp();
   const notifier = openNotifier(config.secrets, http);
+  const mailer = openMailer(config.secrets, http);
   const healthcheck = openHealthcheck(config.secrets, http);
 
   try {
     const result = await runDaily({
-      ports: { exchange, market, db, notifier, healthcheck },
+      ports: { exchange, market, db, notifier, mailer, healthcheck },
       clock,
       config,
       gitSha,
