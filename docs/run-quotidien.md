@@ -63,8 +63,8 @@ qui est la clé, et elle est passée à part.
 
 | Code | Signification |
 |---|---|
-| 0 | le run a conclu **et** rendu compte — `COMPLETED`, les quatre lignes de `decisions` écrites ou déjà présentes, la photo du jour prise ou déjà prise, et toutes les alertes du jour parties. |
-| 1 | tout le reste : arguments refusés, configuration invalide, abandon de réconciliation, alerte non partie, erreur. |
+| 0 | le run a conclu **et** rendu compte — `COMPLETED`, les quatre lignes de `decisions` écrites ou déjà présentes, la photo du jour prise ou déjà prise, toutes les alertes du jour parties, et le rapport quotidien parti. |
+| 1 | tout le reste : arguments refusés, configuration invalide, abandon de réconciliation, alerte ou rapport non parti, erreur. |
 
 Un abandon de réconciliation rend **1**. Ce n'est pas une anomalie du programme,
 mais ce n'est pas un succès : le déclencheur extérieur doit le voir rouge.
@@ -75,13 +75,30 @@ run et son compte rendu sont deux choses différentes, et une alerte que personn
 ne verra n'est pas un succès. Rien n'est défait pour autant — les lignes et la
 photo restent écrites.
 
+Un **rapport quotidien non parti** rend 1 pour la même raison : le catalogue des
+sept événements du §9 n'a pas d'entrée pour lui.
+[rapport-quotidien.md](rapport-quotidien.md) section 2 ter.
+
+Ce code de sortie et le **marqueur du ping** sortent du même prédicat, `toutParti`
+dans `daily.ts` : un run qui sort en 1 pour un compte rendu perdu pingue sans son
+marqueur, et réciproquement. C'est voulu — les deux verdicts se lisent à deux
+endroits différents, l'un sur la machine, l'autre chez updown.io, et un opérateur
+qui les verrait se contredire ne saurait pas lequel croire.
+[healthcheck.md](healthcheck.md) §4.
+
+Le **ping** lui-même fait exception : qu'il parte ou non ne change pas le code de
+sortie, parce que son absence est déjà ce qui fait sonner la surveillance.
+
 ## 2. La configuration entre par `src/config/env.ts`, et par lui seul
 
-Huit variables sont requises et sans défaut : les six du §10 — `DATABASE_URL`,
+Dix variables sont requises et sans défaut : les six du §10 — `DATABASE_URL`,
 `COINBASE_API_KEY`, `COINBASE_API_SECRET`, `BREVO_API_KEY`, `NTFY_TOKEN`,
 `HEALTHCHECK_URL` — plus `NTFY_URL` et `NTFY_TOPIC`, sans lesquelles un ntfy
-auto-hébergé n'est joignable nulle part. L'écart avec le §10 est assumé et motivé
-dans [alertes.md](alertes.md) section 1.
+auto-hébergé n'est joignable nulle part, et `BREVO_SENDER` et `BREVO_RECIPIENT`,
+qu'une clé d'API ne remplace pas : elle n'indique ni de qui part le courrier ni à
+qui il va. Les deux écarts avec le §10 sont assumés et motivés dans
+[alertes.md](alertes.md) section 1 et
+[rapport-quotidien.md](rapport-quotidien.md) section 8.
 
 Une absente arrête le démarrage, et le message **nomme la variable sans jamais
 citer sa valeur** — `DATABASE_URL` porte un mot de passe, et un message d'erreur
@@ -96,7 +113,7 @@ refus du préfixe `UBAC_RISK_` et le filtre des littéraux décimaux.
 Aucune variable `UBAC_RISK_*` n'est acceptée : les seuils de risque vivent dans
 `src/core/risk.ts`, couverts à 100 %, et n'ont pas de mode de contournement.
 
-## 3. Ce que le run fait : les étapes 1 à 5, 7 et 9
+## 3. Ce que le run fait : les étapes 1 à 5 et 7 à 9
 
 1. **Healthcheck de démarrage.** La clé répond, et le run dit ce qu'il est.
 2. **Réconciliation**, avant toute décision. Un abandon arrête le run **avant la
@@ -112,15 +129,26 @@ Aucune variable `UBAC_RISK_*` n'est acceptée : les seuils de risque vivent dans
    trace.
 7. **Benchmarks et photo du jour** dans `snapshots` : valeur totale, poids,
    positions, benchmarks. Détail ci-dessous.
-9. **Le ping du healthcheck**, en toute dernière position. Un run conclu pingue
-   avec son marqueur, un abandon pingue sans lui, et une **exception ne pingue
-   pas du tout** : c'est l'absence qui alerte.
+8. **Le rapport quotidien Brevo.** Tout run conclu l'envoie, `trigger NONE`
+   compris ; un run abandonné n'en envoie aucun, et l'alerte le dit déjà.
+   [rapport-quotidien.md](rapport-quotidien.md).
+9. **Le ping du healthcheck**, en toute dernière position — après le rapport,
+   parce qu'il rapporte aussi son sort. Un run conclu **et rendu compte** pingue
+   avec son marqueur ; un abandon pingue sans lui ; un run conclu dont une alerte
+   ou le rapport n'est pas parti pingue sans lui également ; et une **exception
+   ne pingue pas du tout** : c'est l'absence qui alerte.
    [healthcheck.md](healthcheck.md).
 
-L'étape 8 — le rapport Brevo — n'existe pas encore. Les **alertes push** du §9,
-elles, partent entre l'étape 7 et l'étape 9 : après la dernière écriture, avant
-le ping, et aussi sur un abandon ou une exception, où les étapes précédentes
-n'ont pas eu lieu. [alertes.md](alertes.md).
+Les **alertes push** du §9 ne sont pas une étape de cette liste : elles partent
+entre l'étape 7 et l'étape 8 — après la dernière écriture, avant le rapport,
+parce que le canal court passe devant le canal long — et aussi sur un abandon ou
+une exception, où les étapes précédentes n'ont pas eu lieu.
+[alertes.md](alertes.md).
+
+L'ordre des trois canaux est donc **alertes, rapport, ping**, et il n'est pas
+interchangeable : le ping rapporte le sort des deux autres, donc le placer avant
+l'envoi du rapport l'obligerait à affirmer « tout est rendu » sans l'avoir
+seulement tenté.
 
 L'étape 7 est **calculée avant l'étape 5** et **écrite après**. Calculée avant,
 parce que la suspension au drawdown est une entrée de la décision et ne peut pas
@@ -224,11 +252,11 @@ noms d'`eslint.config.js` refuse dans `src/adapters/` et `src/jobs/` tout nom qu
 dénote un placement, une annulation ou un retrait. La clé Coinbase est en lecture
 seule.
 
-Le **rapport quotidien Brevo** appartient à un lot suivant et n'est pas appelé
-ici. `runDaily` rend sa fenêtre OHLCV, ses benchmarks et son drawdown tels quels
-pour qu'il les consomme. Les **alertes push** du §9 et le **ping du healthcheck**,
-eux, partent bien d'ici, après la dernière écriture — les alertes d'abord, le
-ping en dernier : [alertes.md](alertes.md), [healthcheck.md](healthcheck.md).
+**Les trois canaux du §9, eux, partent bien d'ici**, après la dernière écriture
+et dans cet ordre : les **alertes push** ([alertes.md](alertes.md)), puis le
+**rapport quotidien Brevo** ([rapport-quotidien.md](rapport-quotidien.md)), puis
+le **ping du healthcheck** ([healthcheck.md](healthcheck.md)). Le ping est en
+dernier parce qu'il rapporte le sort des deux autres.
 
 ### L'annulation des ordres de plus de 24 h est reportée en phase 3
 

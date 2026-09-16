@@ -12,6 +12,7 @@ import { PORTFOLIO_KEYS, SUSPENSION_MARKER } from '../../src/jobs/snapshot.js';
 import type { DailyCandle, DailyWindow } from '../../src/adapters/market.js';
 import type { HttpOutcome, HttpRequest, HttpSend } from '../../src/adapters/http.js';
 import { RUN_MARKER, openHealthcheck } from '../../src/adapters/healthcheck.js';
+import { openMailer } from '../../src/adapters/mailer.js';
 import type { AlertEvent } from '../../src/adapters/notifier.js';
 import { openNotifier } from '../../src/adapters/notifier.js';
 import type { UbacConfig } from '../../src/config/env.js';
@@ -20,6 +21,7 @@ import { expectedCalendar } from '../../src/fixture/normalise.js';
 import type { Price, Quantity, UsdcAmount } from '../../src/core/types.js';
 import type { DailyPorts, DailyRunResult, RunClock } from '../../src/jobs/daily.js';
 import { DailyRunError, reported, runDaily } from '../../src/jobs/daily.js';
+import { REPORT_TAG } from '../../src/report/daily-report.js';
 import { photo, PORTFOLIO, qty, solde } from './doubles.js';
 
 /**
@@ -39,19 +41,22 @@ import { photo, PORTFOLIO, qty, solde } from './doubles.js';
  * - deux runs le meme jour ne produisent qu'une decision par strategie, parce
  *   que la **base** refuse la seconde — pas parce que le code s'abstient.
  *
- * Les alertes du §9 sont eprouvees **contre le vrai `openNotifier`**, monte sur
- * un transport double. Un double de `Notifier` aurait sonde le cablage sans
- * sonder ce qui part ; ici le corps JSON reellement publie est lisible, et la
- * garantie « une alerte qui echoue ne fait pas tomber le run » est eprouvee sur
- * le code qui la porte et non sur une imitation complaisante. Aucun reseau :
- * `openHttp` n'est jamais appele, le transport est une fonction du test.
+ * Les trois canaux du §9 sont eprouves **contre les vrais `openNotifier`,
+ * `openMailer` et `openHealthcheck`**, montes chacun sur son transport double.
+ * Un double de `Notifier`, de `Mailer` ou de `Healthcheck` aurait sonde le
+ * cablage sans sonder ce qui part ; ici le corps reellement publie est lisible
+ * des trois cotes, et les garanties « un compte rendu qui echoue ne fait pas
+ * tomber le run » sont eprouvees sur le code qui les porte et non sur une
+ * imitation complaisante. Pour le healthcheck cela va plus loin : un double
+ * aurait laisse passer la seule chose qui compte — le marqueur present ou
+ * absent — puisque c'est l'adapter qui le pose. Aucun reseau : `openHttp` n'est
+ * jamais appele, les transports sont trois fonctions du test.
  *
- * **Le healthcheck suit la meme regle**, et pour la meme raison : c'est le vrai
- * `openHealthcheck` qui est monte, sur un second transport double, donc le corps
- * reellement poste est lisible ici. Un double de `Healthcheck` aurait laisse
- * passer la seule chose qui compte — le marqueur present ou absent — puisque
- * c'est l'adapter qui le pose. Les deux transports sont distincts pour que les
- * sondes puissent faire echouer l'un sans l'autre.
+ * **Trois transports et non un.** Les partager aurait rendu impossible de faire
+ * echouer un canal sans les autres, donc impossible de distinguer « l'alerte
+ * n'est pas partie », « le rapport n'est pas parti » et « le ping n'est pas
+ * parti » — trois pannes differentes, dont les deux premieres doivent se voir
+ * dans le pulse et le code de sortie, et la troisieme dans ni l'un ni l'autre.
  */
 
 // --- Doubles ----------------------------------------------------------------
@@ -96,6 +101,8 @@ interface Scenario {
   readonly runDate?: string;
   /** Le transport du notifieur. Par defaut : tout part. */
   readonly transport?: HttpSend;
+  /** Le transport de l'envoi Brevo. Par defaut : tout part. */
+  readonly courrier?: HttpSend;
   /** Le transport du healthcheck. Par defaut : le ping passe. */
   readonly pulse?: HttpSend;
   /**
@@ -104,6 +111,8 @@ interface Scenario {
    * la derniere ecriture.
    */
   readonly panne?: 'keyPermissions' | 'dailyCandles' | 'recordSnapshot';
+  /** Variables d'environnement ajoutees a `ENV` avant `loadConfig`. */
+  readonly env?: Readonly<Record<string, string>>;
 }
 
 /** Ce que leve le port en panne. Reconnaissable, et sans rapport avec le metier. */
@@ -128,6 +137,8 @@ interface Harnais {
   readonly photos: Map<string, SnapshotRecord>;
   /** Les publications ntfy reellement tentees, corps JSON compris. */
   readonly pushes: { readonly url: string; readonly payload: NtfyPayload }[];
+  /** Les envois Brevo reellement tentes, corps JSON compris. */
+  readonly courriers: { readonly url: string; readonly payload: BrevoPayload }[];
   /** Les pings reellement tentes, corps en clair compris. Au plus un par run. */
   readonly pings: { readonly url: string; readonly body: string }[];
 }
@@ -149,6 +160,19 @@ interface NtfyPayload {
 }
 
 /**
+ * Le corps JSON que `mailer.ts` publie sur `/v3/smtp/email`. La forme exacte
+ * que Brevo a acceptee en reel ; `test/adapters/mailer.test.ts` la relit champ
+ * par champ, ici on relit ce que **le run** y met.
+ */
+interface BrevoPayload {
+  readonly sender: { readonly email: string };
+  readonly to: readonly { readonly email: string }[];
+  readonly subject: string;
+  readonly htmlContent: string;
+  readonly tags: readonly string[];
+}
+
+/**
  * L'environnement minimal que `src/config/env.ts` exige. Valeurs inventees et
  * inertes : aucun secret ne vit dans le depot, et `loadConfig` prend son
  * environnement en parametre precisement pour ne pas muter celui du processus.
@@ -158,6 +182,8 @@ const ENV = {
   COINBASE_API_KEY: 'cle-de-test',
   COINBASE_API_SECRET: 'secret-de-test',
   BREVO_API_KEY: 'brevo-de-test',
+  BREVO_SENDER: 'ubac@exemple.test',
+  BREVO_RECIPIENT: 'operateur@exemple.test',
   NTFY_TOKEN: 'ntfy-de-test',
   HEALTHCHECK_URL: 'https://exemple.invalid/ping',
   NTFY_URL: 'https://exemple.invalid/ntfy',
@@ -186,6 +212,7 @@ function harnais(scenario: Scenario = {}): Harnais {
    */
   const photos = new Map<string, SnapshotRecord>();
   const pushes: { url: string; payload: NtfyPayload }[] = [];
+  const courriers: { url: string; payload: BrevoPayload }[] = [];
   const pings: { url: string; body: string }[] = [];
   if (scenario.snapshot !== undefined) photos.set(scenario.snapshot.runDate, scenario.snapshot);
   const runDate = scenario.runDate ?? RUN_DATE;
@@ -196,13 +223,20 @@ function harnais(scenario: Scenario = {}): Harnais {
     balances: scenario.balances ?? [],
   };
 
-  const config = loadConfig(ENV);
+  const config = loadConfig({ ...ENV, ...scenario.env });
   const transport: HttpSend = async (request: HttpRequest): Promise<HttpOutcome> => {
     appels.push('notify');
     pushes.push({ url: request.url, payload: JSON.parse(request.body) as NtfyPayload });
     return scenario.transport === undefined
       ? { status: 'OK', httpStatus: 200 }
       : scenario.transport(request);
+  };
+  const postier: HttpSend = async (request: HttpRequest): Promise<HttpOutcome> => {
+    appels.push('sendReport');
+    courriers.push({ url: request.url, payload: JSON.parse(request.body) as BrevoPayload });
+    return scenario.courrier === undefined
+      ? { status: 'OK', httpStatus: 201 }
+      : scenario.courrier(request);
   };
   const pulse: HttpSend = async (request: HttpRequest): Promise<HttpOutcome> => {
     appels.push('ping');
@@ -218,6 +252,7 @@ function harnais(scenario: Scenario = {}): Harnais {
     table,
     photos,
     pushes,
+    courriers,
     pings,
     gitSha: GIT_SHA,
     clock: { today: () => runDate, instant: () => new Date(`${runDate}T07:00:00.000Z`) },
@@ -285,6 +320,7 @@ function harnais(scenario: Scenario = {}): Harnais {
         },
       },
       notifier: openNotifier(config.secrets, transport),
+      mailer: openMailer(config.secrets, postier),
       healthcheck: openHealthcheck(config.secrets, pulse),
     },
   };
@@ -364,9 +400,11 @@ describe('§8 etapes 1 a 5 — l’enchainement du run', () => {
       'recordDecision',
       // La photo ferme le run : un abandon rend avant d'y arriver.
       'recordSnapshot',
-      // Et le ping ferme le tout, apres la derniere ecriture comme apres la
-      // derniere alerte. Un run sans incident n'en pousse aucune, d'ou la
-      // suite directe ; le rang relatif des trois est sonde plus bas.
+      // Puis le compte rendu, hors de l'enchainement : ici rien n'alerte, donc
+      // le rapport vient seul apres la derniere ecriture.
+      'sendReport',
+      // Et le ping ferme le tout, apres la derniere ecriture comme apres le
+      // dernier compte rendu. Le rang relatif des trois est sonde plus bas.
       'ping',
     ]);
   });
@@ -802,6 +840,302 @@ describe('§6, §8 etape 7 — la photo du jour et la suspension au drawdown', (
 });
 
 
+// --- §9, le rapport quotidien ----------------------------------------------
+
+/** Le courrier reellement poste, ou l'echec de la sonde si rien n'est parti. */
+function courrier(h: Harnais): BrevoPayload {
+  const envoye = h.courriers[0]?.payload;
+  if (envoye === undefined) throw new Error('aucun rapport n’a ete poste');
+  return envoye;
+}
+
+describe('§9 — le rapport quotidien part par Brevo', () => {
+  /*
+   * **Le piege nomme par le brief.** Un run sans action doit quand meme dire a
+   * l'operateur que le systeme a tourne : sans ce courrier, une journee calme ne
+   * se distingue pas d'un job qui n'a pas demarre. Le §9 demande d'ailleurs la
+   * decision du jour « y compris quand le trigger est NONE ».
+   */
+  it('part meme sur trigger NONE, et le sujet le dit', async () => {
+    const h = harnais({ balances: DANS_LA_BANDE });
+    const result = complete(await lance(h));
+
+    expect(result.outcomes.every((o) => o.intent.trigger === 'NONE')).toBe(true);
+    expect(h.courriers).toHaveLength(1);
+    expect(courrier(h).subject).toBe(
+      `Ubac ${RUN_DATE} — 100000.00 USDC — aucun declenchement`,
+    );
+    expect(result.report.mail).toEqual({ status: 'SENT', httpStatus: 201 });
+  });
+
+  /* Les deux autres sujets : le declenchement, et la suspension qui passe devant. */
+  it('part aussi quand le run declenche, et quand il est suspendu', async () => {
+    const declenche = harnais({ balances: HORS_BANDE });
+    await lance(declenche);
+    expect(courrier(declenche).subject).toContain('CASH_BAND, 2 jambe(s)');
+
+    const suspendu = harnais({ balances: HORS_BANDE, snapshot: veille('200000') });
+    await lance(suspendu);
+    expect(courrier(suspendu).subject).toContain('SUSPENDU (recul -50.00 %)');
+  });
+
+  it('porte l’expediteur, le destinataire et le tag daily-report du §9', async () => {
+    const h = harnais({ balances: DANS_LA_BANDE });
+    await lance(h);
+
+    const poste = courrier(h);
+    expect(poste.sender).toEqual({ email: 'ubac@exemple.test' });
+    expect(poste.to).toEqual([{ email: 'operateur@exemple.test' }]);
+    expect(poste.tags).toContain(REPORT_TAG);
+    expect(h.courriers[0]?.url).toBe('https://api.brevo.com/v3/smtp/email');
+  });
+
+  /*
+   * Le corps est celui du rendu, et non une seconde mise en forme du run : la
+   * sonde lit trois sections que `daily-report.ts` fabrique et que rien d'autre
+   * ici ne saurait produire. `test/report/daily-report.test.ts` tient le rendu
+   * ligne a ligne ; ce qui est etabli ici est le **branchement**.
+   */
+  it('poste le rendu du §9, pas une seconde mise en forme', async () => {
+    const h = harnais({ balances: DANS_LA_BANDE });
+    await lance(h);
+
+    const html = courrier(h).htmlContent;
+    expect(html).toContain('Distance au prochain declenchement');
+    expect(html).toContain('Decision du jour');
+    expect(html).toContain('Comparaison');
+    expect(html).toContain(`rapport du ${RUN_DATE}`);
+    // Le prix vient du dernier jour clos, pas du jour de run.
+    expect(html).toContain(`Prix de cloture du ${PRICED_ON}`);
+  });
+
+  /*
+   * La production n'arme pas le declencheur B (C13), et c'est **la configuration
+   * de production** que le rapport confronte aux poids : passer `config.rebalance`
+   * tel quel afficherait une bande de ratio que la production n'arbitre pas.
+   */
+  it('confronte les poids aux bandes de la production, declencheur B desarme', async () => {
+    const h = harnais({ balances: DANS_LA_BANDE });
+    await lance(h);
+
+    const html = courrier(h).htmlContent;
+    expect(html).toContain('Bande de cash (A)');
+    expect(html).not.toContain('Bande de ratio (B)');
+    expect(html).toContain('Declencheur B desarme');
+  });
+
+  /*
+   * La sonde qui separe reellement `config.rebalance` de la configuration de
+   * production. `UBAC_RATIO_BAND_ENABLED` ne decide de rien dans le run — c'est
+   * le **nom** de la configuration qui arme B (C13), et `rebalance` ne l'arme
+   * pas —, mais elle vit dans `config.rebalance`. Passer celui-ci au rendu
+   * afficherait une bande de ratio que la production n'arbitre jamais, avec une
+   * distance au declenchement qui ne declencherait rien : une information de
+   * confiance, et fausse.
+   *
+   * Sans cette sonde, les deux formes se confondent sur l'environnement par
+   * defaut, ou le drapeau vaut deja faux des deux cotes.
+   */
+  it('ignore UBAC_RATIO_BAND_ENABLED : la production n’arbitre pas le ratio', async () => {
+    const h = harnais({ balances: DANS_LA_BANDE, env: { UBAC_RATIO_BAND_ENABLED: 'true' } });
+    const result = complete(await lance(h));
+
+    // La variable est bien armee dans la configuration chargee...
+    expect(h.config.rebalance.ratioBandEnabled).toBe(true);
+    // ...et la production continue de ne pas declencher sur le ratio.
+    const production = result.outcomes.find((o) => !o.isShadow);
+    expect(production?.strategy).toBe('rebalance');
+    // Le rapport suit la production, pas la variable.
+    const html = courrier(h).htmlContent;
+    expect(html).not.toContain('Bande de ratio (B)');
+    expect(html).toContain('Declencheur B desarme');
+  });
+
+  /*
+   * Le P&L du jour est le quotient de deux indices consecutifs : il demande la
+   * photo de la **veille**. Le run la porte dans `previousSnapshot` — relire
+   * `latestSnapshot()` apres l'etape 7 rendrait celle d'aujourd'hui, le quotient
+   * vaudrait 1 et le rapport annoncerait une journee plate qui n'a pas eu lieu.
+   */
+  it('lit la photo d’avant le run pour le P&L du jour, pas celle qu’il vient d’ecrire', async () => {
+    const h = harnais({ balances: HORS_BANDE, snapshot: veille('100000') });
+    const result = complete(await lance(h));
+
+    expect(result.previousSnapshot?.runDate).toBe(PRICED_ON);
+    const html = courrier(h).htmlContent;
+    expect(html).toContain('P&L jour (TWR)');
+    // La note ne parait que sur un P&L indisponible : ici la valeur est rendue.
+    expect(html).not.toContain('P&L du jour :');
+  });
+
+  /*
+   * Au premier run il n'y a pas de veille, et le rendu le **dit** avec son
+   * motif plutot que d'afficher un zero : un zero se lirait « journee plate ».
+   * C'est le pendant de la sonde precedente — les deux branches de `previous`
+   * arrivent bien au courrier.
+   */
+  it('dit pourquoi il ne sait pas, au premier run, plutot que d’afficher un zero', async () => {
+    const h = harnais({ balances: DANS_LA_BANDE });
+    const result = complete(await lance(h));
+
+    expect(result.previousSnapshot).toBeUndefined();
+    expect(courrier(h).htmlContent).toContain('aucune photo de reference');
+  });
+
+  /*
+   * L'ordre des deux canaux : le court d'abord, le long ensuite — et les deux
+   * apres la derniere ecriture. Un rapport envoye en cours de route porterait un
+   * etat que le run n'aurait finalement pas ecrit.
+   */
+  it('part apres les alertes, et apres la derniere ecriture', async () => {
+    const h = harnais({ balances: HORS_BANDE, snapshot: veille('200000') });
+    await lance(h);
+
+    expect(h.appels.indexOf('sendReport')).toBeGreaterThan(h.appels.lastIndexOf('notify'));
+    expect(h.appels.indexOf('sendReport')).toBeGreaterThan(h.appels.lastIndexOf('recordSnapshot'));
+    expect(h.appels.indexOf('sendReport')).toBeGreaterThan(h.appels.lastIndexOf('recordDecision'));
+  });
+
+  /*
+   * **La seconde decision du lot.** Un run abandonne n'envoie pas de rapport :
+   * le rendu demande un run conclu, l'abandon est deja parti en push urgent, et
+   * un courrier dont cinq sections sur six diraient « indisponible » apprendrait
+   * a ne plus ouvrir le courrier. Le cas prend une **branche nommee**, qui
+   * journalise son motif — il ne se resout pas par l'absence de code.
+   */
+  it('n’envoie aucun rapport sur un abandon, et dit pourquoi', async () => {
+    const h = harnais({ balances: [solde('BTC', '0'), solde('ETH', '0'), solde('USDC', '0')] });
+    const result = await lance(h);
+
+    expect(result.status).toBe('ABORTED');
+    expect(h.courriers).toEqual([]);
+    expect(result.report.mail.status).toBe('SKIPPED');
+    expect(h.lignes.some((l) => l.includes('rapport quotidien non envoye'))).toBe(true);
+    // Le silence est ferme par l'autre canal, pas par le rapport.
+    expect(evenements(h)).toEqual(['RUN_ABORTED']);
+  });
+
+  it('n’envoie aucun rapport sur une divergence de reconciliation non plus', async () => {
+    const h = harnais({
+      balances: DANS_LA_BANDE,
+      snapshot: photo({ BTC: qty('0.9'), ETH: qty('12'), USDC: qty('30000') }),
+    });
+    const result = await lance(h);
+
+    expect(result.report.mail.status).toBe('SKIPPED');
+    expect(h.courriers).toEqual([]);
+    expect(evenements(h)).toEqual(['RECONCILIATION_DRIFT']);
+  });
+
+  it('n’envoie aucun rapport quand une exception echappe au run', async () => {
+    const h = harnais({ balances: DANS_LA_BANDE, runDate: '2026-02-30' });
+
+    await expect(lance(h)).rejects.toThrow(DailyRunError);
+    expect(h.courriers).toEqual([]);
+  });
+
+  /*
+   * **Le troisieme point du brief.** Un echec d'envoi ne defait rien : le run
+   * garde son statut, ses quatre lignes et sa photo. Mais il n'est pas
+   * silencieux — ligne de journal, sort rendu, et code de sortie non nul par
+   * `reported`.
+   */
+  it('un echec d’envoi ne defait rien du run, et ne passe pas en silence', async () => {
+    const h = harnais({
+      balances: DANS_LA_BANDE,
+      courrier: () =>
+        Promise.resolve<HttpOutcome>({
+          status: 'FAILED',
+          failure: { kind: 'REFUS', httpStatus: 401 },
+        }),
+    });
+    const result = complete(await lance(h));
+
+    expect(h.table.size).toBe(4);
+    expect(h.photos.has(RUN_DATE)).toBe(true);
+    expect(result.report.mail).toEqual({
+      status: 'FAILED',
+      reason: 'refus du serveur, HTTP 401',
+    });
+    expect(h.lignes.some((l) => l.includes('rapport quotidien : NON PARTI'))).toBe(true);
+    expect(reported(result)).toBe(false);
+  });
+
+  /*
+   * La garantie « ne rejette jamais » vit dans `mailer.ts`, en un seul endroit.
+   * Le run ne l'entoure d'aucun `try` : si elle cedait, le run tomberait apres
+   * avoir tout ecrit — exactement ce que ce lot ne doit pas faire.
+   */
+  it('un transport qui leve ne fait pas tomber le run', async () => {
+    const h = harnais({
+      balances: DANS_LA_BANDE,
+      courrier: () => {
+        throw new TypeError('socket fermee');
+      },
+    });
+    const result = complete(await lance(h));
+
+    expect(h.table.size).toBe(4);
+    expect(result.report.mail).toEqual({ status: 'FAILED', reason: 'envoi en echec' });
+  });
+
+  /*
+   * Les deux canaux ne tombent pas ensemble : une panne ntfy n'empeche pas le
+   * rapport de partir, et une panne Brevo n'empeche pas l'alerte. Les partager
+   * aurait rendu cette propriete invisible.
+   */
+  it('une panne d’un canal n’emporte pas l’autre', async () => {
+    const ntfyMuet = harnais({
+      balances: HORS_BANDE,
+      snapshot: veille('200000'),
+      transport: () =>
+        Promise.resolve<HttpOutcome>({
+          status: 'FAILED',
+          failure: { kind: 'REFUS', httpStatus: 401 },
+        }),
+    });
+    const sansAlerte = complete(await lance(ntfyMuet));
+    expect(sansAlerte.report.alerts[0]?.status).toBe('FAILED');
+    expect(sansAlerte.report.mail.status).toBe('SENT');
+
+    const brevoMuet = harnais({
+      balances: HORS_BANDE,
+      snapshot: veille('200000'),
+      courrier: () =>
+        Promise.resolve<HttpOutcome>({
+          status: 'FAILED',
+          failure: { kind: 'RESEAU' },
+        }),
+    });
+    const sansRapport = complete(await lance(brevoMuet));
+    expect(sansRapport.report.alerts[0]?.status).toBe('SENT');
+    expect(sansRapport.report.mail).toEqual({ status: 'FAILED', reason: 'echec reseau' });
+  });
+
+  /*
+   * Le code de sortie du point d'entree sort de `reported`, et le rapport y
+   * entre au meme titre que les alertes : une journee que personne ne lira n'est
+   * pas un succes. C'est le seul endroit ou un rapport non parti se voie de
+   * l'exterieur — le catalogue des sept evenements du §9 n'a pas d'entree pour
+   * lui, et en detourner une dirait quelque chose de faux sur le canal urgent.
+   */
+  it('un rapport non parti fait un run non reussi, alertes parties ou non', async () => {
+    const sain = await lance(harnais({ balances: DANS_LA_BANDE }));
+    expect(reported(sain)).toBe(true);
+
+    const muet = await lance(
+      harnais({
+        balances: DANS_LA_BANDE,
+        courrier: () =>
+          Promise.resolve<HttpOutcome>({ status: 'FAILED', failure: { kind: 'INCONNU' } }),
+      }),
+    );
+    expect(muet.status).toBe('COMPLETED');
+    expect(muet.report.alerts).toEqual([]);
+    expect(reported(muet)).toBe(false);
+  });
+});
+
 // --- §9, les alertes --------------------------------------------------------
 
 /**
@@ -1048,13 +1382,21 @@ describe('§9 — les alertes push', () => {
  * litteraux divergent et que celui qui n'a pas de sonde gagne.
  */
 describe('§9 — le ping du healthcheck', () => {
-  it('pingue en dernier, apres la derniere alerte et apres la derniere ecriture', async () => {
+  /*
+   * Le ping est en **toute** derniere position, et le rapport en fait partie :
+   * `pulseOf` rapporte le sort des deux canaux, donc pinguer avant l'envoi
+   * Brevo reviendrait a affirmer « tout est rendu » sans l'avoir seulement
+   * tente. La seule facon de dire qu'un rapport n'est pas parti est d'avoir
+   * essaye de l'envoyer d'abord — d'ou l'ordre sonde ici cran par cran.
+   */
+  it('pingue en dernier, apres le rapport, apres la derniere alerte et apres la derniere ecriture', async () => {
     const h = harnais({ balances: HORS_BANDE, snapshot: veille('200000') });
     await lance(h);
 
     expect(h.appels[h.appels.length - 1]).toBe('ping');
     expect(h.appels.lastIndexOf('recordSnapshot')).toBeLessThan(h.appels.indexOf('ping'));
     expect(h.appels.lastIndexOf('notify')).toBeLessThan(h.appels.indexOf('ping'));
+    expect(h.appels.lastIndexOf('sendReport')).toBeLessThan(h.appels.indexOf('ping'));
   });
 
   it('un run conclu pingue avec le marqueur, et dit ce qui aide a investiguer', async () => {
@@ -1144,7 +1486,43 @@ describe('§9 — le ping du healthcheck', () => {
     expect(corpsDuPing(h)).not.toContain(RUN_MARKER);
     expect(corpsDuPing(h)).toContain('RUN_NON_RENDU');
     expect(corpsDuPing(h)).toContain('alertes_non_parties=1');
+    // Le rapport, lui, est bien parti : le corps doit dire laquelle des deux
+    // pannes a eu lieu, pas seulement qu'il y en a eu une.
+    expect(corpsDuPing(h)).toContain('rapport_non_parti=non');
     expect(result.report.ping.marked).toBe(false);
+  });
+
+  /*
+   * **Le cas que la greffe en deux fois avait failli laisser passer.** Aucune
+   * alerte perdue — il n'y en a meme aucune a envoyer — et pourtant le run n'a
+   * pas rendu compte : Brevo a refuse. Le motif est exactement celui de
+   * l'alerte perdue, mot pour mot : la panne d'un canal est la panne que ce
+   * canal ne peut pas signaler, et le catalogue des sept evenements du §9 n'a
+   * pas d'entree pour « rapport non envoye ».
+   *
+   * Sans cette sonde, un echec Brevo pingait **avec** le marqueur pendant que
+   * `reported` valait faux : updown lisait `UP`, le declencheur lisait 1, et
+   * les deux verdicts portaient sur le meme run.
+   */
+  it('un run conclu dont le rapport n’est pas parti pingue SANS le marqueur', async () => {
+    const h = harnais({
+      balances: DANS_LA_BANDE,
+      courrier: () =>
+        Promise.resolve<HttpOutcome>({
+          status: 'FAILED',
+          failure: { kind: 'REFUS', httpStatus: 401 },
+        }),
+    });
+    const result = complete(await lance(h));
+
+    expect(h.table.size).toBe(4);
+    expect(result.report.alerts).toEqual([]);
+    expect(corpsDuPing(h)).not.toContain(RUN_MARKER);
+    expect(corpsDuPing(h)).toContain('RUN_NON_RENDU');
+    expect(corpsDuPing(h)).toContain('alertes_non_parties=0');
+    expect(corpsDuPing(h)).toContain('rapport_non_parti=oui');
+    expect(result.report.ping.marked).toBe(false);
+    expect(reported(result)).toBe(false);
   });
 
   /*
@@ -1219,5 +1597,116 @@ describe('§9 — le ping du healthcheck', () => {
     expect([...parti.lignes, ...rate.lignes].join('\n')).not.toContain(
       ENV.HEALTHCHECK_URL,
     );
+  });
+});
+
+// --- §9, la coherence des deux verdicts -------------------------------------
+
+/**
+ * **Le code de sortie et le marqueur du ping disent-ils la meme chose.**
+ *
+ * Ce sont les deux seuls verdicts qu'un run laisse derriere lui, et ils ne se
+ * lisent pas au meme endroit : le premier sur la machine, par le declencheur ;
+ * le second chez updown.io, qui cherche `RUN_CONCLU` dans le corps. Ils sortent
+ * du **meme predicat**, `toutParti`, et cette suite est ce qui interdit qu'ils
+ * divergent le jour ou l'un des deux chemins change.
+ *
+ * Le motif de les tenir ensemble est le meme des deux cotes : la panne d'un
+ * canal est exactement la panne que ce canal ne peut pas signaler. Un operateur
+ * qui verrait `UP` sur updown et 1 dans son declencheur ne saurait pas lequel
+ * croire — et choisirait celui qui l'arrange.
+ *
+ * L'enumeration est exhaustive sur ce qu'un run peut rendre, et chaque ligne
+ * nomme ses deux verdicts a la main plutot que de les deriver l'un de l'autre :
+ * une sonde qui comparerait seulement `reported` et `marked` passerait au vert
+ * le jour ou les deux tomberaient ensemble sur la mauvaise valeur.
+ *
+ * La sixieme fin — l'exception — n'a pas de ligne ici : elle ne rend aucun
+ * resultat et ne pingue pas du tout, ce que sondent « une exception ne pingue
+ * PAS » et « aucun ping quand %s leve ».
+ */
+describe('§9 — le code de sortie et le marqueur ne divergent pas', () => {
+  const refus = (): Promise<HttpOutcome> =>
+    Promise.resolve<HttpOutcome>({ status: 'FAILED', failure: { kind: 'REFUS', httpStatus: 401 } });
+
+  /** Un run dont tout part : rien a alerter, rapport accepte. */
+  const CONCLU = () => harnais({ balances: DANS_LA_BANDE });
+  /** Le rebalancement alerte, et la premiere alerte n'aboutit pas. */
+  const ALERTE_PERDUE = () =>
+    harnais({ balances: HORS_BANDE, snapshot: veille('200000'), transport: transportFaillible(1) });
+  /** Rien a alerter, mais Brevo refuse. */
+  const RAPPORT_PERDU = () => harnais({ balances: DANS_LA_BANDE, courrier: refus });
+  /** Les deux canaux muets sur le meme run. */
+  const LES_DEUX_PERDUS = () =>
+    harnais({
+      balances: HORS_BANDE,
+      snapshot: veille('200000'),
+      transport: transportFaillible(1),
+      courrier: refus,
+    });
+  /** Valorisation impossible : le run rend avant d'ecrire quoi que ce soit. */
+  const ABANDON = () =>
+    harnais({ balances: [solde('BTC', '0'), solde('ETH', '0'), solde('USDC', '0')] });
+  /** Tout part, sauf le ping lui-meme — le seul echec qui ne compte dans aucun des deux. */
+  const PING_PERDU = () => harnais({ balances: DANS_LA_BANDE, pulse: refus });
+
+  it.each([
+    ['un run conclu et entierement rendu', CONCLU, true, true],
+    ['un run conclu dont une alerte n’est pas partie', ALERTE_PERDUE, false, false],
+    ['un run conclu dont le rapport n’est pas parti', RAPPORT_PERDU, false, false],
+    ['un run conclu dont aucun des deux n’est parti', LES_DEUX_PERDUS, false, false],
+    ['un run abandonne', ABANDON, false, false],
+    ['un run conclu dont seul le ping n’est pas parti', PING_PERDU, true, true],
+  ])(
+    '%s : le code de sortie et le marqueur s’accordent',
+    async (_cas, scenario, reussi, marque) => {
+      const h = scenario();
+      const result = await lance(h);
+
+      expect(reported(result)).toBe(reussi);
+      expect(result.report.ping.marked).toBe(marque);
+      /*
+       * Et la meme chose lue sur le corps reellement poste, pas sur le sort
+       * rendu : c'est cette chaine-la, et elle seule, qu'updown.io cherche. Un
+       * `marked` juste sur un corps faux serait une panne invisible.
+       */
+      expect(corpsDuPing(h)?.includes(RUN_MARKER)).toBe(marque);
+    },
+  );
+
+  /*
+   * L'invariant, dit une fois pour toutes plutot que ligne par ligne : **tout
+   * run qui rend un resultat porte le meme verdict des deux cotes.** C'est la
+   * propriete que la fusion des deux predicats achete, et la seule facon de la
+   * perdre serait d'ecrire un second predicat quelque part.
+   */
+  it('quel que soit le run, reported et le marqueur du ping sont le meme booleen', async () => {
+    const scenarios = [CONCLU, ALERTE_PERDUE, RAPPORT_PERDU, LES_DEUX_PERDUS, ABANDON, PING_PERDU];
+
+    for (const scenario of scenarios) {
+      const h = scenario();
+      const result = await lance(h);
+
+      expect(result.report.ping.marked).toBe(reported(result));
+    }
+  });
+
+  /*
+   * Le corps d'un run non rendu nomme **lequel** des deux canaux a manque, et
+   * les trois combinaisons se distinguent. Sans cela, l'operateur qui voit
+   * sonner updown sait qu'un compte rendu manque mais pas lequel — or une
+   * alerte perdue et un courrier perdu n'ont ni la meme cause ni la meme
+   * urgence.
+   */
+  it.each([
+    ['une alerte seule', ALERTE_PERDUE, 'alertes_non_parties=1', 'rapport_non_parti=non'],
+    ['le rapport seul', RAPPORT_PERDU, 'alertes_non_parties=0', 'rapport_non_parti=oui'],
+    ['les deux', LES_DEUX_PERDUS, 'alertes_non_parties=1', 'rapport_non_parti=oui'],
+  ])('%s : le corps dit lequel des deux canaux a manque', async (_cas, scenario, ...attendus) => {
+    const h = scenario();
+    await lance(h);
+
+    expect(corpsDuPing(h)).toContain('RUN_NON_RENDU');
+    for (const attendu of attendus) expect(corpsDuPing(h)).toContain(attendu);
   });
 });

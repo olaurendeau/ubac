@@ -77,9 +77,17 @@ declare const bougies: Completed['history']['BTC'];
 const jours: readonly ReportMarketDay[] = bougies;
 void jours;
 
-/** V6 — la photo precedente, telle que la base la rend, est une reference valable. */
+/**
+ * V6 — la photo precedente, telle que la base la rend, est une reference
+ * valable, et c'est **celle que le run porte** : `previousSnapshot` est lu par
+ * le branchement de Q5b, donc la compatibilite est fermee sur le champ reel et
+ * pas seulement sur le type de l'adapter. `undefined` en fait partie — au
+ * premier run il n'y a pas de veille, et le rendu le dit plutot que de se
+ * replier sur une variation de valeur brute (C27).
+ */
 const veille: PreviousSnapshot = photo;
-void veille;
+const veilleDuRun: PreviousSnapshot | undefined = acheve.previousSnapshot;
+void [veille, veilleDuRun];
 
 /** V7 — et la forme n'exige rien de plus : sans cette sonde, `CompletedRun` gagnerait une exigence que seul le branchement decouvrirait. */
 declare function rendre(run: CompletedRun): void;
@@ -115,7 +123,14 @@ type NonLus = Exclude<keyof Completed, keyof CompletedRun>;
  * telephone donnerait la meme nouvelle deux fois, la seconde avec un jour de
  * retard. Ce qui manque au rapport d'un abandon, c'est le rapport lui-meme —
  * un run abandonne n'en produit aucun — et cela se regle par l'alerte, pas par
- * une colonne de plus.
+ * une colonne de plus. Q5b n'a rien change a cette decision : `deliverReport`
+ * rend `SKIPPED` sur un abandon, avec son motif.
+ *
+ * `previousSnapshot` rejoint la liste en Q5b, et c'est le cas inverse : le
+ * rapport **le lit**, mais pas a travers `CompletedRun`. C'est le second
+ * parametre du rendu, `DailyReportInput.previous`, et V6 ci-dessus etablit
+ * qu'un `SnapshotRecord` y est assignable. Il ne peut donc pas entrer dans la
+ * forme du run acheve sans y etre lu deux fois.
  */
 type NonLusAttendus =
   | 'status'
@@ -124,7 +139,8 @@ type NonLusAttendus =
   | 'cashFlows'
   | 'observations'
   | 'snapshot'
-  | 'report';
+  | 'report'
+  | 'previousSnapshot';
 type MemeEnsemble<A extends B, B> = A;
 declare const nonLus: [MemeEnsemble<NonLus, NonLusAttendus>, MemeEnsemble<NonLusAttendus, NonLus>];
 void nonLus;

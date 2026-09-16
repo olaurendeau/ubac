@@ -62,8 +62,15 @@ littéraux divergent, et c'est celui qui n'a pas de sonde qui gagne.
 |---|---|---|---|
 | conclu **et** rendu compte | oui | `RUN_CONCLU` + `run_date`, `git_sha`, `decisions`, `alertes` | `UP` |
 | abandonné | oui | `RUN_ABANDONNE` + `etape`, `code` | `DOWN` |
-| conclu, alerte non partie | oui | `RUN_NON_RENDU` + `alertes_non_parties` | `DOWN` |
+| conclu, alerte ou rapport non parti | oui | `RUN_NON_RENDU` + `alertes_non_parties`, `rapport_non_parti` | `DOWN` |
 | **exception** | **non** | — | `DOWN` par absence |
+
+Le troisième cas couvre **les deux canaux du compte rendu**, et le corps dit
+lequel a manqué : `alertes_non_parties=0` avec `rapport_non_parti=oui` est le cas
+le plus probable des trois, ntfy et Brevo n'ayant aucune raison de tomber
+ensemble. L'opérateur qui voit sonner updown doit pouvoir dire s'il lui manque
+une alerte ou son courrier du matin : ce ne sont ni la même cause ni la même
+urgence.
 
 Un **abandon pingue**, et c'est la moitié de la règle qu'on oublie : le job a
 tourné, il n'a simplement pas abouti. La différence doit se voir côté
@@ -89,28 +96,61 @@ milieu des lectures, après la dernière écriture — sont sondées une par une
 « aucun chemin » se sonde en les prenant un par un, pas en croyant la phrase.
 
 Le ping vient **en dernier** parce qu'il rapporte ce que le run a *fait savoir*,
-et les alertes en font partie. Le placer avant aurait obligé à pinguer sur un
-compte rendu pas encore rendu.
+et les deux canaux en font partie : les alertes, puis le rapport Brevo
+([rapport-quotidien.md](rapport-quotidien.md)). Le placer avant l'envoi du
+rapport l'obligerait à pinguer sur un courrier pas encore parti, donc à affirmer
+« tout est rendu » sans l'avoir seulement tenté — la seule façon de dire qu'un
+rapport n'est pas parti est d'avoir essayé de l'envoyer d'abord. L'ordre du run
+est donc **alertes, rapport, ping**, et `test/jobs/daily.test.ts` le sonde cran
+par cran.
 
 ## 4. La tension, et comment elle est tranchée
 
 Deux règles déjà posées se tendent l'une l'autre : « le run est un succès si et
-seulement si ses alertes sont parties » ([alertes.md](alertes.md) section 2 ter)
-et « une alerte en échec ne fait pas échouer le run ». Que vaut, pour le
-healthcheck, un run abouti dont l'alerte n'est pas partie ?
+seulement si son compte rendu est parti » ([alertes.md](alertes.md) section 2 ter,
+[rapport-quotidien.md](rapport-quotidien.md) section 2 ter) et « un compte rendu
+en échec ne fait pas échouer le run ». Que vaut, pour le healthcheck, un run
+abouti dont l'alerte — ou le rapport — n'est pas partie ?
 
 **Il pingue sans le marqueur**, sous son propre état `RUN_NON_RENDU`.
 
-Le motif tient en une phrase : **la panne d'une alerte est exactement la panne
-qu'aucune alerte ne peut signaler.** Si ntfy est tombé, le canal court est muet
-par définition ; le healthcheck est le seul canal restant qui ne dépende pas de
-lui. Se taire là reviendrait à faire dépendre la surveillance du système
-surveillé — c'est-à-dire à perdre la raison d'être du lot.
+Le motif tient en une phrase : **la panne d'un canal est exactement la panne que
+ce canal ne peut pas signaler.** Si ntfy est tombé, le canal court est muet par
+définition ; si Brevo est tombé, le canal long l'est aussi, et le catalogue des
+sept événements n'a volontairement pas d'entrée pour « rapport non envoyé ». Le
+healthcheck est le seul canal restant qui ne dépende ni de l'un ni de l'autre. Se
+taire là reviendrait à faire dépendre la surveillance du système surveillé —
+c'est-à-dire à perdre la raison d'être du lot.
 
-C'est le **même prédicat** que le code de sortie, `toutesParties` dans
-`daily.ts`, et ce n'est pas une coïncidence : deux prédicats voisins auraient
-divergé, et c'est celui qu'on ne relit pas — le ping, parti chez un tiers — qui
-se serait tu le jour où il fallait qu'il parle.
+C'est le **même prédicat** que le code de sortie, `toutParti` dans `daily.ts`, et
+ce n'est pas une coïncidence : deux prédicats voisins auraient divergé, et c'est
+celui qu'on ne relit pas — le ping, parti chez un tiers — qui se serait tu le
+jour où il fallait qu'il parle.
+
+### Un seul prédicat, et la suite qui l'interdit de se dédoubler
+
+Les deux greffes ont été posées en deux fois : les alertes d'abord (Q6a2), le
+rapport ensuite (Q5b), le healthcheck entre les deux (Q6b). À la fusion, chacune
+apportait sa version de « le compte rendu est-il parti » — le code de sortie
+voyait le rapport, le pulse ne le voyait pas. Un échec Brevo aurait alors pingué
+**avec** le marqueur pendant que le déclencheur lisait 1 : `UP` d'un côté, rouge
+de l'autre, sur le même run. Les deux ont été ramenées à `toutParti`, et
+`describe('§9 — le code de sortie et le marqueur ne divergent pas')` énumère les
+six fins qu'un run peut rendre en nommant les deux verdicts à la main, plutôt
+qu'en dérivant l'un de l'autre.
+
+| Fin du run | `reported()` | marqueur | corps |
+|---|---|---|---|
+| conclu, tout parti | `true` | présent | `RUN_CONCLU` |
+| conclu, une alerte perdue | `false` | absent | `alertes_non_parties=1`, `rapport_non_parti=non` |
+| conclu, rapport perdu | `false` | absent | `alertes_non_parties=0`, `rapport_non_parti=oui` |
+| conclu, les deux perdus | `false` | absent | `alertes_non_parties=1`, `rapport_non_parti=oui` |
+| abandonné | `false` | absent | `RUN_ABANDONNE` |
+| conclu, **ping** perdu | `true` | présent (dans un corps qui n'est pas parti) | — |
+| exception | sort en 1 par la levée | aucun ping | — |
+
+La dernière ligne avant l'exception est l'asymétrie de la sous-section suivante,
+et elle est la seule où un échec ne se voit dans aucun des deux verdicts.
 
 Rien n'est défait pour autant. Les quatre lignes de `decisions` et la photo
 restent écrites, le statut reste `COMPLETED`. Ce que le pulse rapporte n'est pas
@@ -120,14 +160,15 @@ n'existe pas.
 
 ### L'asymétrie inverse : un ping raté ne change pas le code de sortie
 
-Une alerte non partie fait sortir en **1**. Un ping non parti, **non**, et c'est
-décidé, pas oublié.
+Une alerte ou un rapport non parti fait sortir en **1**. Un ping non parti,
+**non**, et c'est décidé, pas oublié.
 
-L'asymétrie est réelle. Une alerte qui n'est pas partie est un événement que
-personne ne verra : elle ne laisse rien derrière elle, donc quelque chose doit
-porter sa trace, et c'est le code de sortie. Un ping qui n'est pas parti, lui,
-**se signale tout seul** : son absence est précisément ce qui fait sonner
-updown.io. Le mécanisme de surveillance couvre déjà son propre échec.
+L'asymétrie est réelle. Un compte rendu qui n'est pas parti — une alerte que
+personne ne verra, une journée que personne ne lira — ne laisse rien derrière
+lui, donc quelque chose doit porter sa trace, et c'est le code de sortie. Un ping
+qui n'est pas parti, lui, **se signale tout seul** : son absence est précisément
+ce qui fait sonner updown.io. Le mécanisme de surveillance couvre déjà son propre
+échec.
 
 Mais il ne doit pas être **muet** : le ping laisse sa ligne de journal —
 `healthcheck : NON PINGUE — motif` — et son sort revient dans `RunReport.ping`.
