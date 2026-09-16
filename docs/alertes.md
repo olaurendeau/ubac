@@ -487,6 +487,49 @@ le rôle que l'index unique de `decisions` joue pour le run quotidien (voir
 cette table existera, l'écart se lève sans changer un octet de ce qui part sur le
 réseau.
 
+## 5 bis. Écart assumé avec le §3 : un canal public, non authentifié
+
+**Ce que la spec dit.** Le §3 prévoit un ntfy **auto-hébergé**, et le §10 fige
+`NTFY_TOKEN` parmi les variables secrètes. Le canal d'alerte y est authentifié.
+
+**Ce que le code fait.** `NTFY_TOKEN` accepte, en plus d'un jeton porteur, la
+sentinelle `CANAL-PUBLIC-SANS-JETON`. Elle déclare un canal **non
+authentifié** : `loadConfig` rend alors `ntfyToken: null` et `openNotifier`
+publie **sans en-tête `Authorization`** — pas un en-tête vide, pas d'en-tête du
+tout, un `Bearer ` sans jeton valant un 401 qu'on confondrait avec un jeton
+révoqué.
+
+**Pourquoi.** Le topic de l'opérateur vit sur ntfy.sh, public et sans liste de
+contrôle d'accès. Réserver un topic y est une option payante : un jeton de
+compte gratuit authentifierait le publieur sur un canal que n'importe qui peut
+lire et alimenter. Il n'achèterait donc presque aucune sécurité, et il en
+donnerait l'apparence. **Mieux vaut un système qui dit qu'il est ouvert qu'un
+système qui fait semblant d'être authentifié** — décision de l'opérateur du
+2026-09-16.
+
+**Ce que l'écart ne desserre pas.** `NTFY_TOKEN` absente, vide ou blanche reste
+refusée au démarrage, en nommant la variable : une variable posée mais vide est
+plus dangereuse qu'absente, et c'est le défaut même que `src/config/env.ts`
+existe pour fermer. Une sentinelle **mal orthographiée** — casse, espace de
+copier-coller — est refusée elle aussi, plutôt que d'être lue comme un jeton qui
+vaudrait un 401 par jour sans jamais dire que la faute est une majuscule. Le
+compte des dix variables requises ne bouge pas.
+
+**Ce que l'écart coûte, dit franchement.** Qui connaît le nom du topic peut lire
+les alertes, et peut en publier de fausses.
+
+**Ce qui le lève, et avant quand.** Un topic réservé, un compte avec ACL, ou le
+serveur auto-hébergé du §3. **Avant la phase 3**, et l'échéance n'est pas
+décorative : aujourd'hui rien ne s'exécute, donc une fausse alerte injectée ne
+fait au pire agir personne. En phase 3, où des ordres partent, une fausse alerte
+pourrait faire agir l'opérateur — et c'est un tout autre coût.
+
+**En attendant, le run le dit tous les jours.** `runDaily` journalise
+`NTFY_CANAL_OUVERT_LIGNE` en première ligne, avant le premier appel de port,
+donc y compris sur un run qui va lever. Une ligne quotidienne se voit passer ; un
+document se lit une fois. La procédure de déploiement porte la même mention dans
+ses prérequis : [deploiement.md](deploiement.md) section 1.
+
 ## 6. Vérifier
 
 ```sh

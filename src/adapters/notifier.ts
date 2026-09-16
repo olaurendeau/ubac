@@ -289,7 +289,22 @@ export function alertKey(alert: Alert): string {
 export function openNotifier(secrets: NtfySecrets, send: HttpSend): Notifier {
   const url = new URL(secrets.ntfyUrl).toString();
   const topic = secrets.ntfyTopic;
-  const authorization = `Bearer ${secrets.ntfyToken}`;
+  /*
+   * **Le canal non authentifie n'envoie pas d'en-tete vide : il n'envoie pas
+   * d'en-tete.** `Authorization: Bearer ` serait pire que rien — ntfy y lirait
+   * une tentative d'authentification ratee et repondrait 401, la ou l'absence
+   * d'en-tete est une publication anonyme parfaitement legitime sur un topic
+   * public. La difference entre les deux est un jeton revoque et un canal
+   * ouvert, qui ne se corrigent pas de la meme facon.
+   *
+   * Le `null` vient de `loadConfig`, qui l'a obtenu de la sentinelle
+   * `NTFY_CANAL_OUVERT` et d'elle seule. Ce module ne compare aucune chaine :
+   * le type lui interdit de concatener ce qu'il n'a pas.
+   */
+  const headers: Readonly<Record<string, string>> =
+    secrets.ntfyToken === null
+      ? { 'Content-Type': 'application/json' }
+      : { 'Content-Type': 'application/json', Authorization: `Bearer ${secrets.ntfyToken}` };
   return {
     async notify(alert: Alert): Promise<AlertOutcome> {
       /*
@@ -306,7 +321,7 @@ export function openNotifier(secrets: NtfySecrets, send: HttpSend): Notifier {
       try {
         const outcome = await send({
           url,
-          headers: { 'Content-Type': 'application/json', Authorization: authorization },
+          headers,
           body: JSON.stringify({
             topic,
             title: lue.title,

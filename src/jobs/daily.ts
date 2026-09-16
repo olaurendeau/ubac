@@ -1065,7 +1065,30 @@ async function signal(run: DailyRun, pulse: RunPulse): Promise<PingOutcome> {
  * tente ; la seule facon de dire qu'un rapport n'est pas parti est d'avoir
  * essaye de l'envoyer d'abord.
  */
+/**
+ * Ce que le run dit de son canal d'alerte quand il part **sans jeton**.
+ *
+ * Une ligne de journal, tous les jours, et pas une note dans un document : un
+ * document se lit une fois, une ligne quotidienne se voit passer. L'ecart est
+ * assume (`docs/alertes.md` § 5 bis) mais il porte une echeance, et ce qui n'est
+ * rappele nulle part est ce qu'on oublie au bout d'une semaine.
+ *
+ * Elle est **exportee** pour la meme raison que `RUN_MARKER` l'est depuis
+ * `healthcheck.ts` : deux litteraux divergent, et c'est celui qui n'a pas de
+ * sonde qui gagne.
+ */
+export const NTFY_CANAL_OUVERT_LIGNE =
+  'ntfy : canal non authentifie declare — les alertes du jour partent en clair, sans jeton porteur. Ecart assume, docs/alertes.md § 5 bis.';
+
 export async function runDaily(run: DailyRun): Promise<DailyRunResult> {
+  /*
+   * **Avant tout le reste**, y compris avant l'etape 1, et hors du `try`. Le
+   * placer dans `executeRun` l'aurait fait dependre de la reponse de Coinbase :
+   * un run qui echoue au premier appel est precisement celui ou l'operateur
+   * regarde le journal, et c'est celui qui n'aurait rien dit de son canal.
+   */
+  if (run.config.secrets.ntfyToken === null) run.log(NTFY_CANAL_OUVERT_LIGNE);
+
   const runDate = run.clock.today();
   let outcome: DailyOutcome;
   try {

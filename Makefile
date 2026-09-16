@@ -9,7 +9,8 @@ DEV     ?= ./scripts/dev.sh
 DEV_DB  ?= $(COMPOSE) run --rm dev bash -c
 
 .PHONY: help build shell ci typecheck test coverage check clean \
-        db-up db-down db-push db-shell test-db coverage-db check-db
+        db-up db-down db-push db-shell test-db coverage-db check-db \
+        image image-verifier
 
 help: ## Affiche les cibles disponibles
 	@awk 'BEGIN {FS = ":.*##"; printf "Cibles:\n"} /^[a-zA-Z_-]+:.*?##/ { printf "  %-12s %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
@@ -68,6 +69,18 @@ coverage-db: db-push ## vitest run --coverage, base comprise
 	$(DEV_DB) 'UBAC_TEST_DATABASE_URL="$$UBAC_DEV_DATABASE_URL" npm run test:coverage -- --no-file-parallelism'
 
 check-db: ci typecheck test-db ## ci + typecheck + tests base comprise
+
+# --- Image de production (docs/deploiement.md) -------------------------------
+#
+# Ces deux cibles NE POUSSENT RIEN et NE DÉPLOIENT RIEN : elles construisent et
+# interrogent. Pousser et déployer restent des gestes de l'opérateur, au même
+# titre que `db-push`. Elles n'utilisent pas $(DEV) : `docker buildx` tourne sur
+# le poste, pas dans le conteneur de développement.
+image: ## Construit l'image de production, taguée par SHA (IMAGE=<dépôt>)
+	./scripts/build-image.sh $(IMAGE)
+
+image-verifier: ## Vérifie une image construite (REF=<dépôt>:<sha>)
+	./scripts/verifier-image.sh $(REF)
 
 clean: ## Supprime les volumes Compose, données Postgres comprises
 	$(COMPOSE) down --volumes
