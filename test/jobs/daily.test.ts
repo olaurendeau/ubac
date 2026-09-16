@@ -21,6 +21,7 @@ import { expectedCalendar } from '../../src/fixture/normalise.js';
 import type { Price, Quantity, UsdcAmount } from '../../src/core/types.js';
 import type { DailyPorts, DailyRunResult, RunClock } from '../../src/jobs/daily.js';
 import { DailyRunError, NTFY_CANAL_OUVERT_LIGNE, reported, runDaily } from '../../src/jobs/daily.js';
+import { RESYNC_MARKER } from '../../src/jobs/reconcile.js';
 import { REPORT_TAG } from '../../src/report/daily-report.js';
 import { photo, PORTFOLIO, qty, solde } from './doubles.js';
 
@@ -344,6 +345,23 @@ function complete(result: DailyRunResult): Extract<DailyRunResult, { status: 'CO
   return result;
 }
 
+/**
+ * Une photo de la veille, **chainable** : elle porte l'indice de croissance.
+ * Sans lui, l'etape 7 refuse d'en reposer une (`NO_CARRIED_INDEX`) et le cache
+ * ne se rafraichirait pas — ce qui rendrait muettes les sondes de Q10.
+ */
+function cache(positions: Readonly<Record<string, Quantity>>, total: string): SnapshotRecord {
+  return photo(positions, {
+    runDate: PRICED_ON,
+    totalValueUsdc: new Decimal(total) as UsdcAmount,
+    benchmarks: {
+      [PORTFOLIO_KEYS.index]: new Decimal('1'),
+      [PORTFOLIO_KEYS.peak]: new Decimal('1'),
+    },
+    createdAt: new Date(`${PRICED_ON}T07:00:00.000Z`),
+  });
+}
+
 /** Portefeuille a la cible exacte : 40 000 / 30 000 / 30 000 sur 100 000 USDC. */
 const DANS_LA_BANDE: readonly AssetBalance[] = [
   solde('BTC', '0.8'),
@@ -409,23 +427,56 @@ describe('§8 etapes 1 a 5 — l’enchainement du run', () => {
     ]);
   });
 
-  it('abandonne sur divergence de reconciliation, sans ecrire aucune decision', async () => {
+  /*
+   * **Q10 : la divergence ne coupe plus le run.** Avant ce lot, ce scenario
+   * rendait `ABORTED` sans rien ecrire — donc sans poser de photo, donc en
+   * condamnant tous les runs suivants a relire le meme cache faux. Desormais le
+   * cache se rend : le run decide sur les soldes de l'exchange, journalise ses
+   * quatre lignes et repose une photo aux quantites reelles.
+   */
+  it('resynchronise sur divergence et poursuit le run jusqu’a la photo', async () => {
     const h = harnais({
       balances: DANS_LA_BANDE,
       // 0.9 BTC en interne contre 0.8 reels : 11 % d'ecart, au-dela de 1 %.
-      snapshot: photo({ BTC: qty('0.9'), ETH: qty('12'), USDC: qty('30000') }),
+      snapshot: cache({ BTC: qty('0.9'), ETH: qty('12'), USDC: qty('30000') }, '100000'),
     });
-    const result = await lance(h);
+    const result = complete(await lance(h));
 
-    expect(result.status).toBe('ABORTED');
-    if (result.status === 'ABORTED') {
-      expect(result.abort.step).toBe('RECONCILE');
-      expect(result.abort.code).toBe('RECONCILIATION_DRIFT');
+    expect(result.resync.status).toBe('RESYNCHRONIZED');
+    // Les soldes decides sont ceux de l'exchange, jamais ceux du cache.
+    expect(result.holdings.BTC.toString()).toBe('0.8');
+    expect(h.table.size).toBe(LES_QUATRE.length);
+    expect(h.appels).toContain('recordSnapshot');
+    // Et la photo reposee porte les quantites reelles : c'est le rafraichissement.
+    expect(h.photos.get(RUN_DATE)?.positions.BTC?.toString()).toBe('0.8');
+  });
+
+  /*
+   * **La trace durable du lot.** L'alerte reveille le jour meme ; elle ne se
+   * relit pas six mois plus tard. Le marqueur en tete de `decisions.reason` est
+   * ce qui permet a un lecteur du journal des decisions de dire « ce jour-la,
+   * quelqu'un a bouge le portefeuille hors du systeme ». Les **quatre** lignes le
+   * portent : l'etat resynchronise est celui du portefeuille, pas d'une
+   * strategie, et c'est la ligne qu'on ne lit pas qui mentirait.
+   */
+  it('marque les quatre lignes de decisions, et seulement un jour de resynchronisation', async () => {
+    const h = harnais({
+      balances: DANS_LA_BANDE,
+      snapshot: cache({ BTC: qty('0.9'), ETH: qty('12'), USDC: qty('30000') }, '100000'),
+    });
+    await lance(h);
+
+    const motifs = [...h.table.values()].map((d) => d.intent.reason);
+    expect(motifs).toHaveLength(LES_QUATRE.length);
+    for (const motif of motifs) expect(motif.startsWith(RESYNC_MARKER)).toBe(true);
+    // Le motif de la strategie survit au marqueur : il le precede, il ne le remplace pas.
+    expect(motifs.every((m) => m.split('\n').length > 1)).toBe(true);
+
+    const sain = harnais({ balances: DANS_LA_BANDE });
+    await lance(sain);
+    for (const decision of sain.table.values()) {
+      expect(decision.intent.reason).not.toContain(RESYNC_MARKER);
     }
-    expect(h.appels).not.toContain('recordDecision');
-    expect(h.appels).not.toContain('dailyCandles:BTC');
-    expect(h.appels).not.toContain('recordSnapshot');
-    expect(h.table.size).toBe(0);
   });
 
   /*
@@ -485,6 +536,107 @@ describe('§8 etapes 1 a 5 — l’enchainement du run', () => {
     expect(h.table.size).toBe(0);
     expect(h.appels).not.toContain('recordSnapshot');
     expect(h.photos.size).toBe(0);
+  });
+});
+
+// --- L'impasse reelle, fermee de bout en bout -------------------------------
+
+/**
+ * **Le cas qui a motive le lot, rejoue tel quel.** L'operateur a reequilibre son
+ * portefeuille a la main, hors du systeme, entre deux runs : BTC 0,0159 → 0,0284,
+ * ETH 0,5155 → 0,6729, USDC 2 946 → 1 620. Le run suivant a trouve 44 %, 23 % et
+ * 45 % d'ecart et abandonne **avant toute ecriture**, donc sans poser de nouvelle
+ * photo — si bien que le run d'apres relisait la meme photo perimee et abandonnait
+ * de nouveau. Chaque jour, pour toujours.
+ *
+ * Ce bloc ne sonde pas un run mais **deux, consecutifs**, et c'est le second qui
+ * porte l'affirmation : sans le rafraichissement, il abandonnerait comme le
+ * premier. Un test sur un run unique laisserait passer une implementation qui
+ * alerte, marque, et oublie de reposer la photo.
+ */
+describe('une intervention manuelle ne condamne plus le job', () => {
+  const REEL: readonly AssetBalance[] = [
+    solde('BTC', '0.0284'),
+    solde('ETH', '0.6729'),
+    solde('USDC', '1620'),
+  ];
+  /**
+   * Ce que la base croyait encore : la photo d'avant l'intervention. Elle valait
+   * 5 029,75 USDC aux clotures du double — le reequilibrage manuel a deplace de
+   * la valeur entre lignes, il n'a pas apporte d'argent.
+   */
+  const CACHE_PERIME = cache(
+    { BTC: qty('0.0159'), ETH: qty('0.5155'), USDC: qty('2946') },
+    '5029.75',
+  );
+  const LENDEMAIN = '2026-09-13';
+
+  it('le premier run resynchronise, alerte, et repose une photo aux soldes reels', async () => {
+    const h = harnais({ balances: REEL, snapshot: CACHE_PERIME });
+    const result = complete(await lance(h));
+
+    expect(result.resync.status).toBe('RESYNCHRONIZED');
+    expect(evenements(h)).toContain('RECONCILIATION_DRIFT');
+    const reposee = h.photos.get(RUN_DATE);
+    expect(reposee?.positions.BTC?.toString()).toBe('0.0284');
+    expect(reposee?.positions.ETH?.toString()).toBe('0.6729');
+    expect(reposee?.positions.USDC?.toString()).toBe('1620');
+  });
+
+  /*
+   * **L'impasse elle-meme.** Le second run part de la photo que le premier a
+   * posee, sur les memes soldes reels : plus aucune divergence, aucune alerte de
+   * reconciliation, et une journee ordinaire. C'est exactement ce que l'ancien
+   * comportement rendait impossible.
+   */
+  it('le second run conclut normalement, sans divergence ni alerte', async () => {
+    const premier = harnais({ balances: REEL, snapshot: CACHE_PERIME });
+    await lance(premier);
+
+    /*
+     * **Le controle qui empeche cette sonde de mentir.** Si le premier run
+     * abandonnait — le comportement d'avant Q10 — il ne poserait aucune photo, le
+     * second partirait sans cache et conclurait pour la mauvaise raison :
+     * `NO_INTERNAL_STATE` au lieu d'une comparaison reussie. La sonde passerait
+     * alors sur le code qu'elle est censee interdire.
+     */
+    const reposee = premier.photos.get(RUN_DATE);
+    expect(reposee?.positions.BTC?.toString()).toBe('0.0284');
+
+    const second = harnais({ balances: REEL, snapshot: reposee, runDate: LENDEMAIN });
+    const result = complete(await lance(second));
+
+    expect(result.resync.status).toBe('NOT_NEEDED');
+    expect(evenements(second)).not.toContain('RECONCILIATION_DRIFT');
+    expect(second.table.size).toBe(LES_QUATRE.length);
+    for (const decision of second.table.values()) {
+      expect(decision.intent.reason).not.toContain(RESYNC_MARKER);
+    }
+    expect(reported(result)).toBe(true);
+  });
+
+  /*
+   * Et la trace reste lisible apres coup : le journal des decisions distingue le
+   * jour de l'intervention du lendemain, sans qu'on ait rien conserve d'autre que
+   * la base. C'est la moitie du marqueur qu'une alerte ne peut pas tenir.
+   */
+  it('le journal des decisions distingue les deux jours', async () => {
+    const premier = harnais({ balances: REEL, snapshot: CACHE_PERIME });
+    await lance(premier);
+    const second = harnais({
+      balances: REEL,
+      snapshot: premier.photos.get(RUN_DATE),
+      runDate: LENDEMAIN,
+    });
+    await lance(second);
+    expect(second.table.size).toBe(LES_QUATRE.length);
+
+    const marquees = (h: Harnais): string[] =>
+      [...h.table.keys()].filter((cle) =>
+        (h.table.get(cle)?.intent.reason ?? '').includes(RESYNC_MARKER),
+      );
+    expect(marquees(premier)).toHaveLength(LES_QUATRE.length);
+    expect(marquees(second)).toEqual([]);
   });
 });
 
@@ -716,18 +868,7 @@ describe('§4 — deux runs le meme jour, une seule decision par strategie', () 
 
 /** Une photo de la veille, chainable : positions accordees et indice a 1. */
 function veille(total: string): SnapshotRecord {
-  return photo(
-    { BTC: qty('1'), ETH: qty('16'), USDC: qty('10000') },
-    {
-      runDate: PRICED_ON,
-      totalValueUsdc: new Decimal(total) as UsdcAmount,
-      benchmarks: {
-        [PORTFOLIO_KEYS.index]: new Decimal('1'),
-        [PORTFOLIO_KEYS.peak]: new Decimal('1'),
-      },
-      createdAt: new Date(`${PRICED_ON}T07:00:00.000Z`),
-    },
-  );
+  return cache({ BTC: qty('1'), ETH: qty('16'), USDC: qty('10000') }, total);
 }
 
 describe('§6, §8 etape 7 — la photo du jour et la suspension au drawdown', () => {
@@ -1015,15 +1156,21 @@ describe('§9 — le rapport quotidien part par Brevo', () => {
     expect(evenements(h)).toEqual(['RUN_ABORTED']);
   });
 
-  it('n’envoie aucun rapport sur une divergence de reconciliation non plus', async () => {
+  /*
+   * Une divergence, elle, n'est plus un abandon depuis Q10 : le run conclut, donc
+   * il a un rapport a rendre. Le courrier part comme n'importe quel autre jour —
+   * la resynchronisation, elle, s'est deja dite en push `URGENT`.
+   */
+  it('envoie son rapport un jour de resynchronisation, qui reste un run conclu', async () => {
     const h = harnais({
       balances: DANS_LA_BANDE,
-      snapshot: photo({ BTC: qty('0.9'), ETH: qty('12'), USDC: qty('30000') }),
+      snapshot: cache({ BTC: qty('0.9'), ETH: qty('12'), USDC: qty('30000') }, '100000'),
     });
     const result = await lance(h);
 
-    expect(result.report.mail.status).toBe('SKIPPED');
-    expect(h.courriers).toEqual([]);
+    expect(result.status).toBe('COMPLETED');
+    expect(result.report.mail.status).toBe('SENT');
+    expect(h.courriers).toHaveLength(1);
     expect(evenements(h)).toEqual(['RECONCILIATION_DRIFT']);
   });
 
@@ -1181,17 +1328,27 @@ describe('§9 — les alertes push', () => {
     expect(evenements(h)).not.toContain('REBALANCE_EXECUTED');
   });
 
-  it('pousse RECONCILIATION_DRIFT sur une divergence, et rien d’autre', async () => {
+  /*
+   * **Une resynchronisation silencieuse serait pire que l'impasse qu'elle
+   * remplace** : le run conclurait normalement, la base porterait de nouveaux
+   * soldes, et personne ne saurait que le portefeuille a bouge hors du systeme.
+   * Le push `URGENT` est ce qui rend le rafraichissement acceptable.
+   */
+  it('pousse RECONCILIATION_DRIFT sur une resynchronisation, et rien d’autre', async () => {
     const h = harnais({
       balances: DANS_LA_BANDE,
-      snapshot: photo({ BTC: qty('0.9'), ETH: qty('12'), USDC: qty('30000') }),
+      snapshot: cache({ BTC: qty('0.9'), ETH: qty('12'), USDC: qty('30000') }, '100000'),
     });
-    const result = await lance(h);
+    const result = complete(await lance(h));
 
-    expect(result.status).toBe('ABORTED');
+    expect(result.resync.status).toBe('RESYNCHRONIZED');
     expect(evenements(h)).toEqual(['RECONCILIATION_DRIFT']);
     expect(h.pushes[0]?.payload.priority).toBe(5);
-    expect(h.pushes[0]?.payload.message).toContain('ni decision, ni photo');
+    expect(h.pushes[0]?.payload.message).toContain(RESYNC_MARKER);
+    // Le meme texte que la ligne de `decisions` : une seule source, un seul ecart.
+    expect(h.table.get(`${RUN_DATE}|rebalance|false`)?.intent.reason).toContain(
+      h.pushes[0]?.payload.message ?? 'introuvable',
+    );
   });
 
   /*

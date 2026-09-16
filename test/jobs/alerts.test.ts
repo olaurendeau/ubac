@@ -5,6 +5,7 @@ import type { Alert, AlertEvent } from '../../src/adapters/notifier.js';
 import { ALERT_EVENTS } from '../../src/adapters/notifier.js';
 import type { Return } from '../../src/core/benchmark.js';
 import type {
+  Quantity,
   Rejection,
   RejectionCode,
   StrategyName,
@@ -13,6 +14,8 @@ import type {
 } from '../../src/core/types.js';
 import type { AlertInput, RunEnding } from '../../src/jobs/alerts.js';
 import { ALERT_ORDER, alertsFor } from '../../src/jobs/alerts.js';
+import type { BalanceDivergence, Resynchronization } from '../../src/jobs/reconcile.js';
+import { RESYNC_MARKER } from '../../src/jobs/reconcile.js';
 import type { Suspension } from '../../src/jobs/snapshot.js';
 
 /**
@@ -24,7 +27,9 @@ import type { Suspension } from '../../src/jobs/snapshot.js';
  * - le catalogue et le tableau d'`adapters/notifier.ts` disent la meme chose,
  *   sans que `src/jobs/` importe le second en valeur (A20) ;
  * - chacun des sept evenements est **atteignable**, un par un ;
- * - les abandons se partagent entre deux evenements, jamais zero, jamais deux ;
+ * - tout abandon part en `RUN_ABORTED`, jamais zero, jamais deux ;
+ * - une resynchronisation de l'etat interne part en `RECONCILIATION_DRIFT`, et
+ *   peut accompagner un abandon du meme jour ;
  * - les codes de rejet se partagent de meme, et **les neuf** sont couverts ;
  * - `ignored` n'alerte pas ;
  * - un run sain est silencieux.
@@ -38,6 +43,7 @@ const SAIN: AlertInput = {
   runDate: RUN_DATE,
   ending: { status: 'COMPLETED' },
   suspension: { status: 'INACTIVE' },
+  resync: { status: 'NOT_NEEDED' },
   outcomes: [],
   executed: [],
 };
@@ -66,7 +72,25 @@ const SUSPENDU: Extract<Suspension, { status: 'ACTIVE' }> = {
   reason: 'SUSPENSION_DRAWDOWN : drawdown a -27.00 % depuis le plus haut',
 };
 
-const abandon = (step: 'RECONCILE' | 'VALUATION' | 'DECIDE'): RunEnding => ({
+/**
+ * Un etat resynchronise, tel que `reconcile.ts` le rend. Le motif porte le
+ * marqueur : c'est le meme texte qui va dans `decisions.reason`, et l'alerte ne
+ * le reecrit pas.
+ */
+const ecart = (asset: string): BalanceDivergence => ({
+  asset,
+  onExchange: new Decimal('0.0284') as Quantity,
+  internal: new Decimal('0.0159') as Quantity,
+  drift: new Decimal('0.44'),
+});
+
+const RESYNCHRONISE: Extract<Resynchronization, { status: 'RESYNCHRONIZED' }> = {
+  status: 'RESYNCHRONIZED',
+  divergences: [ecart('BTC')],
+  reason: `${RESYNC_MARKER} : divergence superieure a 1 % entre les soldes reels et l'etat interne`,
+};
+
+const abandon = (step: 'VALUATION' | 'DECIDE'): RunEnding => ({
   status: 'ABORTED',
   step,
   code: `CODE_${step}`,
@@ -86,7 +110,7 @@ const ATTEINT: Readonly<Record<AlertEvent, AlertInput>> = {
   }),
   DRAWDOWN: entree({ suspension: SUSPENDU }),
   REBALANCE_TOO_LARGE: verdicts(rejete([rejet('REBALANCE_TOO_LARGE')])),
-  RECONCILIATION_DRIFT: entree({ ending: abandon('RECONCILE') }),
+  RECONCILIATION_DRIFT: entree({ resync: RESYNCHRONISE }),
   RISK_REJECTED: verdicts(rejete([rejet('MIN_CASH')])),
   RUN_ABORTED: entree({ ending: abandon('VALUATION') }),
   JOB_FAILED: entree({ ending: { status: 'FAILED', reason: 'boum' } }),
@@ -166,14 +190,13 @@ describe('le silence est le cas nominal', () => {
 
 describe('tout abandon alerte, et une seule fois', () => {
   /*
-   * Les trois etapes ou `daily.ts` peut abandonner, une sonde chacune. La
-   * troisieme est celle qui motive le lot : un portefeuille non valorisable
-   * abandonne a l'etape VALUATION, que le §9 ne nomme pas, et le run n'ecrit
-   * rien — donc sans cette alerte il est indistinguable d'un job qui n'a pas
-   * tourne.
+   * Les deux etapes ou `daily.ts` peut encore abandonner, une sonde chacune.
+   * `VALUATION` est celle qui motive Q6a2 : un portefeuille non valorisable
+   * abandonne la, le §9 ne la nomme pas, et le run n'ecrit rien — donc sans cette
+   * alerte il est indistinguable d'un job qui n'a pas tourne. `RECONCILE` a
+   * disparu de la liste : la reconciliation n'abandonne plus.
    */
   it.each([
-    ['RECONCILE', 'RECONCILIATION_DRIFT'],
     ['VALUATION', 'RUN_ABORTED'],
     ['DECIDE', 'RUN_ABORTED'],
   ] as const)('un abandon a l’etape %s part en %s, seul', (step, event) => {
@@ -190,6 +213,60 @@ describe('tout abandon alerte, et une seule fois', () => {
   it('joint l’alerte de drawdown a l’abandon quand la suspension est connue', () => {
     const alerts = alertsFor(entree({ ending: abandon('DECIDE'), suspension: SUSPENDU }));
     expect(evenements(alerts)).toEqual(['DRAWDOWN', 'RUN_ABORTED']);
+  });
+});
+
+// --- La resynchronisation de l'etat interne ---------------------------------
+
+describe('une resynchronisation ne passe jamais en silence', () => {
+  /*
+   * **La moitie qui compte du lot Q10.** Rafraichir le cache sans le dire serait
+   * pire que l'impasse qu'on remplace : le run conclurait normalement, la base
+   * porterait de nouveaux soldes, et personne ne saurait que le portefeuille a
+   * bouge hors du systeme. L'alerte est ce qui rend le rafraichissement
+   * acceptable.
+   */
+  it('pousse RECONCILIATION_DRIFT, en URGENT, et rien d’autre', () => {
+    const alerts = alertsFor(entree({ resync: RESYNCHRONISE }));
+    expect(evenements(alerts)).toEqual(['RECONCILIATION_DRIFT']);
+    expect(alerts[0]?.priority).toBe('URGENT');
+  });
+
+  /*
+   * Le corps est **le texte de `reconcile.ts`**, pas une seconde redaction : le
+   * meme va dans `decisions.reason`, donc l'ecran verrouille et la base ne
+   * peuvent pas annoncer deux ecarts differents. Meme regle que le drawdown,
+   * dont le texte vient de `snapshot.ts`.
+   */
+  it('reprend le motif marque tel quel, sans le reecrire', () => {
+    const alerts = alertsFor(entree({ resync: RESYNCHRONISE }));
+    expect(alerts[0]?.body).toBe(RESYNCHRONISE.reason);
+    expect(alerts[0]?.body.startsWith(RESYNC_MARKER)).toBe(true);
+  });
+
+  /*
+   * Le titre ne dit plus « divergence de reconciliation » : c'est ce qu'on lit
+   * d'abord sur un ecran verrouille, et l'ancien libelle laissait croire a un run
+   * arrete. Ce qui a change, c'est l'etat interne.
+   */
+  it('dit dans son titre que c’est l’etat interne qui s’est rendu', () => {
+    const alerts = alertsFor(entree({ resync: RESYNCHRONISE }));
+    expect(alerts[0]?.title).toContain('resynchronise');
+    expect(alerts[0]?.title).toContain(RUN_DATE);
+  });
+
+  it('ne pousse rien quand les deux etats sont d’accord', () => {
+    expect(evenements(alertsFor(entree({ resync: { status: 'NOT_NEEDED' } })))).toEqual([]);
+  });
+
+  /*
+   * Les deux evenements s'excluaient tant que la divergence abandonnait le run.
+   * Ils cohabitent desormais, et c'est exactement le jour ou il faut les deux :
+   * l'etat a bouge hors du systeme **et** le run ne s'est pas conclu.
+   */
+  it('accompagne un abandon du meme jour au lieu de le remplacer', () => {
+    const alerts = alertsFor(entree({ resync: RESYNCHRONISE, ending: abandon('VALUATION') }));
+    expect(evenements(alerts)).toEqual(['RECONCILIATION_DRIFT', 'RUN_ABORTED']);
   });
 });
 
@@ -317,6 +394,7 @@ describe('ce que porte chaque alerte', () => {
       runDate: RUN_DATE,
       ending: abandon('DECIDE'),
       suspension: SUSPENDU,
+      resync: RESYNCHRONISE,
       outcomes: [
         {
           strategy: 'rebalance',
@@ -331,6 +409,7 @@ describe('ce que porte chaque alerte', () => {
       'REBALANCE_EXECUTED',
       'DRAWDOWN',
       'REBALANCE_TOO_LARGE',
+      'RECONCILIATION_DRIFT',
       'RISK_REJECTED',
       'RUN_ABORTED',
     ]);

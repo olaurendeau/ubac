@@ -131,6 +131,14 @@ type NonLus = Exclude<keyof Completed, keyof CompletedRun>;
  * parametre du rendu, `DailyReportInput.previous`, et V6 ci-dessus etablit
  * qu'un `SnapshotRecord` y est assignable. Il ne peut donc pas entrer dans la
  * forme du run acheve sans y etre lu deux fois.
+ *
+ * `resync` rejoint la liste en Q10, et c'est la meme decision que pour `report`,
+ * pour la meme raison. Une resynchronisation de l'etat interne part en alerte
+ * `RECONCILIATION_DRIFT` le jour meme, en `URGENT`, et sa trace durable est le
+ * marqueur en tete de `decisions.reason` — deux canaux qui ne dependent pas du
+ * courrier du lendemain. Le rapport quotidien la repeterait au petit dejeuner
+ * sans rien apprendre a personne. Si cette decision devait changer, c'est ici
+ * qu'on le verrait.
  */
 type NonLusAttendus =
   | 'status'
@@ -138,6 +146,7 @@ type NonLusAttendus =
   | 'prices'
   | 'cashFlows'
   | 'observations'
+  | 'resync'
   | 'snapshot'
   | 'report'
   | 'previousSnapshot';

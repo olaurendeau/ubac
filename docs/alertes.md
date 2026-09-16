@@ -91,9 +91,9 @@ Le §9 en nomme six. Un ajout est assumé, et un nom est élargi.
 | `REBALANCE_EXECUTED` | high | un rééquilibrage a été passé |
 | `DRAWDOWN` | urgent | la suspension du §6 est active |
 | `REBALANCE_TOO_LARGE` | urgent | un rejet porte ce code |
-| `RECONCILIATION_DRIFT` | urgent | le run abandonne à l'étape `RECONCILE` |
+| `RECONCILIATION_DRIFT` | urgent | l'état interne s'est resynchronisé sur l'exchange |
 | `RISK_REJECTED` | high | un verdict est rejeté pour tout autre code |
-| `RUN_ABORTED` | urgent | le run abandonne à toute **autre** étape |
+| `RUN_ABORTED` | urgent | le run abandonne, à quelque étape que ce soit |
 | `JOB_FAILED` | urgent | une exception a échappé au run |
 
 `urgent` est réservé à ce qui ne peut pas attendre le lendemain matin — le
