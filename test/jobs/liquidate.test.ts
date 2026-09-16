@@ -49,9 +49,6 @@ const PORTEFEUILLE: Scenario = {
 
 async function soldesDe(scenario: Scenario): Promise<ReconciledBalances> {
   const resultat = await reconcile(harnais(scenario).input);
-  if (resultat.status !== 'RECONCILED') {
-    throw new Error(`le scenario de test ne reconcilie pas : ${resultat.reason}`);
-  }
   return resultat.balances;
 }
 
@@ -356,16 +353,23 @@ describe('la sortie part d’un etat reconcilie', () => {
     expect(p.rapport.usdcProjete.toString()).toBe('100060');
   });
 
-  it('une reconciliation abandonnee ne rend aucun solde a liquider', async () => {
+  /*
+   * Depuis Q10 une divergence ne prive plus la sortie de ses soldes : le cache se
+   * rend, et ce qui est liquide est ce que l'exchange porte vraiment. Liquider
+   * sur le cache aurait ete l'erreur — c'est la moitie de BTC qui n'existe plus.
+   */
+  it('une reconciliation resynchronisee liquide les soldes reels, pas le cache', async () => {
     const resultat = await reconcile(
       harnais({
         balances: [solde('BTC', '1')],
         snapshot: photo({ BTC: qty('0.5') }),
       }).input,
     );
-    expect(resultat.status).toBe('ABORTED');
-    // Aucun `balances` sur cette branche : `SortieInput.soldes` n'a rien a recevoir.
-    expect('balances' in resultat).toBe(false);
+    expect(resultat.resync.status).toBe('RESYNCHRONIZED');
+    expect(resultat.balances.holdings.BTC.toString()).toBe('1');
+
+    const p = await plan({ balances: [solde('BTC', '1')], snapshot: photo({ BTC: qty('0.5') }) });
+    expect(cessionsDe(p).map((c) => c.ordre.quantity.toString())).toEqual(['1']);
   });
 });
 

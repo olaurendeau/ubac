@@ -93,7 +93,6 @@ qui journalise son motif et rend `SKIPPED`.
 | Fin du run | Rapport | Ce qui prévient l'opérateur |
 |---|---|---|
 | `COMPLETED` | envoyé, `trigger NONE` compris | le rapport lui-même |
-| `ABORTED` (réconciliation) | `SKIPPED` | alerte `RECONCILIATION_DRIFT`, priorité `URGENT` |
 | `ABORTED` (valorisation, stratégie indécidable) | `SKIPPED` | alerte `RUN_ABORTED`, priorité `URGENT` |
 | exception | aucun | alerte `JOB_FAILED`, puis l'erreur remonte |
 

@@ -84,7 +84,6 @@ const MIDS: MidPrices = { BTC: prix('60000'), ETH: prix('3000') };
 
 async function entree(scenario: Scenario): Promise<SortieInput> {
   const resultat = await reconcile(harnais(scenario).input);
-  if (resultat.status !== 'RECONCILED') throw new Error('scenario non reconciliable');
   return {
     runDate: '2026-09-12',
     soldes: resultat.balances,

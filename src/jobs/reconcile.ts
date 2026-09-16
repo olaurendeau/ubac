@@ -5,7 +5,7 @@ import type { PendingOrderRecord, UbacDatabase } from '../adapters/db.js';
 import type { Holdings } from '../core/portfolio.js';
 import { ASSETS } from '../core/portfolio.js';
 import { RECONCILIATION_DRIFT_PCT } from '../core/risk.js';
-import type { AllowedAsset, Quantity, RejectionCode } from '../core/types.js';
+import type { AllowedAsset, Quantity } from '../core/types.js';
 
 /**
  * La reconciliation de la spec §7 : **ce que l'exchange dit, confronte a ce que
@@ -13,14 +13,22 @@ import type { AllowedAsset, Quantity, RejectionCode } from '../core/types.js';
  *
  * Trois principes gouvernent ce fichier.
  *
- * 1. **L'etat de l'exchange fait foi ; l'etat interne n'est qu'un cache.** Rien
- *    ici ne corrige, ne rattrape ni ne compense. Au-dela du seuil, le run est
- *    abandonne et un humain regarde. Un rattrapage automatique sur un cache dont
- *    on vient de constater qu'il est faux est la facon la plus directe de
- *    transformer un ecart constate en perte reelle.
- * 2. **Ce module ne persiste rien.** Il lit et il rend un resultat. Voir la
- *    section « ordres » ci-dessous et `docs/reconciliation.md` : l'ecriture
- *    manque, mais c'est la *lecture* qui manque d'abord.
+ * 1. **L'etat de l'exchange fait foi ; l'etat interne n'est qu'un cache.** Le
+ *    principe se lit dans les deux sens, et c'est la seconde moitie qui gouverne
+ *    ici : au-dela du seuil, ce n'est pas le run qui se rend, c'est le cache. La
+ *    divergence ne corrige rien sur l'exchange — rien ici n'ecrit ou n'annule —,
+ *    elle **abandonne la valeur du cache** et laisse le run poursuivre sur les
+ *    soldes reels. Abandonner le run faisait l'inverse : il gelait la photo
+ *    perimee, donc le run suivant la relisait et abandonnait de nouveau, chaque
+ *    jour, pour toujours. Une intervention manuelle condamnait le job sans
+ *    chemin de retour ; c'est arrive, `docs/reconciliation.md` §1 bis porte le
+ *    cas reel.
+ * 2. **Ce module ne persiste rien.** Il lit et il rend un resultat — y compris
+ *    quand ce resultat dit que le cache doit se rendre : le rafraichissement est
+ *    l'ecriture de la photo du jour, a l'etape 7 de `daily.ts`, sur les soldes
+ *    que ce module vient de rendre. Voir la section « ordres » ci-dessous et
+ *    `docs/reconciliation.md` : l'ecriture manque, mais c'est la *lecture* qui
+ *    manque d'abord.
  * 3. **Aucune horloge.** Ni systeme, ni injectee : aucune decision de ce module
  *    ne depend du temps. La seule regle du §7 qui en dependait, l'annulation des
  *    ordres de plus de 24 h, est reportee en phase 3. Le jour ou elle arrive,
@@ -104,13 +112,11 @@ export interface BalanceDivergence {
 }
 
 /**
- * Ce que la reconciliation a vu sans que cela abandonne le run. Deux anomalies
- * que seule cette confrontation peut reveler : un ordre ouvert que la base ne
- * reclame pas, et une devise detenue hors de la liste blanche.
+ * Ce que la reconciliation a vu et qui ne change rien au deroulement du run.
+ * Deux anomalies que seule cette confrontation peut reveler : un ordre ouvert
+ * que la base ne reclame pas, et une devise detenue hors de la liste blanche.
  *
- * Aucune des deux n'abandonne le run : le §7 ne donne qu'un seul motif
- * d'abandon, la divergence de solde. Elles sont rendues pour que le run les
- * signale.
+ * Elles sont rendues pour que le run les signale ; aucune ne l'interrompt.
  */
 export interface ReconcileObservations {
   /** Ordres ouverts sur l'exchange qu'aucune ligne `PENDING` ne reclame. */
@@ -122,19 +128,55 @@ export interface ReconcileObservations {
   readonly untrackedBalances: readonly AssetBalance[];
 }
 
-export type ReconcileResult =
+/**
+ * Marqueur en tete du motif de resynchronisation, donc en tete de
+ * `decisions.reason` le jour ou l'etat s'est resynchronise. Meme role et meme
+ * forme que le `SUSPENSION_MARKER` de `snapshot.ts` : sans lui, un jour ou le
+ * portefeuille a bouge hors du systeme serait indistinguable d'un jour
+ * ordinaire des que le push aurait ete oublie.
+ *
+ * Il est **exporte** pour la meme raison que l'autre : deux litteraux divergent,
+ * et c'est celui qui n'a pas de sonde qui gagne.
+ */
+export const RESYNC_MARKER = 'ETAT_RESYNCHRONISE';
+
+/**
+ * L'etat interne a-t-il du se rendre a l'exchange ce jour-la.
+ *
+ * **C'est le marqueur du lot, et il a deux lecteurs.** Le run le porte jusqu'a
+ * `decisions.reason` et jusqu'a l'alerte `RECONCILIATION_DRIFT`, pour qu'un
+ * lecteur du journal des decisions puisse dire, des mois plus tard, que
+ * quelqu'un a bouge le portefeuille hors du systeme ce jour-la. Et un
+ * **executeur futur** le consulte : en phase 3, une divergence constatee juste
+ * avant de passer des ordres peut signifier qu'un ordre precedent a eu un sort
+ * qu'on ignore, et l'ignorer serait exactement la mauvaise reponse. Le champ
+ * existe pour qu'il ait de quoi refuser ; ce qu'il en fera se tranche **avant la
+ * phase 3**, et `docs/reconciliation.md` §3 bis porte la question et son
+ * echeance.
+ */
+export type Resynchronization =
+  | { readonly status: 'NOT_NEEDED' }
   | {
-      readonly status: 'RECONCILED';
-      readonly balances: ReconciledBalances;
-      readonly orders: readonly PendingOrderReconciliation[];
-      readonly observations: ReconcileObservations;
-    }
-  | {
-      readonly status: 'ABORTED';
-      readonly code: Extract<RejectionCode, 'RECONCILIATION_DRIFT'>;
-      readonly reason: string;
+      readonly status: 'RESYNCHRONIZED';
+      /** Les lignes qui ont depasse le seuil, telles qu'elles ont ete vues. */
       readonly divergences: readonly BalanceDivergence[];
+      /** Texte marque : source unique de l'alerte et de `decisions.reason`. */
+      readonly reason: string;
     };
+
+/**
+ * Ce que la reconciliation rend. **Il n'y a pas de branche d'abandon**, et c'est
+ * le lot : le seul motif que le §7 en donnait — la divergence de solde —
+ * rafraichit desormais le cache au lieu de geler le systeme. Une branche
+ * d'abandon que plus rien n'atteint n'aurait eu ni sonde ni lecteur ; le depot
+ * refuse le code mort desarme, ici comme pour l'annulation a 24 h.
+ */
+export interface ReconcileResult {
+  readonly balances: ReconciledBalances;
+  readonly orders: readonly PendingOrderReconciliation[];
+  readonly observations: ReconcileObservations;
+  readonly resync: Resynchronization;
+}
 
 /**
  * `Pick` plutot que les interfaces entieres : le type dit exactement ce que la
@@ -219,14 +261,24 @@ function divergencesOf(
   return divergences;
 }
 
-function abortReason(divergences: readonly BalanceDivergence[]): string {
+/**
+ * Le motif porte par une resynchronisation. **Une seule source** : l'alerte du
+ * §9 et la ligne de `decisions` du jour portent ce texte-la, pas deux redactions
+ * du meme fait qui pourraient annoncer deux chiffres differents.
+ */
+function resyncReason(divergences: readonly BalanceDivergence[]): string {
   const detail = divergences
     .map(
       (d) =>
         `${d.asset} : ${d.onExchange.toString()} sur l'exchange contre ${d.internal.toString()} en interne, soit ${d.drift.times(100).toFixed(4)} % d'ecart`,
     )
     .join(' ; ');
-  return `divergence superieure a ${RECONCILIATION_DRIFT_PCT.times(100).toFixed()} % entre les soldes reels et l'etat interne — ${detail}. L'etat de l'exchange fait foi : le run est abandonne, rien n'est corrige.`;
+  return (
+    `${RESYNC_MARKER} : divergence superieure a ${RECONCILIATION_DRIFT_PCT.times(100).toFixed()} % entre les soldes reels et ` +
+    `l'etat interne — ${detail}. L'etat de l'exchange fait foi : le cache interne se rend, le run ` +
+    `poursuit sur les soldes reels et la photo du jour repart de l'exchange. Le portefeuille a bouge ` +
+    `hors du systeme ; rien n'a ete corrige sur l'exchange, et aucun ordre n'a ete place.`
+  );
 }
 
 // --- Ordres -----------------------------------------------------------------
@@ -253,10 +305,10 @@ function statusOf(surExchange: OpenOrder | undefined, order: PendingOrderRecord)
  *
  * Les deux lectures de l'exchange sont sequentielles et **ne sont pas
  * atomiques** : un ordre peut se denouer entre les deux. La consequence va
- * toujours dans le sens prudent — soit la ligne apparait `INDETERMINABLE`, soit
- * les soldes divergent du cache et le run est abandonne —, jamais dans celui
- * d'un etat perime accepte en silence. En phase 1 la fenetre est theorique :
- * aucun ordre n'est place.
+ * toujours dans le sens de la verite de l'exchange — soit la ligne apparait
+ * `INDETERMINABLE`, soit les soldes divergent du cache et la divergence est
+ * declaree —, jamais dans celui d'un etat perime accepte en silence. En phase 1
+ * la fenetre est theorique : aucun ordre n'est place.
  */
 export async function reconcile(input: ReconcileInput): Promise<ReconcileResult> {
   const portfolio = await input.exchange.balances();
@@ -288,27 +340,32 @@ export async function reconcile(input: ReconcileInput): Promise<ReconcileResult>
    */
   if (photo === undefined) {
     return {
-      status: 'RECONCILED',
       balances: { [RECONCILIE]: true, holdings, comparedTo: 'NO_INTERNAL_STATE' },
       orders,
       observations,
+      /*
+       * Pas de comparaison, donc pas de resynchronisation. `NOT_NEEDED` n'est
+       * pas « rien n'a diverge » ici : c'est `comparedTo` qui porte l'absence de
+       * cache, et les deux champs ne disent pas la meme chose.
+       */
+      resync: { status: 'NOT_NEEDED' },
     };
   }
 
+  /*
+   * Le seuil et sa comparaison ligne a ligne ne bougent pas ; **seule la
+   * consequence a change**. Au-dela du seuil, les soldes rendus restent ceux de
+   * l'exchange — ils l'etaient deja — et le cache est declare perime au lieu
+   * d'arreter le run.
+   */
   const divergences = divergencesOf(totaux, photo.positions);
-  if (divergences.length > 0) {
-    return {
-      status: 'ABORTED',
-      code: 'RECONCILIATION_DRIFT',
-      reason: abortReason(divergences),
-      divergences,
-    };
-  }
-
   return {
-    status: 'RECONCILED',
     balances: { [RECONCILIE]: true, holdings, comparedTo: 'INTERNAL_SNAPSHOT' },
     orders,
     observations,
+    resync:
+      divergences.length > 0
+        ? { status: 'RESYNCHRONIZED', divergences, reason: resyncReason(divergences) }
+        : { status: 'NOT_NEEDED' },
   };
 }

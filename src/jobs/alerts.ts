@@ -1,5 +1,6 @@
 import type { Alert, AlertEvent, AlertPriority } from '../adapters/notifier.js';
 import type { IsoDate, Rejection, StrategyName, UsdcAmount, Verdict } from '../core/types.js';
+import type { Resynchronization } from './reconcile.js';
 import type { Suspension } from './snapshot.js';
 
 /**
@@ -26,9 +27,15 @@ import type { Suspension } from './snapshot.js';
  *   n'a pas tourne. Le cas s'est produit en reel : portefeuille vide, valeur
  *   totale nulle, abandon propre a l'etape de **valorisation**, aucune trace. Un
  *   evenement qui ne couvrirait que la divergence aurait laisse ce run-la muet.
- *   `RUN_ABORTED` couvre donc tout abandon dont la cause n'est pas la
- *   divergence, et les deux se **partagent** les abandons : jamais deux alertes
- *   pour un meme abandon, jamais zero.
+ *   `RUN_ABORTED` couvre donc **tout** abandon ; il n'y en a plus d'autre sorte.
+ * - **`RECONCILIATION_DRIFT` n'est plus un abandon.** Depuis Q10, une divergence
+ *   au-dela du seuil rafraichit le cache et laisse le run continuer. L'evenement
+ *   du §9 garde son nom et sa priorite, et change de declencheur : il annonce que
+ *   l'etat interne s'est **resynchronise** sur l'exchange. C'est la moitie qui
+ *   compte du lot — une resynchronisation silencieuse serait pire que l'impasse
+ *   qu'elle remplace, personne ne saurait que le portefeuille a bouge hors du
+ *   systeme. Consequence : cet evenement peut desormais **accompagner** un
+ *   `RUN_ABORTED` du meme jour, la ou les deux s'excluaient.
  * - **`RISK_REJECTED` est plus large que « jambe rejetee ».** La couche risque
  *   rejette aussi au niveau du run, sans indice de jambe — `MIN_CASH` et
  *   `MAX_EXPOSURE` en particulier, qui disent que le portefeuille est hors de
@@ -49,8 +56,11 @@ import type { Suspension } from './snapshot.js';
  * distingue un silence normal d'un job qui n'a pas tourne.
  */
 
-/** Les etapes ou `daily.ts` peut abandonner. Le type suit son `DailyAbort`. */
-export type AbortStep = 'RECONCILE' | 'VALUATION' | 'DECIDE';
+/**
+ * Les etapes ou `daily.ts` peut abandonner. Le type suit son `DailyAbort`, d'ou
+ * `RECONCILE` a disparu : la reconciliation n'abandonne plus.
+ */
+export type AbortStep = 'VALUATION' | 'DECIDE';
 
 export type RunEnding =
   | { readonly status: 'COMPLETED' }
@@ -86,6 +96,8 @@ export interface AlertInput {
   readonly runDate: IsoDate;
   readonly ending: RunEnding;
   readonly suspension: Suspension;
+  /** §7 : l'etat interne s'est-il resynchronise sur l'exchange ce jour-la. */
+  readonly resync: Resynchronization;
   readonly outcomes: readonly RiskOutcome[];
   readonly executed: readonly RebalanceExecuted[];
 }
@@ -184,20 +196,12 @@ function rejets(runDate: IsoDate, outcome: RiskOutcome): Alert[] {
 }
 
 /**
- * Les abandons se partagent eux aussi : `RECONCILE` d'un cote, les autres
- * etapes de l'autre. Le partage est exhaustif par construction — il n'y a pas
- * de troisieme branche — donc tout abandon alerte, y compris celui d'un
- * portefeuille non valorisable, qui est le cas reellement observe.
+ * Tout abandon, quelle qu'en soit l'etape. Il n'y a plus de partage : la
+ * divergence de reconciliation n'abandonne plus, donc `RUN_ABORTED` couvre seul
+ * les deux etapes qui restent — y compris le portefeuille non valorisable, qui
+ * est le cas reellement observe.
  */
 function abandon(runDate: IsoDate, ending: Extract<RunEnding, { status: 'ABORTED' }>): Alert {
-  if (ending.step === 'RECONCILE') {
-    return alert(
-      runDate,
-      'RECONCILIATION_DRIFT',
-      `Ubac ${runDate} — divergence de reconciliation`,
-      `Les soldes de l'exchange et le cache interne ne concordent plus. Le run s'est arrete AVANT toute ecriture : ni decision, ni photo.\n${ending.code} : ${ending.reason}`,
-    );
-  }
   return alert(
     runDate,
     'RUN_ABORTED',
@@ -243,6 +247,25 @@ export function alertsFor(input: AlertInput): readonly Alert[] {
         'DRAWDOWN',
         `Ubac ${input.runDate} — drawdown au seuil, production suspendue`,
         input.suspension.reason,
+      ),
+    );
+  }
+
+  if (input.resync.status === 'RESYNCHRONIZED') {
+    /*
+     * Le texte vient de `reconcile.ts`, comme celui du drawdown vient de
+     * `snapshot.ts` : c'est aussi celui que porte la ligne de `decisions` du
+     * jour, donc l'ecran verrouille et la base ne peuvent pas annoncer deux
+     * ecarts differents. Le titre, lui, dit ce qui a change — l'etat interne,
+     * pas l'exchange — parce que c'est ce qu'on lit d'abord et que « divergence
+     * de reconciliation » laissait croire a un run arrete.
+     */
+    alerts.push(
+      alert(
+        input.runDate,
+        'RECONCILIATION_DRIFT',
+        `Ubac ${input.runDate} — etat interne resynchronise sur l'exchange`,
+        input.resync.reason,
       ),
     );
   }

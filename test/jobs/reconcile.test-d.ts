@@ -27,19 +27,21 @@ void forge;
 // @ts-expect-error
 decideSur({ holdings, comparedTo: 'INTERNAL_SNAPSHOT' });
 
-// Le resultat non discrimine ne rend aucun solde : il faut narrower sur `status`.
-// @ts-expect-error
-void result.balances;
+// Le resultat porte toujours des soldes : la branche d'abandon a disparu avec la
+// divergence bloquante, donc il n'y a plus rien a discriminer pour les lire.
+decideSur(result.balances);
+const lu: Holdings = result.balances.holdings;
+void lu;
 
-// Et la branche abandonnee n'en porte pas non plus.
-if (result.status === 'ABORTED') {
-  // @ts-expect-error
-  void result.balances;
-  void result.divergences;
-}
-
-if (result.status === 'RECONCILED') {
+// Un jour de resynchronisation en porte aussi, et ce sont ceux de l'exchange :
+// c'est le cache qui s'est rendu, pas le run qui s'est arrete.
+if (result.resync.status === 'RESYNCHRONIZED') {
   decideSur(result.balances);
-  const lu: Holdings = result.balances.holdings;
-  void lu;
+  const ecarts = result.resync.divergences;
+  void ecarts;
 }
+
+// Le motif, lui, n'existe que sur cette branche-la : un resultat non discrimine
+// ne peut pas affirmer qu'un etat s'est resynchronise.
+// @ts-expect-error
+void result.resync.reason;

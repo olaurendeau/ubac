@@ -19,10 +19,15 @@ import { harnais, photo, qty, solde } from './doubles.js';
  * calcul, et une copie derive.
  *
  * Ce fichier est ce qui interdit la derive. Sur la meme table de cas, il exige
- * que le job abandonne exactement quand la couche risque emet
+ * que le job **resynchronise** exactement quand la couche risque emet
  * `RECONCILIATION_DRIFT`. Changer le seuil, le denominateur ou le sens de la
  * comparaison d'un seul cote fait echouer ce test — c'est le seul garde-fou qui
  * mord sur la copie plutot que sur l'original.
+ *
+ * Q10 a change la **consequence** d'un depassement, pas le seuil : le job ne
+ * s'arrete plus, il declare que le cache doit se rendre. L'accord porte donc sur
+ * le verdict de divergence, qui est ce que les deux implementations calculent ;
+ * ce que chaque couche en fait ensuite leur appartient.
  */
 
 const PRIX: Prices = {
@@ -106,7 +111,7 @@ function noyauRejetteLaDivergence(cas: Cas): boolean {
   );
 }
 
-async function jobAbandonne(cas: Cas): Promise<boolean> {
+async function jobResynchronise(cas: Cas): Promise<boolean> {
   const [btc, eth, usdc] = cas.interne;
   const result = await reconcile(
     harnais({
@@ -118,13 +123,13 @@ async function jobAbandonne(cas: Cas): Promise<boolean> {
       snapshot: photo({ BTC: qty(btc), ETH: qty(eth), USDC: qty(usdc) }),
     }).input,
   );
-  return result.status === 'ABORTED';
+  return result.resync.status === 'RESYNCHRONIZED';
 }
 
 describe('le job et la couche risque appliquent le meme seuil', () => {
   it.each(CAS)('$nom', async (cas) => {
     const attendu = noyauRejetteLaDivergence(cas);
-    expect(await jobAbandonne(cas)).toBe(attendu);
+    expect(await jobResynchronise(cas)).toBe(attendu);
   });
 
   it('la table couvre bien les deux verdicts', () => {

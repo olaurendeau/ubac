@@ -36,7 +36,12 @@ function pulse(ending: RunPulse['ending'], overrides: Partial<RunPulse> = {}): R
 }
 
 const CONCLU = pulse({ kind: 'CONCLU', decisions: 4, alerts: 0 });
-const ABANDONNE = pulse({ kind: 'ABANDONNE', step: 'RECONCILE', code: 'RECONCILIATION_DRIFT' });
+/**
+ * Un abandon reel : le portefeuille non valorisable, seul cas observe en
+ * production. `RECONCILE` n'est plus une etape d'abandon depuis Q10 — la
+ * divergence resynchronise le cache au lieu d'arreter le run.
+ */
+const ABANDONNE = pulse({ kind: 'ABANDONNE', step: 'VALUATION', code: 'NON_POSITIVE_VALUE' });
 /**
  * Un run conclu dont le compte rendu n'est pas parti. Les deux canaux y sont
  * nommes separement : une alerte perdue et un rapport perdu ne sont pas la meme
@@ -91,7 +96,7 @@ describe('le marqueur — present si et seulement si le run a abouti', () => {
    * l'investigation.
    */
   it.each([
-    ['un abandon', ABANDONNE, ['RUN_ABANDONNE', 'etape=RECONCILE', 'code=RECONCILIATION_DRIFT']],
+    ['un abandon', ABANDONNE, ['RUN_ABANDONNE', 'etape=VALUATION', 'code=NON_POSITIVE_VALUE']],
     [
       'une alerte manquante',
       NON_RENDU,
@@ -164,7 +169,7 @@ describe('le marqueur — present si et seulement si le run a abouti', () => {
 
     expect(corps).not.toContain(RUN_MARKER);
     expect(corps).toContain('CORPS_REFUSE');
-    expect(corps).not.toContain('RECONCILIATION_DRIFT');
+    expect(corps).not.toContain('NON_POSITIVE_VALUE');
   });
 
   /*
