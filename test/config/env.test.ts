@@ -1,7 +1,7 @@
 import { Decimal } from 'decimal.js';
 import { describe, expect, it } from 'vitest';
 
-import { ConfigError, loadConfig } from '../../src/config/env.js';
+import { ConfigError, loadConfig, NTFY_CANAL_OUVERT } from '../../src/config/env.js';
 import type { Env } from '../../src/config/env.js';
 import { MIN_CASH_PCT } from '../../src/core/risk.js';
 import { DEFAULT_REBALANCE_PARAMS } from '../../src/core/strategy/rebalance.js';
@@ -447,5 +447,109 @@ describe('le module ne lit que ce qu’on lui donne', () => {
     } finally {
       delete process.env['UBAC_TARGET_BTC'];
     }
+  });
+});
+
+/**
+ * `NTFY_TOKEN` est la seule variable secrete du depot qui admette une valeur
+ * **convenue**. Une sonde par variante annoncee dans son en-tete, parce que la
+ * variable touche un garde-fou de secret et qu'un assouplissement se relit
+ * variante par variante ou ne se relit pas.
+ *
+ * L'affirmation a tenir n'est pas « la sentinelle marche » : c'est **« rien ne
+ * change pour qui ne l'ecrit pas »**.
+ */
+describe('NTFY_TOKEN : la sentinelle declare un canal ouvert, et elle seule', () => {
+  it('rend null sur la sentinelle exacte, et c’est la seule facon de l’obtenir', () => {
+    expect(loadConfig(env({ NTFY_TOKEN: NTFY_CANAL_OUVERT })).secrets.ntfyToken).toBeNull();
+  });
+
+  it('rend le jeton tel quel sur une valeur ordinaire', () => {
+    expect(loadConfig(env({ NTFY_TOKEN: 'tk_un_vrai_jeton' })).secrets.ntfyToken).toBe(
+      'tk_un_vrai_jeton',
+    );
+  });
+
+  /*
+   * Les deux refus d'avant ce lot, reconduits explicitement. Ils sont deja
+   * couverts par les boucles sur `SECRET_NAMES` plus haut ; les reecrire ici est
+   * volontaire, parce que c'est **cette propriete-la** que la sentinelle
+   * pourrait avoir cassee, et qu'une propriete qu'on tient par accident se perd
+   * au lot suivant.
+   */
+  it.each([
+    ['absente', undefined],
+    ['vide', ''],
+    ['blanche', '   '],
+  ])('refuse NTFY_TOKEN %s, en nommant la variable', (_cas, valeur) => {
+    const issues = issuesOf(() => loadConfig({ ...SECRETS, NTFY_TOKEN: valeur }));
+    expect(issues.length).toBeGreaterThan(0);
+    for (const issue of issues) expect(issue).toContain('NTFY_TOKEN');
+  });
+
+  /*
+   * Le cas contre lequel le controle existe. Chacune de ces valeurs serait sinon
+   * un jeton porteur valide : ntfy repondrait 401 a chaque alerte, le run
+   * sortirait en 1 tous les jours, et rien ne dirait que la faute est une
+   * majuscule ou un espace de copier-coller.
+   */
+  it.each([
+    'canal-public-sans-jeton',
+    'Canal-Public-Sans-Jeton',
+    ' CANAL-PUBLIC-SANS-JETON',
+    'CANAL-PUBLIC-SANS-JETON ',
+    '\tCANAL-PUBLIC-SANS-JETON\n',
+  ])('refuse « %s », qui ressemble a la sentinelle sans l’etre', (valeur) => {
+    const issues = issuesOf(() => loadConfig(env({ NTFY_TOKEN: valeur })));
+    expect(issues).toEqual([expect.stringContaining('NTFY_TOKEN')]);
+  });
+
+  /*
+   * Le message cite la sentinelle — elle n'est pas un secret, elle est publiee
+   * dans `.env.example` — et **jamais la valeur recue**, qui en est peut-etre un.
+   */
+  it('nomme la sentinelle attendue sans recopier la valeur recue', () => {
+    const [issue] = issuesOf(() => loadConfig(env({ NTFY_TOKEN: 'canal-public-sans-jeton' })));
+    expect(issue).toContain(NTFY_CANAL_OUVERT);
+    expect(issue).not.toContain('canal-public-sans-jeton');
+  });
+
+  /*
+   * La sentinelle n'ouvre **que** ce canal. Ecrite dans n'importe quelle autre
+   * variable secrete, elle n'est qu'une chaine de plus : soit la variable a sa
+   * propre forme imposee et la refuse en se nommant, soit elle l'accepte comme
+   * elle accepterait n'importe quoi d'autre. Dans les deux cas, `ntfyToken`
+   * garde sa valeur : aucune autre variable ne sait rendre `null`.
+   */
+  it.each(SECRET_NAMES.filter((nom) => nom !== 'NTFY_TOKEN'))(
+    'ne donne aucun sens particulier a la sentinelle ecrite dans %s',
+    (nom) => {
+      const charge = (): ReturnType<typeof loadConfig> | ConfigError => {
+        try {
+          return loadConfig(env({ [nom]: NTFY_CANAL_OUVERT }));
+        } catch (error) {
+          if (error instanceof ConfigError) return error;
+          throw error;
+        }
+      };
+      const resultat = charge();
+      if (resultat instanceof ConfigError) {
+        expect(resultat.issues.every((issue) => issue.includes(nom))).toBe(true);
+        return;
+      }
+      expect(resultat.secrets.ntfyToken).toBe(SECRETS['NTFY_TOKEN']);
+      expect(Object.values(resultat.secrets)).toContain(NTFY_CANAL_OUVERT);
+    },
+  );
+
+  /*
+   * Le compte des variables requises ne bouge pas. C'est l'affirmation la plus
+   * facile a casser en assouplissant une variable : dix restent dix, et la
+   * sentinelle n'en rend aucune optionnelle.
+   */
+  it('laisse les dix variables requises requises, sentinelle comprise', () => {
+    const issues = issuesOf(() => loadConfig({ NTFY_TOKEN: NTFY_CANAL_OUVERT }));
+    expect(issues).toHaveLength(SECRET_NAMES.length - 1);
+    expect(issues.join('\n')).not.toContain('NTFY_TOKEN');
   });
 });

@@ -544,6 +544,66 @@ describe('openNotifier — la publication ntfy', () => {
   });
 
   /*
+   * Le canal non authentifie, variante par variante. `null` est ce que
+   * `loadConfig` rend sur la sentinelle `NTFY_CANAL_OUVERT`, et rien d'autre du
+   * depot ne sait le produire.
+   *
+   * L'affirmation n'est pas « l'en-tete est vide » mais **« la cle n'existe
+   * pas »**, et l'egalite stricte du jeu d'en-tetes est ce qui la tient : un
+   * `Authorization: ''` ou un `Bearer null` passeraient un `not.toContain`, et
+   * ntfy les lirait comme une authentification ratee — un 401 quotidien qu'on
+   * confondrait avec un jeton revoque.
+   */
+  it('n’envoie aucun en-tete Authorization quand le canal est declare ouvert', async () => {
+    const { send, requests } = transport();
+
+    await openNotifier({ ...SECRETS, ntfyToken: null }, send).notify(alerte());
+
+    expect(requests[0]?.headers).toEqual({ 'Content-Type': 'application/json' });
+    expect(Object.keys(requests[0]?.headers ?? {})).not.toContain('Authorization');
+  });
+
+  it('envoie exactement les deux en-tetes attendus quand un jeton est pose', async () => {
+    const { send, requests } = transport();
+
+    await openNotifier(SECRETS, send).notify(alerte());
+
+    expect(requests[0]?.headers).toEqual({
+      'Content-Type': 'application/json',
+      Authorization: 'Bearer jeton-de-test',
+    });
+  });
+
+  /*
+   * Seuls les en-tetes changent. L'URL, le topic, le titre, le corps, la
+   * priorite et la cle sont les memes des deux cotes : un canal ouvert publie la
+   * meme alerte, pas une alerte degradee.
+   */
+  it('publie le meme corps avec et sans jeton', async () => {
+    const avec = transport();
+    const sans = transport();
+
+    await openNotifier(SECRETS, avec.send).notify(alerte());
+    await openNotifier({ ...SECRETS, ntfyToken: null }, sans.send).notify(alerte());
+
+    expect(sans.requests[0]?.body).toBe(avec.requests[0]?.body);
+    expect(sans.requests[0]?.url).toBe(avec.requests[0]?.url);
+  });
+
+  /*
+   * Le sort rendu ne trahit pas le mode : `SENT` et sa cle des deux cotes. Un
+   * appelant qui distinguerait les deux finirait par traiter le canal ouvert
+   * comme un echec.
+   */
+  it('rend le meme sort sans jeton qu’avec', async () => {
+    const { send } = transport();
+
+    await expect(openNotifier({ ...SECRETS, ntfyToken: null }, send).notify(alerte())).resolves.toEqual(
+      { status: 'SENT', event: 'DRAWDOWN', key: alertKey(alerte()) },
+    );
+  });
+
+  /*
    * Les deux niveaux, un par variante. `URGENT` est celui qui traverse le mode
    * « ne pas deranger » ; les confondre reviendrait a n'avoir qu'un niveau.
    */

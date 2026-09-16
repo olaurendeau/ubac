@@ -16,11 +16,11 @@ import { openMailer } from '../../src/adapters/mailer.js';
 import type { AlertEvent } from '../../src/adapters/notifier.js';
 import { openNotifier } from '../../src/adapters/notifier.js';
 import type { UbacConfig } from '../../src/config/env.js';
-import { loadConfig } from '../../src/config/env.js';
+import { loadConfig, NTFY_CANAL_OUVERT } from '../../src/config/env.js';
 import { expectedCalendar } from '../../src/fixture/normalise.js';
 import type { Price, Quantity, UsdcAmount } from '../../src/core/types.js';
 import type { DailyPorts, DailyRunResult, RunClock } from '../../src/jobs/daily.js';
-import { DailyRunError, reported, runDaily } from '../../src/jobs/daily.js';
+import { DailyRunError, NTFY_CANAL_OUVERT_LIGNE, reported, runDaily } from '../../src/jobs/daily.js';
 import { REPORT_TAG } from '../../src/report/daily-report.js';
 import { photo, PORTFOLIO, qty, solde } from './doubles.js';
 
@@ -1708,5 +1708,76 @@ describe('§9 — le code de sortie et le marqueur ne divergent pas', () => {
 
     expect(corpsDuPing(h)).toContain('RUN_NON_RENDU');
     for (const attendu of attendus) expect(corpsDuPing(h)).toContain(attendu);
+  });
+});
+
+/**
+ * Le canal d'alerte non authentifie se **dit**, tous les jours, dans le journal
+ * du run. C'est ce que l'ecart coute : un document se lit une fois, une ligne
+ * quotidienne se voit passer, et un ecart qui porte une echeance ne doit pas
+ * s'oublier au bout d'une semaine.
+ *
+ * Une sonde par variante annoncee dans l'en-tete de `NTFY_CANAL_OUVERT_LIGNE`.
+ */
+describe('la ligne du canal ouvert — §9, ecart assume', () => {
+  const ouvert = (scenario: Parameters<typeof harnais>[0] = {}): Harnais =>
+    harnais({ ...scenario, env: { NTFY_TOKEN: NTFY_CANAL_OUVERT } });
+
+  it('journalise le canal ouvert, une fois, quand la sentinelle est posee', async () => {
+    const h = ouvert({ balances: DANS_LA_BANDE });
+
+    await lance(h);
+
+    expect(h.lignes.filter((ligne) => ligne === NTFY_CANAL_OUVERT_LIGNE)).toHaveLength(1);
+  });
+
+  it('ne dit rien quand un jeton est pose', async () => {
+    const h = harnais({ balances: DANS_LA_BANDE });
+
+    await lance(h);
+
+    expect(h.lignes).not.toContain(NTFY_CANAL_OUVERT_LIGNE);
+  });
+
+  /*
+   * **Avant l'etape 1**, donc avant le premier appel de port. Le placer plus
+   * loin l'aurait fait dependre de la reponse de Coinbase, et un run qui echoue
+   * a sa premiere lecture est precisement celui dont on lit le journal.
+   */
+  it('le dit avant le premier appel de port', async () => {
+    const h = ouvert({ balances: DANS_LA_BANDE });
+
+    await lance(h);
+
+    expect(h.lignes[0]).toBe(NTFY_CANAL_OUVERT_LIGNE);
+    expect(h.appels).not.toHaveLength(0);
+  });
+
+  /*
+   * Les trois profondeurs d'exception du §9, reprises telles quelles : la ligne
+   * part meme quand le run leve, y compris a la toute premiere lecture.
+   */
+  it.each(['keyPermissions', 'dailyCandles', 'recordSnapshot'] as const)(
+    'le dit quand meme si %s leve',
+    async (port) => {
+      const h = ouvert({ balances: DANS_LA_BANDE, panne: port });
+
+      await expect(lance(h)).rejects.toThrow(PANNE);
+      expect(h.lignes[0]).toBe(NTFY_CANAL_OUVERT_LIGNE);
+    },
+  );
+
+  /*
+   * Et il publie pour de vrai. Le harnais monte le **vrai** `openNotifier` sur
+   * un transport double : un canal ouvert alerte comme un canal authentifie,
+   * sinon l'ecart couterait les alertes elles-memes.
+   */
+  it('alerte comme d’habitude, sans jeton', async () => {
+    const h = ouvert({ balances: HORS_BANDE, snapshot: veille('200000') });
+
+    await lance(h);
+
+    expect(h.pushes).not.toHaveLength(0);
+    expect(h.pushes[0]?.payload.topic).toBe(ENV.NTFY_TOPIC);
   });
 });

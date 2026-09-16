@@ -56,6 +56,28 @@ export class ConfigError extends Error {
 // --- Formes exposees --------------------------------------------------------
 
 /**
+ * La declaration explicite d'un canal ntfy **non authentifie**.
+ *
+ * Elle existe parce que le topic de l'operateur vit sur ntfy.sh, public et sans
+ * liste de controle d'acces : il n'y a pas de jeton a poser, et la reservation
+ * de topic qui en creerait un est une option payante. Un jeton gratuit
+ * n'acheterait presque rien — il authentifierait un publieur sur un topic que
+ * n'importe qui peut lire et alimenter. L'ecart est donc **declare** plutot que
+ * maquille : mieux vaut un systeme qui dit qu'il est ouvert qu'un systeme qui
+ * fait semblant d'etre authentifie. Motif complet et echeance dans
+ * `docs/alertes.md` § 5 bis.
+ *
+ * Ce n'est pas un secret, et c'est pour cela qu'elle peut vivre ici en clair :
+ * c'est une phrase convenue, publiee dans `.env.example` et dans la
+ * documentation, qui ne donne acces a rien.
+ *
+ * **Elle ne desserre rien pour qui ne l'ecrit pas.** `NTFY_TOKEN` absente ou
+ * vide reste refusee au demarrage, en nommant la variable, exactement comme
+ * avant ; seule cette valeur-ci, a la lettre pres, ouvre le canal.
+ */
+export const NTFY_CANAL_OUVERT = 'CANAL-PUBLIC-SANS-JETON';
+
+/**
  * Les variables secretes du §10 de la spec, sous les noms exacts que Scaleway
  * leur donne. Aucune n'a de defaut.
  *
@@ -91,7 +113,18 @@ export interface Secrets {
   readonly brevoRecipient: string;
   readonly ntfyUrl: string;
   readonly ntfyTopic: string;
-  readonly ntfyToken: string;
+  /**
+   * Le jeton porteur ntfy, ou **`null` quand l'operateur a declare le canal non
+   * authentifie** avec la sentinelle `NTFY_CANAL_OUVERT`.
+   *
+   * `null` et non une chaine vide, et la nuance est tout le sujet : une chaine
+   * vide est ce qu'on obtient quand une variable n'a pas ete renseignee, donc
+   * une absence deguisee en valeur. `null` ne s'obtient que par la sentinelle,
+   * c'est-a-dire par une phrase que quelqu'un a ecrite en toutes lettres. Le
+   * type porte la difference, donc `openNotifier` ne peut pas fabriquer
+   * `Bearer ` ni `Bearer null` : il n'a rien a concatener.
+   */
+  readonly ntfyToken: string | null;
   readonly healthcheckUrl: string;
 }
 
@@ -217,6 +250,36 @@ function secretUrl(name: string, protocols: readonly string[], forme: string) {
       }
     },
     { error: () => `${name} : ${forme} attendue (valeur masquee)` },
+  );
+}
+
+/**
+ * `NTFY_TOKEN`, la seule variable secrete qui admette une valeur convenue.
+ *
+ * Deux lectures, et deux seulement : la sentinelle `NTFY_CANAL_OUVERT`, qui
+ * declare un canal non authentifie, ou un jeton porteur. Absente ou vide, elle
+ * est refusee comme les neuf autres — la sentinelle **ajoute** une facon de
+ * declarer, elle n'en retire aucune.
+ *
+ * Le troisieme cas est celui contre lequel ce controle existe : une sentinelle
+ * **mal ecrite**. `canal-public-sans-jeton` en minuscules, ou entoure d'espaces,
+ * serait sinon lu comme un jeton porteur parfaitement valide, et l'operateur qui
+ * croit avoir declare un canal ouvert enverrait un `Bearer` bidon a chaque
+ * alerte. ntfy repondrait 401, le run sortirait en 1 tous les jours, et rien
+ * dans le message ne dirait que la faute est une majuscule. Une valeur qui
+ * **ressemble** a la sentinelle sans l'etre est donc refusee au demarrage.
+ *
+ * Le message cite la sentinelle, et c'est volontaire : elle n'est pas un secret,
+ * elle est publiee dans `.env.example`. Il ne cite jamais la valeur recue, qui
+ * en est peut-etre un.
+ */
+function ntfyTokenVar() {
+  return secret('NTFY_TOKEN').refine(
+    (value) => value === NTFY_CANAL_OUVERT || value.trim().toUpperCase() !== NTFY_CANAL_OUVERT,
+    {
+      error: () =>
+        `NTFY_TOKEN : la declaration du canal non authentifie s'ecrit exactement ${NTFY_CANAL_OUVERT}, sans espace ni difference de casse ; toute autre valeur est lue comme un jeton porteur (valeur masquee)`,
+    },
   );
 }
 
@@ -349,7 +412,7 @@ const schema = z.object({
     NTFY_TOPIC_TEXT,
     'nom de topic ntfy attendu : lettres, chiffres, tiret ou souligne, 64 au plus',
   ),
-  NTFY_TOKEN: secret('NTFY_TOKEN'),
+  NTFY_TOKEN: ntfyTokenVar(),
   HEALTHCHECK_URL: secretUrl('HEALTHCHECK_URL', ['https:'], 'URL https://'),
 
   UBAC_STRATEGY: enumVar('UBAC_STRATEGY', REBALANCE_STRATEGIES, 'rebalance'),
@@ -572,7 +635,13 @@ export function loadConfig(env: Env = process.env): UbacConfig {
       brevoRecipient: parsed.data.BREVO_RECIPIENT,
       ntfyUrl: parsed.data.NTFY_URL,
       ntfyTopic: parsed.data.NTFY_TOPIC,
-      ntfyToken: parsed.data.NTFY_TOKEN,
+      /*
+       * La sentinelle devient `null` **ici**, au seul endroit du depot qui
+       * connaisse son orthographe. Passe cette ligne, plus aucun module ne
+       * compare de chaine : `openNotifier` et `runDaily` lisent un `null`, que
+       * le type leur impose de traiter.
+       */
+      ntfyToken: parsed.data.NTFY_TOKEN === NTFY_CANAL_OUVERT ? null : parsed.data.NTFY_TOKEN,
       healthcheckUrl: parsed.data.HEALTHCHECK_URL,
     },
     rebalance: params,

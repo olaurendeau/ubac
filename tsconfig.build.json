@@ -1,0 +1,23 @@
+{
+  // Le SEUL tsconfig qui emette du JavaScript, et il ne sert qu'a l'image de
+  // production. `tsconfig.json` reste en `noEmit` : `make typecheck` verifie,
+  // il ne compile pas.
+  //
+  // L'image de production n'embarque pas `tsx` (§10, docs/deploiement.md) : le
+  // job demarre sur `node dist/jobs/daily-main.js`, du JavaScript ordinaire.
+  // Un transpileur au demarrage d'un job de 5 minutes de timeout est une piece
+  // de plus qui peut manquer, pour rien.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rootDir": "src",
+    "outDir": "dist",
+    // Ni declarations ni cartes de source : personne n'importe ce paquet, et
+    // une carte de source embarquerait le TypeScript dans l'image.
+    "declaration": false,
+    "sourceMap": false
+  },
+  // `src/` seul. Les tests, les scripts et les fichiers de configuration de la
+  // racine restent hors de l'image.
+  "include": ["src/**/*.ts"]
+}

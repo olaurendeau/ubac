@@ -1,0 +1,75 @@
+# syntax=docker/dockerfile:1
+
+# Image de PRODUCTION du run quotidien (spec §10), distincte de `Dockerfile`,
+# qui ne sert qu'au conteneur de developpement. Trois proprietes, chacune
+# fermant une panne qui ne se verrait qu'en production :
+#
+# 1. **linux/amd64, verifie a la construction** : une image ARM poussee depuis
+#    ce Mac meurt en `exec format error`, sans que rien n'ait rougi ici.
+# 2. **Ni devDependencies, ni drizzle-kit, ni tsx** : un job qui n'embarque pas
+#    drizzle-kit ne peut pas lancer ses DROP (docs/base-de-donnees.md §5), et
+#    c'est la seule garantie qui ne repose pas sur la discipline.
+# 3. **Le SHA de commit est dans l'image** : le tag et `decisions.git_sha`
+#    sortent de la meme valeur, donc ils ne peuvent pas diverger.
+#
+# La procedure complete est dans docs/deploiement.md.
+
+ARG NODE_IMAGE=node:22-bookworm-slim
+
+# --- Base commune : le garde-fou d'architecture, avant tout le reste ---------
+FROM ${NODE_IMAGE} AS base
+ARG TARGETPLATFORM
+RUN set -eu; \
+    if [ "${TARGETPLATFORM}" != "linux/amd64" ]; then \
+      echo "ARCHITECTURE REFUSEE : TARGETPLATFORM=\"${TARGETPLATFORM}\", attendu linux/amd64." >&2; \
+      echo "Construire avec : docker buildx build --platform linux/amd64 ..." >&2; \
+      echo "Voir docs/deploiement.md, section 3." >&2; \
+      exit 1; \
+    fi
+WORKDIR /app
+COPY package.json package-lock.json ./
+
+# --- Dependances de production, et elles seules ------------------------------
+# `--omit=dev` laisse dehors drizzle-kit, tsx, vitest, eslint et typescript.
+# `--omit=optional` laisse dehors bufferutil et utf-8-validate, accelerateurs
+# natifs de `ws` que ccxt n'utilise pas en REST et qui demanderaient un
+# compilateur dans une image qui n'en a pas.
+FROM base AS deps
+RUN npm ci --omit=dev --omit=optional --no-audit --no-fund
+
+# --- Compilation TypeScript --------------------------------------------------
+# Cette couche-ci a bien toutes les devDependencies : c'est ce qui permet a la
+# suivante de n'en avoir aucune. Elle est jetee, seul `dist/` en sort.
+FROM base AS build
+RUN npm ci --no-audit --no-fund
+COPY tsconfig.json tsconfig.build.json ./
+COPY src ./src
+RUN npm run build
+
+# --- L'image livree ----------------------------------------------------------
+FROM ${NODE_IMAGE} AS runtime
+ENV NODE_ENV=production
+WORKDIR /app
+
+# `package.json` pour son `"type": "module"` : sans lui, Node lit `dist/*.js`
+# comme du CommonJS et refuse le premier `import`. Le lockfile, lui, n'a plus
+# rien a faire ici.
+COPY package.json ./
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
+COPY --chmod=0555 scripts/entrypoint-job.sh /usr/local/bin/ubac-daily
+
+# En derniere position : le SHA change a chaque commit, et le poser plus haut
+# invaliderait le cache de tout ce qui precede a chaque construction.
+ARG GIT_SHA
+RUN set -eu; \
+    if [ -z "${GIT_SHA}" ]; then \
+      echo "GIT_SHA absent : construire avec --build-arg GIT_SHA=\$(git rev-parse --verify HEAD)." >&2; \
+      echo "Sans lui, decisions.git_sha ne dirait pas quel code a decide. Voir docs/deploiement.md." >&2; \
+      exit 1; \
+    fi
+ENV UBAC_GIT_SHA=${GIT_SHA}
+
+# Le job ne lit ni n'ecrit de fichier : rien ne justifie root.
+USER node
+ENTRYPOINT ["/usr/local/bin/ubac-daily"]
