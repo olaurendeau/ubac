@@ -117,7 +117,7 @@ Ce qui manque est la lecture de l'historique d'exécutions, pas la règle.
 | **B2** | Armement progressif par **plafond réduit** sur la taille des jambes, puis levée. **Pas** d'approbation manuelle par bouton ntfy | un plafond existe, il est temporaire, et rien n'attend un humain dans la boucle d'exécution |
 | **B3** | Le `DRY_RUN` est un **lot prérequis**, livré et éprouvé **avant** tout ordre réel | E12 à E17 ; l'ordre des lots est une contrainte de plan, pas une préférence |
 | **B4** | Le garde-fou ESLint d'écriture d'ordre est **retiré** | E9 à E11, et l'inventaire de ce que le dépôt perd, ci-dessous |
-| **B5** | La sortie propre est **déverrouillée et armée**, avec sa commande CLI et son bouton d'action ntfy | E43 à E49 |
+| **B5** | La sortie propre est **déverrouillée et armée**, avec sa commande CLI et son bouton d'action ntfy | E43 à E49, et **E59** pour le bouton (forme tranchée par O5) |
 
 Sur **B2**, la spec note que « pas d'approbation manuelle » est cohérent avec la
 décision **D7** de la phase 2, qui a déjà retiré l'humain de la boucle de
@@ -138,101 +138,92 @@ pas pour être découvertes en revue.
 | Le `portfolio_uuid` attendu | **variable de configuration**, comparée aux permissions effectives | le contrôle actuel est auto-référentiel : il ne détecte pas une clé scopée sur *Primary*. Voir les hypothèses challengées |
 | Le `DECALAGE_DE_JAMBE` à 900 | **supprimé**, au profit d'un domaine propre dans `core/order-id.ts` | `docs/sortie-propre.md` le désigne lui-même comme un contournement ; la phase 3 est la phase qui rend la collision réelle |
 
-## Décisions restant à prendre
+## Décisions prises par l'opérateur
 
-Posées à l'opérateur le 2026-09-20 (`ask` msg_0e346d07ec1e), sans réponse à
-l'heure de ce commit.
-**Aucune n'est tranchée en douce** : chacune est répondable par un chiffre, et
-sept chiffres en un message les closent toutes. Les cinq premières (O1 à O5)
-viennent des trous que B2 et B5 laissent ; les deux dernières (O6 et O7) étaient
-déjà réservées à l'opérateur par les lots précédents, avec l'échéance « avant la
-phase 3 ».
+Posées le 2026-09-20 (`ask` msg_0e346d07ec1e), **répondues le même jour** :
+`O1=3 O2=3 O3=3 O4=1 O5=1 O6=1 O7=2`. Ce sont exactement les sept
+recommandations que ce cadrage portait ; elles ne sont donc pas des arbitrages
+surprises, et chacune est reprise ci-dessous avec son motif retenu.
 
-Format de réponse, à recopier tel quel en changeant les chiffres :
-`O1=3 O2=3 O3=3 O4=1 O5=1 O6=1 O7=2` — ce sont les recommandations ci-dessous.
+Les cinq premières (O1 à O5) venaient des trous que B2 et B5 laissaient ; les
+deux dernières (O6 et O7) étaient déjà réservées à l'opérateur par les lots
+précédents, avec l'échéance « avant la phase 3 ».
 
-La recommandation qui suit chaque question est la mienne, pas une décision.
+| # | Question | Réponse retenue |
+|---|---|---|
+| **O1** | Forme du plafond réduit (B2) | **3 — fraction de la valeur du portefeuille par run**, c'est-à-dire `REBALANCE_TOO_LARGE_PCT` abaissé, de l'ordre de **5 %** au lieu de 25 % |
+| **O2** | Que fait le système quand une jambe dépasse le plafond ? | **3 — pas de rabotage.** Le run entier est refusé ; le portefeuille reste hors bande jusqu'à la levée du plafond |
+| **O3** | Par quel geste le plafond est-il levé ? | **3 — un geste explicite** : changement de constante dans le code, PR relue, déploiement. Jamais automatiquement, jamais par variable d'environnement |
+| **O4** | Qu'est-ce qui clôt la phase 3 ? | **1 — un mois calendaire de runs armés sans incident**, même si aucun rééquilibrage n'a eu lieu |
+| **O5** | Le bouton ntfy de la sortie propre (B5) | **1 — un bouton `view`** qui ouvre la console Scaleway ; l'opérateur lance le job à la main. Aucun jeton ne voyage dans une notification |
+| **O6** | Un jour de resynchronisation autorise-t-il l'exécution ? | **1 — non.** Le run journalise sans placer |
+| **O7** | L'ordre des étapes de la sortie propre | **2 — désarmer le déclencheur en premier**, puis annuler, céder, rapporter |
 
-**O1. Forme du plafond réduit (B2).**
-1) montant fixe en USDC par jambe — 2) montant fixe en USDC pour tout le run —
-3) fraction de la valeur du portefeuille par run, c'est-à-dire
-`REBALANCE_TOO_LARGE_PCT` abaissé — 4) fraction par run **et** plafond absolu en
-USDC, le plus contraignant l'emportant.
-*Recommandation : 3.* La règle existe déjà, elle est couverte à 100 %, et elle a
-exactement la bonne forme. Un plafond en montant absolu vieillit mal : il
-devient inopérant dès que le portefeuille grossit, sans que rien ne le dise.
+### Ce que ces réponses changent, et ce qu'elles coûtent
 
-**O2. Que fait le système quand une jambe dépasse le plafond ?**
-1) il rabote la jambe ; si elle tombe sous `MIN_LEG_USDC` elle est écartée, les
-autres passent — 2) il rabote ; si une jambe tombe sous 200 USDC, tout le run
-est refusé — 3) il ne rabote pas : le run entier est refusé tant qu'il dépasse,
-et le portefeuille reste hors bande jusqu'à la levée.
-*Recommandation : 3.* **Raboter a une conséquence que la question ne montre pas
-au premier coup d'œil** : un run raboté qui s'exécute entièrement est un
-rééquilibrage *complet réussi* au sens d'`armsCooldown`, donc il arme le
-cooldown de 7 jours — et laisse le portefeuille hors bande une semaine,
-précisément parce qu'on l'a raboté. Si 1 ou 2 est retenu, la spec doit porter en
-critère numéroté qu'**un run raboté n'arme pas le cooldown**, ce qui suppose de
-toucher à `armsCooldown`, donc à `core/risk.ts` et à sa couverture à 100 %.
-L'option 3 ne demande rien de tout cela.
+**O1 = 3 et O2 = 3 se referment l'une sur l'autre, et le plafond devient
+presque gratuit.** `REBALANCE_TOO_LARGE` refuse déjà le run entier : c'est une
+`Rejection` du verdict, pas un écrêtage de jambe. La forme retenue en O1 est
+donc **exactement** celle que O2 demande, et le plafond réduit se ramène à une
+constante abaissée dans `core/risk.ts`. Le motif écrit dans `decisions.reason`
+et l'alerte `REBALANCE_TOO_LARGE` qu'E32 exige **existent depuis la phase 0** :
+il n'y a rien à écrire pour eux, seulement à constater qu'ils mordent sur la
+nouvelle valeur. Le plan ne replanifie pas ce qui existe.
 
-**O3. Par quel geste le plafond est-il levé (B2) ?**
-1) automatiquement après N rééquilibrages complets réussis — 2) automatiquement
-après 30 jours de runs armés sans incident — 3) geste explicite : changement de
-constante, PR relue, déploiement — 4) variable d'environnement chez Scaleway.
-*Recommandation : 3.* L'option 4 contredit une frontière déjà posée : toute
-variable préfixée `UBAC_RISK_` fait **échouer le démarrage**, précisément pour
-qu'un seuil de risque ne se change pas depuis une console
-(`docs/phase-1-frontieres.md` §3). Les options 1 et 2 lèvent le plafond sans que
-personne ne regarde — or « un plafond dont la levée n'est pas écrite est un
-plafond qui se lèvera par accident » vaut aussi pour une levée automatique.
+**O2 = 3 rend E33 sans objet**, et c'est la conséquence la plus utile des
+sept : aucun run raboté n'existe, donc `armsCooldown` n'a pas à distinguer un
+rééquilibrage volontairement incomplet d'un rééquilibrage complet, donc
+`core/risk.ts` n'est pas touchée sur ce point et sa couverture à 100 % n'est pas
+remise en jeu par une branche nouvelle.
 
-**O4. Qu'est-ce qui clôt la phase 3 ?**
-1) un mois calendaire de runs armés sans incident, même sans rééquilibrage — 2)
-N rééquilibrages complets réellement exécutés et réconciliés, sans condition de
-durée — 3) les deux — 4) critère purement technique, comme la phase 0.
-*Recommandation : 1.* L'option 4 est aussi défendable et ne coûte rien de plus.
-Les options 2 et 3, elles, font dépendre la sortie de phase d'un événement que
-**le marché décide**, pas le code : 4 à 8 déclenchements par an, et une jambe
-post-only peut ne jamais s'exécuter. C'est la même erreur que le cadrage de la
-phase 0 a corrigée en refusant « paramètres de bandes validés » comme critère de
-sortie.
+**O2 = 3 a un coût, et il est assumé** : entre le dépassement et la levée du
+plafond, le portefeuille **reste hors bande**, run après run, sans que rien ne
+le ramène. Ce n'est pas un état dégradé silencieux — E32 fait partir une alerte
+chaque jour — mais c'est un état qui dure tant que personne ne lève le plafond.
+C'est le prix de ne pas armer un cooldown de sept jours sur un rééquilibrage
+qu'on a soi-même empêché d'aboutir.
 
-**O5. Le bouton ntfy de la sortie propre (B5).** Constat : les alertes n'ont
-aujourd'hui **aucun champ d'action** — `Alert` porte `event`, `priority`,
-`runDate`, `title`, `body` — et le job n'a **aucune surface HTTP**. Un bouton
-doit déclencher quelque chose.
-1) bouton `view`, qui ouvre la console Scaleway ; l'opérateur lance le job à la
-main — 2) bouton `http`, qui appelle l'API Scaleway ; un jeton voyage alors dans
-la notification — 3) pas de bouton en phase 3 : commande CLI seule, bouton
-reporté.
-*Recommandation : 1.* L'option 2 met un jeton capable de lancer un job dans un
-message stocké sur un serveur ntfy — et tant que E3 n'est pas tenu, sur un topic
-que **n'importe qui peut lire**. Le §14 veut qu'on n'improvise pas un script le
-jour où on veut arrêter ; un bouton qui ouvre la bonne page tient cette promesse
-sans déplacer un secret.
+**O1 = 3 déborde sur les stratégies shadow, et le plan doit le dire.**
+`validate()` est appelée pour les quatre stratégies, la production comme les
+ombres. Abaisser la constante change donc aussi les verdicts de `rebalance_ab`,
+`ladder` et `dca`, qui ne placent rien : on verra davantage de
+`REBALANCE_TOO_LARGE` dans `decisions`, dans le rapport et dans les alertes,
+sans qu'aucun ordre ne soit en cause. E31 — « le plafond s'applique à la
+stratégie active et à elle seule » — porte sur l'**effet** (quelles jambes sont
+empêchées), pas sur les verdicts prononcés. Introduire un plafond par stratégie
+donnerait à la couche risque un paramètre de plus, ce qu'E30 refuse.
 
-**O6. Un jour de resynchronisation autorise-t-il l'exécution ?** Question posée
-par `docs/reconciliation.md` §3 bis, avec l'échéance « avant la phase 3 », et
-sans objet tant que la PR #45 n'est pas fusionnée.
-1) refuser d'exécuter un jour de resynchronisation, le run journalise sans
-placer — 2) refuser seulement si des ordres `PENDING` sont indéterminables — 3)
-exécuter quand même.
-*Recommandation : 1.* C'est celle vers laquelle la rédaction de #45 penche déjà.
-L'option 2 est plus fine mais suppose la lecture manquante de E37, donc elle ne
-peut pas être livrée avant elle. L'option 3 ne doit être retenue que si elle est
-**explicitement choisie**, jamais par omission — c'est le mot de #45, et il est
-juste.
+**O3 = 3 fait de la levée un commit.** La date et le geste sont lisibles dans
+l'historique de `main` sans qu'aucun mécanisme n'ait à les enregistrer : c'est
+E34, et il est tenu par le dépôt lui-même. L'option 4 aurait contredit
+`docs/phase-1-frontieres.md` §3, qui fait échouer le démarrage sur toute
+variable préfixée `UBAC_RISK_`.
 
-**O7. L'ordre des étapes de la sortie propre.** Le §14 désactive le cron en
-étape 3, **après** les cessions. `docs/sortie-propre.md` §5 relève la fenêtre et
-la réserve à l'opérateur : en phase 3, un run quotidien qui tombe pendant une
-sortie relirait un portefeuille en cours de liquidation et y répondrait.
-1) garder l'ordre du §14 — 2) désarmer le déclencheur **en premier**, puis
-annuler, céder, rapporter.
-*Recommandation : 2.* La fenêtre est théorique en phase 1 parce que rien ne
-s'exécute. Elle cesse de l'être exactement au moment où cette spec arme les deux
-chemins.
+**O4 = 1 découple la sortie de phase du marché.** Un mois calendaire de runs
+armés sans incident se constate ; N rééquilibrages réels dépendent de 4 à 8
+franchissements de bande par an et d'une jambe post-only qui peut ne jamais
+s'exécuter. Le §13 prévient déjà que la période peut n'en montrer aucun.
+
+**O5 = 1 oblige à étendre `Alert`.** Le type ne porte aujourd'hui que `event`,
+`priority`, `runDate`, `title` et `body` ; un bouton demande un champ d'action,
+son rendu dans `notifier.ts`, et sa validation dans la relecture d'alerte qui
+refuse une alerte illisible. C'est un critère neuf : **E59**.
+
+**O6 = 1 n'a d'objet qu'une fois la PR #45 fusionnée.** Sans elle, une
+divergence de solde abandonne le run avant toute décision, donc aucun jour de
+resynchronisation n'existe et rien ne peut exécuter ce jour-là. C'est un
+critère neuf : **E60**.
+
+**O7 = 2 est un écart assumé avec le §14**, dont l'étape 3 désactive le cron
+**après** les cessions. Le motif est la fenêtre relevée par
+`docs/sortie-propre.md` §5 : un run quotidien qui tombe pendant une sortie
+relirait un portefeuille en cours de liquidation et y répondrait. Cette fenêtre
+est théorique en phase 1 parce que rien ne s'exécute ; elle cesse de l'être
+exactement au moment où cette spec arme les deux chemins. L'ordre livré devient
+donc **DECLENCHEUR, ANNULATION, CESSION, RAPPORT**, et `ETAPES` de
+`src/jobs/liquidate.ts` le dit. Le rapport entre l'annulation et la cession ne
+change pas : l'annulation précède toujours la cession, parce que la quantité
+cédée inclut le gelé (E47).
 
 ## Hypothèses challengées
 
@@ -329,10 +320,16 @@ de satisfaire.
 
 ## Critères d'acceptation
 
-Cinquante-huit critères, cités **E1 à E58** ailleurs dans le dépôt. Le préfixe
-`C` est déjà pris par les trente-deux critères de la phase 0 — `C21` y désigne
-le cooldown —, et deux jeux de critères qui partagent un préfixe finissent par
-se confondre en revue.
+Soixante critères, cités **E1 à E60** ailleurs dans le dépôt. Le préfixe `C`
+est déjà pris par les trente-deux critères de la phase 0 — `C21` y désigne le
+cooldown —, et deux jeux de critères qui partagent un préfixe finissent par se
+confondre en revue.
+
+Le cadrage en posait cinquante-huit ; **E59 et E60 ont été ajoutés à la suite**
+par les réponses O5 et O6, et **E33 est devenu sans objet** par la réponse O2
+sans que son numéro soit réattribué. La numérotation ne se recompacte jamais :
+un `E41` doit désigner le même critère dans cette spec, dans le plan, dans une
+PR et dans une tâche Orca.
 
 **Conditions d'entrée — vérifiées avant le premier lot, pas pendant**
 
@@ -448,15 +445,21 @@ se confondre en revue.
     exécutés, et cite les frais réels. Un rapport qui ne dirait pas ce qui est
     parti serait un rapport d'observation dans une phase d'exécution.
 
-**Le plafond réduit (B2)**
+**Le plafond réduit (B2), clos par O1 = 3, O2 = 3 et O3 = 3**
 
-Quatre propriétés tiennent quelle que soit la réponse aux décisions O1 à O3 ;
-les deux valeurs qui manquent sont nommées comme telles, et le plan ne
-dispatchera pas le lot avant qu'elles soient données.
+Les trois décisions se referment l'une sur l'autre : le plafond **est**
+`REBALANCE_TOO_LARGE_PCT` abaissé, il refuse le run entier au lieu de raboter,
+et il se lève par un commit. Le mécanisme de rejet, le motif journalisé et
+l'alerte existent depuis la phase 0 ; ce qui est neuf est la valeur.
 
 29. Un plafond réduit est **armé dès le premier run qui exécute**, et il est
-    strictement plus contraignant que `REBALANCE_TOO_LARGE_PCT` à 25 %. Sa forme
-    et sa valeur viennent de la **décision O1**.
+    strictement plus contraignant que `REBALANCE_TOO_LARGE_PCT` à 25 %.
+    **O1 = 3** : le plafond est une **fraction de la valeur du portefeuille par
+    run**, donc `REBALANCE_TOO_LARGE_PCT` lui-même, abaissé **de l'ordre de
+    5 %**. Aucune règle nouvelle n'est écrite : c'est la valeur d'une constante
+    existante qui change, et le lot qui l'abaisse est fusionné **avant** celui
+    qui arme l'exécution. Le plafond s'applique donc à tout appel de
+    `validate()`, verdicts shadow compris — voir E31.
 30. Le plafond est une **constante du code**, au même endroit que les autres
     seuils de risque, avec ses tests. Aucune variable d'environnement ne le
     change : `src/config/env.ts` fait déjà échouer le démarrage sur toute
@@ -466,21 +469,37 @@ dispatchera pas le lot avant qu'elles soient données.
 31. Le plafond s'applique à la **stratégie active et à elle seule**. Il ne
     s'applique pas à la sortie propre : une liquidation n'est pas un
     rééquilibrage, et les seuils qui gouvernent l'un ne gouvernent pas l'autre —
-    même raisonnement que E48.
-32. Un run empêché ou réduit par le plafond **n'est jamais silencieux** : le
-    motif est journalisé dans `decisions` en texte lisible, et une alerte part.
-    Le comportement exact — raboter la jambe ou refuser le run — vient de la
-    **décision O2**.
-33. **Si le rabot est retenu** (décision O2 = 1 ou 2) : un run raboté **n'arme
-    pas le cooldown**. Un rééquilibrage volontairement incomplet qui s'exécute
-    en entier passerait sinon pour un rééquilibrage complet réussi au sens
-    d'`armsCooldown`, et gèlerait sept jours un portefeuille qu'on vient
-    soi-même d'empêcher de revenir en bande. Si le refus est retenu (décision O2
-    = 3), ce critère est sans objet et disparaît de la spec.
+    même raisonnement que E48. Précision rendue nécessaire par O1 = 3 :
+    le critère porte sur l'**effet** — quelles jambes sont empêchées de partir —
+    et non sur les verdicts prononcés. `validate()` étant appelée pour les
+    quatre stratégies, les ombres verront elles aussi davantage de
+    `REBALANCE_TOO_LARGE` ; elles ne placent rien, donc le plafond n'a sur elles
+    aucun effet. Un plafond par stratégie donnerait à la couche risque un
+    paramètre de plus, ce qu'E30 refuse.
+32. Un run empêché par le plafond **n'est jamais silencieux** : le motif est
+    journalisé dans `decisions` en texte lisible, et une alerte part. **O2 = 3** :
+    le comportement est le **refus du run entier**, jamais le rabotage — le
+    portefeuille reste hors bande jusqu'à la levée du plafond, et l'alerte part
+    chaque jour où il le reste. Ce critère est **acquis** : le rejet
+    `REBALANCE_TOO_LARGE`, son `reason` écrit dans `decisions.reason` et
+    l'alerte du même nom existent depuis la phase 0 et Q6a2. Le lot du plafond
+    les constate sur la nouvelle valeur, il ne les réécrit pas.
+33. **Sans objet, clos par O2 = 3.** Ce critère exigeait qu'un run raboté
+    n'arme pas le cooldown. Le rabotage ayant été écarté, aucun run
+    volontairement incomplet n'existe, `armsCooldown` n'a rien à distinguer, et
+    `core/risk.ts` n'est pas touchée sur ce point. Le numéro est conservé sans
+    exigence pour que E34 à E58 ne se décalent pas : ils sont cités ailleurs
+    dans le dépôt.
 34. La **levée du plafond est tracée** : la date et le geste qui l'ont produite
-    sont lisibles après coup, dans le dépôt ou dans le journal des runs, de
-    sorte qu'on puisse dire quel run a été le premier à pleine taille. Le geste
-    lui-même vient de la **décision O3**.
+    sont lisibles après coup, de sorte qu'on puisse dire quel run a été le
+    premier à pleine taille. **O3 = 3** : le geste est le **changement de la
+    constante dans le code**, en PR relue et déployée — donc un commit de
+    `main`, daté et signé, et la trace **est** l'historique du dépôt. Aucun
+    mécanisme n'a à l'enregistrer. Le run qui suit le déploiement est le premier
+    à pleine taille, et son `git_sha` dans `decisions` le rattache au commit.
+    Ni levée automatique, ni variable d'environnement : `src/config/env.ts` fait
+    déjà échouer le démarrage sur toute variable préfixée `UBAC_RISK_`, et ce
+    critère ne rouvre pas cette porte.
 
 **Réconciliation : les écritures que la phase 3 ouvre**
 
@@ -534,9 +553,15 @@ dispatchera pas le lot avant qu'elles soient données.
     la même passe que son plan. `docs/sortie-propre.md` §5 le pose déjà comme la
     charge de l'exécuteur de phase 3.
 47. L'annulation précède la cession : la quantité cédée inclut le gelé, ce qui
-    n'est correct que dans cet ordre. La place de la **désactivation du
-    déclencheur** dans la séquence vient de la **décision O7** ; elle ne change
-    pas ce rapport-là entre l'annulation et la cession.
+    n'est correct que dans cet ordre. **O7 = 2** : la **désactivation du
+    déclencheur passe en premier**, avant l'annulation. L'ordre livré est donc
+    `DECLENCHEUR, ANNULATION, CESSION, RAPPORT`, et `ETAPES` de
+    `src/jobs/liquidate.ts` le dit, avec le test qui confronte le plan à ce
+    tableau. C'est un **écart assumé avec le §14**, dont l'étape 3 désactive le
+    cron après les cessions ; le motif est la fenêtre de `docs/sortie-propre.md`
+    §5, théorique tant que rien ne s'exécute et réelle dès que cette spec arme
+    les deux chemins. Le rapport entre l'annulation et la cession, lui, ne
+    change pas.
 48. `core/risk.ts` **n'est pas appelée** par la sortie et **n'est pas
     assouplie** pour elle. Les invariants qui s'appliquent vraiment —
     contrepartie USDC, limit post-only, plancher `MIN_LEG_USDC`,
@@ -568,17 +593,51 @@ dispatchera pas le lot avant qu'elles soient données.
 
 **Sortie de la phase 3**
 
-56. Le critère de sortie exact vient de la **décision O4**. Quelle qu'elle soit,
-    la sortie de phase est **prononcée explicitement** dans Orca, jamais déduite
-    du calendrier : une phase qui se termine parce qu'un mois s'est écoulé se
+56. **O4 = 1** : la phase 3 est close par **un mois calendaire de runs armés
+    sans incident**, même si aucun rééquilibrage n'a eu lieu. Le compte part du
+    premier run qui exécute à plein — c'est-à-dire après la levée du plafond
+    (E34) — et « sans incident » signifie : aucun abandon de run, aucun ordre
+    resté `INDETERMINABLE`, aucune alerte `URGENT` non expliquée. La sortie de
+    phase est **prononcée explicitement** dans Orca, jamais déduite du
+    calendrier : une phase qui se termine parce qu'un mois s'est écoulé se
     termine sans que personne n'ait regardé.
-57. À la sortie, E1 à E55 sont tenus et vérifiés **sur `main`**, pas sur une
-    branche en vol.
+57. À la sortie, E1 à E55 — ainsi qu'E59 et E60, ajoutés plus bas — sont tenus
+    et vérifiés **sur `main`**, pas sur une branche en vol. E33 est exclu de ce
+    compte : il est sans objet depuis O2 = 3.
 58. La phase 3 **ne conclut rien sur la stratégie**. Aucun résultat de
     performance, aucune comparaison au DCA ou au hold, n'est un critère de
     sortie. C'est la même règle qu'en phase 0, et elle vaut d'autant plus ici
     que les chiffres seront cette fois réels — donc convaincants, et tout aussi
     peu significatifs sur un mois.
+
+**Ajoutés par les réponses O5 et O6, à la suite et sans renuméroter**
+
+Ces deux critères ne pouvaient pas s'écrire avant les réponses : l'un décrit un
+mécanisme qui n'existe pas encore (`Alert` n'a aucun champ d'action), l'autre un
+état qui n'existe pas encore (le jour de resynchronisation arrive avec la
+PR #45). Ils sont numérotés à la suite plutôt qu'insérés dans leur section
+thématique, pour que E1 à E58 continuent de désigner la même chose partout où
+ils sont cités.
+
+59. **Le bouton ntfy de la sortie propre est de type `view`** (O5 = 1) : il
+    ouvre la console Scaleway, et l'opérateur y lance le job de sortie à la
+    main. **Aucun jeton, aucune URL signée, aucun secret ne voyage dans une
+    notification** — ce qui vaut d'autant plus que le canal est public tant
+    qu'E3 n'est pas tenu. Le type `Alert` gagne un champ d'action, `notifier.ts`
+    le rend dans la charge utile ntfy, et la relecture d'alerte — celle qui
+    refuse une alerte illisible plutôt que de publier un objet douteux — valide
+    ce champ comme elle valide les cinq autres. Une alerte sans action reste une
+    alerte valide : le champ est facultatif, et seule l'alerte de sortie le
+    porte.
+60. **Un jour de resynchronisation refuse d'exécuter** (O6 = 1) : le run
+    journalise, écrit ses décisions et sa photo, et **ne place aucun ordre**.
+    Le refus est explicite et porte son motif, jamais une omission — c'est le
+    mot de `docs/reconciliation.md` §3 bis, et il est juste. Ce critère
+    **n'a d'objet qu'une fois la PR #45 fusionnée** : sans elle, une divergence
+    au-delà de 1 % abandonne le run avant toute décision, donc aucun jour de
+    resynchronisation n'existe et rien ne peut exécuter ce jour-là. Si #45 est
+    fermée sans être fusionnée, E60 disparaît avec elle et le comportement
+    d'abandon le tient trivialement.
 
 ## Zones d'incertitude assumées
 
