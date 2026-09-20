@@ -105,6 +105,17 @@ export interface CashFlowRecord {
 }
 
 /**
+ * Une photo reduite aux **deux colonnes que le graphe du rapport lit** : sa date
+ * et ses metriques. Ni valeur totale, ni poids, ni position — une serie entiere
+ * de `SnapshotRecord` couterait plusieurs fois ce que le graphe consomme, et
+ * porterait une valeur totale que le graphe n'a justement pas le droit de tracer.
+ */
+export interface SnapshotPoint {
+  readonly runDate: IsoDate;
+  readonly benchmarks: Readonly<Record<string, Decimal>>;
+}
+
+/**
  * Un ordre non encore denoue. `status` n'y figure pas : il vaut `PENDING` par
  * construction, c'est le filtre de la requete et pas une donnee du resultat.
  */
@@ -128,6 +139,17 @@ export interface UbacDatabase {
   /** Photo du jour : rejouer le meme jour la remplace, la date de run est la cle. */
   recordSnapshot(input: SnapshotToRecord): Promise<void>;
   latestSnapshot(): Promise<SnapshotRecord | undefined>;
+  /**
+   * Toutes les photos, de la plus ancienne a la plus recente, reduites aux deux
+   * colonnes utiles. Elle **ne remplace pas** `latestSnapshot()`, que la
+   * reconciliation appelle aussi pour ses positions : deriver l'une de l'autre
+   * ferait entrer un lot integre dans le perimetre, pour economiser une requete
+   * que rien ne rend couteuse.
+   *
+   * Sans plafond : la serie relit toutes les photos chaque jour, 365 lignes
+   * apres un an. Le jour ou un plafond serait necessaire, ce sera une decision.
+   */
+  snapshotSeries(): Promise<readonly SnapshotPoint[]>;
   /** Flux dont `occurred_at >= since`, du plus ancien au plus recent. */
   recentCashFlows(since: Date): Promise<readonly CashFlowRecord[]>;
   pendingOrders(): Promise<readonly PendingOrderRecord[]>;
@@ -339,6 +361,22 @@ export function openDatabase(secrets: Pick<Secrets, 'databaseUrl'>): UbacDatabas
         benchmarks: decimalMapFromJson(ligne.benchmarks, 'benchmarks'),
         createdAt: ligne.createdAt,
       };
+    },
+
+    async snapshotSeries(): Promise<readonly SnapshotPoint[]> {
+      /*
+       * Deux colonnes selectionnees, pas `select()` : la serie entiere passe sur
+       * le reseau chaque jour, et `positions` comme `weights` sont des jsonb que
+       * personne ne lira ici.
+       */
+      const lignes = await db
+        .select({ runDate: snapshots.runDate, benchmarks: snapshots.benchmarks })
+        .from(snapshots)
+        .orderBy(asc(snapshots.runDate));
+      return lignes.map((ligne) => ({
+        runDate: ligne.runDate,
+        benchmarks: decimalMapFromJson(ligne.benchmarks, `benchmarks (${ligne.runDate})`),
+      }));
     },
 
     async recentCashFlows(since: Date): Promise<readonly CashFlowRecord[]> {

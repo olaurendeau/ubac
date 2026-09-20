@@ -60,9 +60,8 @@ const FIXES: readonly EntreeLexique[] = [
     "Time-weighted return : le rendement une fois les apports et les retraits neutralises, donc ce que la gestion a fait et non ce qu'un virement a ajoute.",
   ),
   entree(
-    /* « indice de croissance » est le nom de la chose ; « indice » est ce que le corps imprime, et R3 exige le second. */
-    'indice',
-    "L'indice de croissance : le cumul des rendements quotidiens, flux exclus, parti de 1,00 a la premiere photo, et a 1,25 le portefeuille a gagne 25 % depuis l'origine.",
+    'indice de croissance',
+    "Le cumul des rendements quotidiens, flux exclus, parti de 1,00 a la premiere photo : a 1,25 le portefeuille a gagne 25 % depuis l'origine.",
   ),
   entree(
     'photo',

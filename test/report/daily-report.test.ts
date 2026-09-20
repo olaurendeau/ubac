@@ -10,11 +10,18 @@ import {
 } from '../../src/core/strategy/rebalance.js';
 import type { Intent, Price, Quantity, UsdcAmount, Verdict, Weight, Weights } from '../../src/core/types.js';
 import { HOLD_5050_KEYS, HOLD_BTC_KEYS, PORTFOLIO_KEYS } from '../../src/jobs/snapshot.js';
-import type { CompletedRun, DailyReportInput, ReportOutcome } from '../../src/report/daily-report.js';
+import type {
+  CompletedRun,
+  DailyReportInput,
+  ReportOutcome,
+  TwrPoint,
+} from '../../src/report/daily-report.js';
 import {
+  MAX_COLONNES,
   REPORT_TAG,
   bandDistance,
   renderDailyReport,
+  twrGraph,
   HOLD_5050_KEYS as REPORT_5050_KEYS,
   HOLD_BTC_KEYS as REPORT_BTC_KEYS,
   PORTFOLIO_KEYS as REPORT_PORTFOLIO_KEYS,
@@ -105,11 +112,38 @@ const RUN: CompletedRun = {
 /** La photo de la veille : c'est elle qui rend le P&L du jour calculable. */
 const VEILLE = { runDate: '2026-09-12', benchmarks: { [PORTFOLIO_KEYS.index]: dec('1.20') } };
 
+/**
+ * Les photos lues a l'etape 4bis : quatre, **arretees a la veille**. Le point du
+ * jour n'y est pas — il est compose par le rendu a partir du run —, et c'est
+ * cette composition qui rend un second run identique au premier.
+ */
+const SERIE: readonly TwrPoint[] = [
+  { runDate: '2026-09-09', benchmarks: { [PORTFOLIO_KEYS.index]: dec('1.10') } },
+  { runDate: '2026-09-10', benchmarks: { [PORTFOLIO_KEYS.index]: dec('1.15') } },
+  { runDate: '2026-09-11', benchmarks: { [PORTFOLIO_KEYS.index]: dec('1.18') } },
+  { runDate: '2026-09-12', benchmarks: { [PORTFOLIO_KEYS.index]: dec('1.20') } },
+];
+
 const INPUT: DailyReportInput = {
   run: RUN,
   params: DEFAULT_REBALANCE_PARAMS,
   previous: VEILLE,
+  series: SERIE,
 };
+
+/** Un point de serie, reduit a ce que le graphe lit. `indice` absent : la colonne restera vide. */
+const point = (runDate: string, indice?: string): TwrPoint => ({
+  runDate,
+  benchmarks: indice === undefined ? {} : { [PORTFOLIO_KEYS.index]: dec(indice) },
+});
+
+/** Une serie de `n` photos, d'indice croissant et de dates distinctes, toutes anterieures au run. */
+function serieDe(n: number): readonly TwrPoint[] {
+  return Array.from({ length: n }, (_, rang) => {
+    const jour = new Date(Date.UTC(2000, 0, 1) + rang * 86_400_000).toISOString().slice(0, 10);
+    return point(jour, dec('1').plus(dec(String(rang)).div(10_000)).toFixed(6));
+  });
+}
 
 const avecRun = (patch: Partial<CompletedRun>): DailyReportInput => ({
   ...INPUT,
@@ -166,6 +200,7 @@ describe('rendu — la sortie attendue, ligne a ligne', () => {
       'ETH | 8.00000000 | 28.00 % | 30.00 % | -2.00 %',
       'USDC | 31000.00000000 | 31.00 % | 30.00 % | +1.00 %',
       'Comparaison',
+      "P&L cumule (TWR) depuis la premiere photo, lu sur l'indice de croissance : 5 photo(s), du 2026-09-09 au 2026-09-13, 1 colonne = 1 photo. Echelle de +10.00 % a +25.00 %, et non depuis zero : une variation faible occupe toute la hauteur.",
       '| TWR cumule | Max drawdown | Sharpe 90 j',
       'Portefeuille | +25.00 % | indisponible | indisponible',
       'Hold BTC | +41.23 % | -27.18 % | 1.41',
@@ -179,7 +214,7 @@ describe('rendu — la sortie attendue, ligne a ligne', () => {
       'Terme | Definition',
       "P&L | Profit and loss : ce que le portefeuille a gagne ou perdu sur la periode, en pourcentage de ce qu'il valait.",
       "TWR | Time-weighted return : le rendement une fois les apports et les retraits neutralises, donc ce que la gestion a fait et non ce qu'un virement a ajoute.",
-      "indice | L'indice de croissance : le cumul des rendements quotidiens, flux exclus, parti de 1,00 a la premiere photo, et a 1,25 le portefeuille a gagne 25 % depuis l'origine.",
+      "indice de croissance | Le cumul des rendements quotidiens, flux exclus, parti de 1,00 a la premiere photo : a 1,25 le portefeuille a gagne 25 % depuis l'origine.",
       "photo | L'etat du portefeuille enregistre une fois par jour — valeur, poids, quantites et metriques — et jamais recalcule ensuite.",
       "prix de cloture | Le dernier cours du dernier jour clos, le seul qui ne bouge plus ; celui du jour en cours change encore, et une decision prise dessus serait fausse sans qu'aucun seuil ne morde.",
       "USDC | Le dollar numerique qui sert de monnaie au portefeuille : tout y est valorise, et le cash n'est detenu que sous cette forme.",
@@ -620,5 +655,159 @@ describe('R1 a R6 — le lexique vit dans le rapport, et n’y est ni mort ni mu
     }
     /* La sonde sait voir un accent : sans ce controle, une regex fausse rendrait le test vert pour toujours. */
     expect('pondere'.replace('e', 'é').normalize('NFD')).toMatch(accentue);
+  });
+});
+
+// --- Le graphe --------------------------------------------------------------
+
+/**
+ * Une courbe, pas un chiffre : « comment le portefeuille a evolue depuis le
+ * debut », d'un coup d'oeil. Faite de cellules de tableau, et jamais d'une
+ * image — Gmail supprime `<svg>` du corps, une image distante est bloquee par
+ * defaut, et une piece jointe serait un fichier a ouvrir.
+ */
+describe('R7 a R16 — le graphe du TWR cumule', () => {
+  /** Le graphe rendu : entre le titre « Comparaison » et le tableau de comparaison, qui est le premier a 100 % de large. */
+  function graphe(html: string): string {
+    const apres = html.split('Comparaison</h2>')[1];
+    expect(apres).toBeDefined();
+    return (apres ?? '').split('<table style="width:100%')[0] ?? '';
+  }
+
+  const hauteurs = (html: string): readonly string[] =>
+    [...graphe(html).matchAll(/height:(\d+)px;background/g)].map(([, px]) => px ?? '');
+
+  it('R7 — il est dans « Comparaison », entre le titre et le tableau', () => {
+    const rendu = graphe(renderDailyReport(INPUT).html);
+    expect(rendu).toContain('<td style="width:4px');
+    expect(rendu).toContain('1 colonne = 1 photo');
+    /* Et pas ailleurs : une seule table de barres dans tout le rapport. */
+    expect(renderDailyReport(INPUT).html.split('table-layout:fixed')).toHaveLength(2);
+  });
+
+  it('R8 — rien a charger : ni image, ni SVG, ni URL, sur le rapport entier', () => {
+    const html = renderDailyReport(INPUT).html;
+    for (const interdit of ['<img', '<svg', 'background-image', 'url(', 'http://', 'https://', '//']) {
+      expect(html).not.toContain(interdit);
+    }
+  });
+
+  it('R9 — il trace l’indice et jamais la valeur : doubler les valeurs ne change pas un octet', () => {
+    const attendu = graphe(renderDailyReport(INPUT).html);
+    const double = renderDailyReport({
+      ...INPUT,
+      run: { ...RUN, totalValue: dec('200000') as UsdcAmount },
+      /* Et une valeur totale plantee dans chaque photo de la serie, qu'aucune forme ne permet de lire. */
+      series: SERIE.map((photo) => ({ ...photo, benchmarks: { ...photo.benchmarks, total_value: dec('999999') } })),
+    });
+    expect(graphe(double.html)).toBe(attendu);
+    /* La sonde n'est pas vide : la valeur a bien change ailleurs dans le rapport. */
+    expect(double.html).toContain('200000.00 USDC');
+  });
+
+  it.each([1, 2, 89, 90, 91, 1_000, 5_000])(
+    'R10 et R11 — %i photos : jamais plus de MAX_COLONNES, et la derniere est la plus recente',
+    (n) => {
+      const graph = twrGraph(serieDe(n));
+      if (n < 2) {
+        expect(graph.status).toBe('NONE');
+        return;
+      }
+      expect(graph.status).toBe('DRAWN');
+      if (graph.status !== 'DRAWN') return;
+      expect(graph.columns.length).toBeLessThanOrEqual(MAX_COLONNES);
+      expect(graph.columns.length).toBeGreaterThan(0);
+      expect(graph.perColumn).toBe(Math.ceil(n / MAX_COLONNES));
+
+      /* La derniere colonne porte la derniere photo, paquet incomplet ou non : c'est la propriete qui compte. */
+      const derniere = graph.columns[graph.columns.length - 1];
+      expect(derniere?.status === 'VALUE' && derniere.value.toFixed(6)).toBe(
+        dec(String(n - 1)).div(10_000).toFixed(6),
+      );
+      /* Et l'echelle est bien celle des colonnes tracees, pas celle de toutes les photos. */
+      expect(graph.high.eq(dec(String(n - 1)).div(10_000))).toBe(true);
+    },
+  );
+
+  it('R12 — la note dit la periode et la resolution, et la resolution decroit avec l’age', () => {
+    expect(graphe(renderDailyReport(INPUT).html)).toContain(
+      '5 photo(s), du 2026-09-09 au 2026-09-13, 1 colonne = 1 photo.',
+    );
+    /* 200 photos : 3 photos par colonne, et la note le dit au pluriel. */
+    const vieux = renderDailyReport({ ...INPUT, series: serieDe(200) });
+    expect(graphe(vieux.html)).toContain('201 photo(s), du 2000-01-01 au 2026-09-13, 1 colonne = 3 photos.');
+  });
+
+  it('R13 — la note donne les deux bornes de l’echelle, et une serie plate ne divise pas par zero', () => {
+    expect(graphe(renderDailyReport(INPUT).html)).toContain('Echelle de +10.00 % a +25.00 %');
+
+    const plate = renderDailyReport({
+      ...INPUT,
+      run: { ...RUN, benchmarks: { ...BENCHMARKS, [PORTFOLIO_KEYS.index]: dec('1.10') } },
+      series: [point('2026-09-11', '1.10'), point('2026-09-12', '1.10')],
+    });
+    expect(graphe(plate.html)).toContain('Echelle de +10.00 % a +10.00 %');
+    expect(graphe(plate.html)).toContain('Serie plate : toutes les colonnes ont la meme hauteur.');
+    expect([...new Set(hauteurs(plate.html))]).toEqual(['90']);
+    expect(plate.html).not.toContain('NaN');
+  });
+
+  it('R14 — zero ou une photo : une phrase nommee, jamais un cadre vide', () => {
+    /* Aucune serie lue : le rendu compose le point du jour, il reste seul. */
+    const premier = renderDailyReport({ run: RUN, params: DEFAULT_REBALANCE_PARAMS });
+    expect(graphe(premier.html)).toContain('1 photo(s) dans l');
+    expect(graphe(premier.html)).toContain('Il apparaitra des le run suivant.');
+    expect(graphe(premier.html)).not.toContain('<td');
+
+    /* Zero photo ne peut pas sortir du rendu, qui compose toujours le point du jour ; la fonction le tient quand meme. */
+    expect(twrGraph([]).status).toBe('NONE');
+    /* Et une serie dont aucune photo ne porte d'indice ne fabrique pas un cadre vide non plus. */
+    const muette = twrGraph([point('2026-09-11'), point('2026-09-12')]);
+    expect(muette.status === 'NONE' && muette.reason).toContain("ne porte d'indice de croissance exploitable");
+  });
+
+  it('R15 — une photo sans indice laisse sa colonne vide, et la note les compte', () => {
+    const troue = renderDailyReport({
+      ...INPUT,
+      series: [point('2026-09-10', '1.10'), point('2026-09-11'), point('2026-09-12', '1.20')],
+    });
+    /* Quatre colonnes, trois barres : celle du 11 est vide, ni interpolee ni mise a zero. */
+    expect(graphe(troue.html).match(/<td /g)).toHaveLength(4);
+    expect(hauteurs(troue.html)).toEqual(['1', '60', '90']);
+    expect(graphe(troue.html)).toContain('1 colonne(s) vide(s)');
+    expect(graphe(troue.html)).toContain('<td style="width:4px;padding:0 1px 0 0;vertical-align:bottom"></td>');
+    /* Aucune colonne de hauteur nulle : elle serait indiscernable d'une colonne vide. */
+    expect(hauteurs(troue.html)).not.toContain('0');
+  });
+
+  it('R16 — un second run du meme jour rend exactement le meme graphe', () => {
+    const premier = renderDailyReport(INPUT);
+    /* Au second run, la photo du jour est deja en base : la serie lue la porte. */
+    const second = renderDailyReport({
+      ...INPUT,
+      series: [...SERIE, { runDate: RUN.runDate, benchmarks: BENCHMARKS }],
+    });
+    expect(graphe(second.html)).toBe(graphe(premier.html));
+  });
+});
+
+/**
+ * Le rapport est en dernier lieu un courrier, et Gmail coupe au-dela d'environ
+ * 102 ko en affichant « Afficher le message entier ». Ce qu'il couperait, c'est
+ * le lexique, qui est la derniere section. La borne de `MAX_COLONNES` est ce qui
+ * empeche le graphe d'y mener ; cette sonde la mesure plutot que de faire
+ * confiance au raisonnement.
+ *
+ * Delai cible plutot que global : rendre 5 000 photos reste rapide en `npm test`
+ * mais passe par v8 sous `npm run test:coverage`, et un test bloque ailleurs dans
+ * la suite doit continuer d'echouer en 5 s. Voir docs/marge-des-delais.md.
+ */
+describe('R17 — 5 000 photos tiennent loin sous la coupure de Gmail', { timeout: 30_000 }, () => {
+  it('rend le rapport entier sous 100 000 caracteres', () => {
+    const mail = renderDailyReport({ ...INPUT, series: serieDe(5_000) });
+    expect(mail.html.length).toBeLessThan(100_000);
+    /* Et le graphe est bien la : une sonde de taille passerait aussi sur un rapport ampute. */
+    expect(mail.html).toContain('5001 photo(s)');
+    expect(mail.html).toContain('Lexique');
   });
 });
