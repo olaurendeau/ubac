@@ -52,6 +52,7 @@ Les six points du §9, dans l'ordre où ils apparaissent :
 | Allocation | poids constatés contre cibles, et l'écart | `weights`, `params.targets` |
 | Comparaison | TWR, max drawdown et Sharpe 90 j, portefeuille contre hold BTC et hold 50/50 ; ladder et DCA y figurent **sans courbe**, avec leur raison (section 6) | `snapshots.benchmarks` |
 | Métriques indisponibles | ce que le noyau n'a pas pu rendre, et pourquoi | `benchmarkGaps` |
+| **Lexique** | une définition d'une phrase par terme de jargon que le corps imprime (section 9) | `src/report/lexique.ts` |
 
 HTML en ligne, une colonne, largeur maximale de 520 px : ni feuille de style, ni
 image, ni police distante. Un client mobile qui bloque les ressources externes —
@@ -373,3 +374,71 @@ rapport mal adressé, elle donne un rapport perdu, et la différence ne se lit q
 dans un code HTTP. Le message d'erreur nomme la variable et **ne cite jamais sa
 valeur** : une adresse est une donnée personnelle, et un message d'erreur finit
 dans un journal.
+
+## 9. Le lexique : le rapport porte ses propres définitions
+
+L'opérateur lit le rapport sur son téléphone et ne sait pas ce que veulent dire
+P&L, TWR, Sharpe, borne ou jambe. Le rapport porte donc les définitions de son
+vocabulaire **dans le corps du courrier**, sans rien à ouvrir ailleurs.
+
+### Une section unique, en dernier
+
+Une seule section « Lexique », après « Métriques indisponibles », donc en
+dernier. Aucune glose dans les tableaux, aucune ligne sous les titres de section.
+
+La lecture littérale — une glose à côté de chaque terme — a été écartée, et pour
+une raison mesurable : le tableau « Comparaison » a quatre colonnes dans 520 px,
+« Décision du jour » en a cinq. Un en-tête `Max drawdown (pire recul subi depuis
+un sommet)` triple la largeur de sa colonne et fait déborder le tableau
+horizontalement sur un téléphone — il casse précisément la lecture qu'on
+cherchait à réparer. Et une glose répétée à chaque occurrence, tous les jours,
+transforme un rapport lu en trente secondes en une page qu'on cesse d'ouvrir :
+la définition sert les premiers jours, la donnée sert tous les jours.
+
+Conséquence traitée et non subie : **ce qui est en dernier est ce que Gmail coupe
+en premier**, au-delà d'environ 102 ko. Le rapport en est loin — une vingtaine de
+kilo-octets —, et tout ce qui le ferait grossir devra en tenir compte : c'est une
+contrainte pour les lots à venir, pas une réserve de place.
+
+### Ce que le lexique couvre, et comment on le sait
+
+La règle est une règle d'appartenance, pas un compte : **le lexique définit tout
+terme que le corps du rapport imprime et qui n'est pas du français courant.**
+
+Vingt entrées fixes, présentes chaque jour parce que les titres de section et les
+en-têtes de colonne qui les portent le sont. Et des entrées **conditionnelles**,
+rendues seulement quand le rapport du jour imprime ce qu'elles définissent : une
+par valeur de `Trigger` réellement imprimée, une par `RejectionCode` réellement
+imprimé, « suspension » quand l'encadré est présent, et la convention de nommage
+des clés de la photo quand le tableau des trous l'est. Gloser les neuf codes de
+refus tous les jours serait neuf lignes de bruit pour des rejets qui n'arrivent
+pas en phase 1.
+
+**Le terme d'une entrée est ce que le corps imprime**, et non le nom savant de la
+chose : un opérateur qui bute sur la colonne « Risque » cherche « risque », pas
+« verdict de la couche de risque ». Ce n'est pas seulement de l'ergonomie, c'est
+ce qui rend la règle vérifiable — une sonde relit le corps rendu et **refuse une
+entrée morte**, c'est-à-dire un mot défini que le rapport n'imprime nulle part.
+
+Deux entrées de la liste de cadrage sont donc nommées par ce que le rapport
+affiche plutôt que par leur libellé de spec : « poids » définit aussi les
+colonnes Cible et Écart, et « hold » couvre Hold BTC et Hold 50/50. Le compte de
+vingt est inchangé ; ce qui change est le mot sous lequel on les cherche.
+
+### L'exhaustivité est tenue par le typage, pas par la relecture
+
+Les deux vocabulaires fermés du noyau sont portés par des `Record<Trigger,
+string>` et `Record<RejectionCode, string>`. **Un code ajouté au noyau sans sa
+glose fait échouer `make typecheck` chez celui qui l'ajoute**, pas chez le
+lecteur du rapport six mois plus tard. C'est le même motif que
+`test/report/contrat-run.test-d.ts`.
+
+Le texte vit dans `src/report/lexique.ts`, pur, importé par le rendu. Pas dans un
+Markdown lu à l'exécution : ce serait une IO dans un rendu qui n'en a aucune.
+Il est **sans accent**, comme tout le corps, et la sonde couvre le lexique
+complet — codes de refus compris, que le rendu n'imprime jamais en phase 1.
+
+**Ce qui reste ouvert** : le lexique ne peut pas être prouvé complet dans les
+deux sens. Les `reason` du noyau sont du texte libre, citées telles quelles, et
+peuvent contenir un mot que le lexique ne couvre pas. Aucun test ne peut le
+dire ; c'est un point de relecture.
