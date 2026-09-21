@@ -4,8 +4,8 @@
 l'exchange dit, confronté à ce que la base croit**, avant qu'aucune décision ne
 soit prise. Ce document dit ce qui est fait, ce qui ne l'est pas, et pourquoi.
 
-Lot Q4a de la phase 1. Le run quotidien qui appelle cette fonction est le lot
-Q4b et n'est pas écrit ici.
+Lot Q4a de la phase 1, révisé au lot **Q10** : la divergence ne bloque plus, elle
+rafraîchit. Le run quotidien qui appelle cette fonction est `src/jobs/daily.ts`.
 
 ## 1. Ce que la réconciliation fait
 
@@ -14,17 +14,91 @@ Q4b et n'est pas écrit ici.
 | 1. Lire les soldes réels et les ordres ouverts | fait |
 | 2. Mettre à jour les `orders` en `PENDING` selon leur statut réel | **calculé, non persisté** — section 4 |
 | 3. Annuler les ordres limit de plus de 24 h | **reporté en phase 3** — section 3 |
-| 4. Comparer soldes réels et état interne, abandonner au-delà de 1 % | fait |
+| 4. Comparer soldes réels et état interne, agir au-delà de 1 % | fait — section 1 bis |
 
-Le résultat est une union : soit `RECONCILED`, qui porte les soldes validés, les
-transitions d'ordres et deux observations ; soit `ABORTED`, qui porte le motif et
-les lignes divergentes, **et aucun solde**.
+Le résultat porte les soldes validés, les transitions d'ordres, deux
+observations, et un champ `resync` qui dit si l'état interne a dû se rendre.
+**Il n'y a pas de branche d'abandon** : la divergence de solde en était le seul
+motif, et elle n'abandonne plus.
 
-Rien n'est corrigé, rien n'est rattrapé. L'état de l'exchange fait foi et l'état
-interne n'est qu'un cache : au-delà du seuil, le run est abandonné et un humain
-regarde. Un rattrapage automatique sur un cache dont on vient de constater qu'il
-est faux est la façon la plus directe de transformer un écart constaté en perte
-réelle.
+Rien n'est corrigé *sur l'exchange*, rien n'est rattrapé : ce module ne place, ne
+retire ni n'annule quoi que ce soit, et ne persiste rien non plus. Ce qui se rend
+au-delà du seuil, c'est le **cache**.
+
+## 1 bis. Au-delà du seuil, le cache se rend — pas le run
+
+### Ce qui s'est passé en réel
+
+L'opérateur a rééquilibré son portefeuille **à la main**, hors du système. Les
+quantités ont donc changé entre deux runs :
+
+| Ligne | Avant | Après | Écart |
+|---|---|---|---|
+| BTC | 0,0159 | 0,0284 | 44 % |
+| ETH | 0,5155 | 0,6729 | 23 % |
+| USDC | 2 946 | 1 620 | 45 % |
+
+Le run suivant a comparé l'exchange à la dernière photo, trouvé trois écarts
+au-delà de 1 %, et **abandonné avant toute écriture** — donc sans poser de
+nouvelle photo. Le run d'après a relu la **même** photo périmée et abandonné de
+nouveau. Chaque jour, pour toujours : une intervention manuelle condamnait le
+job, sans aucun chemin de retour.
+
+### Pourquoi l'abandon était la mauvaise réponse
+
+L'impasse contredit le principe que le §7 pose lui-même : « l'état de l'exchange
+fait toujours foi ; l'état interne n'est qu'un cache ». Un cache dont on vient de
+constater qu'il est faux n'a aucune autorité pour geler le système. Le
+raisonnement d'origine — « un rattrapage automatique sur un cache faux transforme
+un écart constaté en perte réelle » — visait un rattrapage qui aurait **agi sur
+l'exchange**. Ce n'est pas ce qui se passe ici : rien n'est acheté, vendu ni
+annulé. Le run se contente de décider sur les soldes réels, qui étaient déjà les
+seuls qu'il ait jamais utilisés.
+
+### Ce qui se passe maintenant
+
+**Décision de l'opérateur (D7).** Au-delà du seuil, la réconciliation rend
+`resync: RESYNCHRONIZED` et le run continue :
+
+1. il décide sur les soldes de l'**exchange**, qui font foi ;
+2. l'étape 7 repose une photo aux quantités réelles — c'est **là** que le cache
+   se rafraîchit, `reconcile.ts` n'écrivant toujours rien ;
+3. le jour est **marqué**, de deux façons qui ne dépendent pas l'une de l'autre.
+
+Le seuil de 1 % et sa comparaison ligne à ligne n'ont pas changé, ni le calcul de
+l'écart : seule la **conséquence** d'un dépassement a changé.
+
+### Les deux marques, et pourquoi il en faut deux
+
+**Une alerte**, `RECONCILIATION_DRIFT`, priorité `URGENT` — l'entrée que le §9
+prévoyait déjà pour la divergence, dont le déclencheur change sans que le
+catalogue bouge. Une resynchronisation silencieuse serait pire que l'impasse
+qu'elle remplace : le run conclurait normalement, la base porterait de nouveaux
+soldes, et personne ne saurait que le portefeuille a bougé hors du système.
+
+**Un marqueur durable**, `ETAT_RESYNCHRONISE`, en tête de `decisions.reason` des
+**quatre** stratégies du jour. Même forme, et même motif, que le
+`SUSPENSION_DRAWDOWN` du §6. L'alerte réveille le jour même ; elle ne se relit pas
+six mois plus tard. Le journal des décisions, si : un lecteur doit pouvoir dire,
+sans rien d'autre sous la main, que ce jour-là quelqu'un a bougé le portefeuille
+hors du système. Les quatre lignes le portent parce que l'état resynchronisé est
+celui du **portefeuille**, pas d'une stratégie — et c'est la ligne qu'on ne lit
+pas qui mentirait. Le texte est celui de `reconcile.ts`, repris tel quel par
+l'alerte et par la base : une seule source, donc jamais deux chiffres différents.
+
+Le marqueur **précède** le motif de la stratégie et ne le remplace pas,
+contrairement à la ligne d'un jour suspendu : la décision a bien eu lieu, sur les
+soldes réels, et son motif reste lisible.
+
+### Ce que cela ne ferme pas
+
+Si l'étape 7 ne peut pas reposer de photo — second run du même jour
+(`ALREADY_SNAPSHOTTED`), ou chaîne d'indice rompue (`NO_CARRIED_INDEX`) —, le
+cache reste périmé et le run du lendemain se resynchronisera de nouveau. Ce n'est
+plus une impasse : chaque run **conclut**, écrit ses décisions et rend son
+rapport. Le coût est une alerte `URGENT` répétée tant que la photo ne peut pas
+être posée, ce qui est le bon signal : la chaîne de photos est cassée, et c'est
+autre chose que la réconciliation.
 
 ## 2. Le seuil de 1 % se compare ligne à ligne
 
@@ -34,14 +108,16 @@ comparaison porte sur la valeur totale ou sur chaque ligne. Le choix retenu est
 
     drift(actif) = |réel − interne| / max(|réel|, |interne|)
 
-et un seuil **strict** : 1 % pile passe, 1,01 % abandonne. Trois raisons, dans
-l'ordre où elles pèsent.
+et un seuil **strict** : 1 % pile passe, 1,01 % resynchronise. Trois raisons,
+dans l'ordre où elles pèsent.
 
 **a. Le noyau fixe déjà cette sémantique.** `src/core/risk.ts` porte depuis la
 phase 0 le rejet `RECONCILIATION_DRIFT`, calculé exactement ainsi sur
 `RiskContext.balances`, couvert à 100 %. Deux définitions concurrentes de
 « divergence de 1 % » dans le même programme est le défaut, pas le raffinement :
-le job abandonnerait là où la couche risque accepte, ou l'inverse. La fonction du
+le job resynchroniserait là où la couche risque accepte, ou l'inverse. Ce que
+chaque couche **fait** du verdict lui appartient — le job rafraîchit son cache,
+le noyau rejette — mais le verdict lui-même doit être le même. La fonction du
 noyau n'est pas exportée et la phase 1 n'a pas le droit de toucher à `core/`,
 donc le calcul est **recopié** — même choix, et même motif, que le `DECIMAL_TEXT`
 recopié entre `config/env.ts`, `adapters/schema.ts` et `adapters/coinbase.ts`.
@@ -53,9 +129,9 @@ pas.** Un cache qui dit 1 BTC et 20 ETH face à un exchange qui porte 1,02 BTC e
 19,6 ETH vaut, à 60 000 et 3 000, exactement la même chose des deux côtés : la
 valeur totale ne bouge pas d'un centime. Deux erreurs qui s'annulent en valeur,
 c'est la forme même d'un échange mal enregistré. Ligne à ligne, BTC dérive de
-1,96 % et ETH de 2 % : le run est abandonné. `test/jobs/reconcile.test.ts` fige
-ce cas, et vérifie d'abord que les deux totaux sont bien égaux — sans quoi le
-test ne prouverait rien.
+1,96 % et ETH de 2 % : le cache se rend. `test/jobs/reconcile.test.ts` fige ce
+cas, et vérifie d'abord que les deux totaux sont bien égaux — sans quoi le test
+ne prouverait rien.
 
 **c. Ligne à ligne n'a besoin d'aucun prix.** Comparer des valeurs totales
 exigerait les prix de marché, donc une seconde source externe avec ses propres
@@ -101,6 +177,40 @@ se lit pas dans le module. `src/jobs/` étant hors du glob de pureté
 d'`eslint.config.js`, l'interdit tient par un garde-fou de `test/jobs/` : ni
 `Date.now()`, ni `new Date()` sans argument, ni `Math.random()`, ni
 `crypto.randomUUID()`, ni `performance.now()` dans aucun module de `src/jobs/`.
+
+## 3 bis. Ce qu'un exécuteur devra faire du marqueur — **à trancher avant la phase 3**
+
+En phase 1 rien ne s'exécute, donc rafraîchir le cache est sans danger : le pire
+qui puisse arriver est une décision journalisée sur un portefeuille qu'un humain
+venait de modifier, ce qui est exactement ce qu'on veut savoir.
+
+**En phase 3, ce ne sera plus vrai.** Une divergence constatée juste avant de
+passer des ordres est précisément le signal qu'il ne faut pas ignorer : elle peut
+signifier qu'un ordre précédent a eu un sort qu'on ignore — exécuté, partiel,
+annulé — et la section 4 ci-dessous dit que le dépôt ne sait pas encore lire
+lequel. Rafraîchir le cache et placer des ordres dans la foulée reviendrait à
+agir sur un état dont on vient de constater qu'on ne le comprend pas.
+
+**Ce lot ne résout pas ce problème — l'exécution n'existe pas — mais il ne le
+referme pas non plus.** Le champ `resync` du résultat est conçu pour ça : un
+exécuteur futur le consulte avant de placer quoi que ce soit, et a de quoi
+refuser. Concrètement, trois options se présenteront, et l'une devra être
+choisie :
+
+1. **Refuser d'exécuter un jour de resynchronisation**, et laisser le run
+   journaliser sans placer. La plus simple, et celle vers laquelle penche la
+   rédaction actuelle ; elle demande une valeur de `Trigger` ou un code de rejet
+   pour le dire dans `decisions`.
+2. **Refuser seulement si des ordres `PENDING` sont indéterminables**, ce qui
+   suppose la lecture manquante de la section 4 et distingue « un humain a bougé
+   le portefeuille » de « un de nos ordres s'est dénoué sans qu'on le sache ».
+3. **Exécuter quand même**, la divergence étant par hypothèse déjà réconciliée
+   sur les soldes réels. À écrire ici seulement si elle est explicitement
+   choisie, jamais par omission.
+
+**Échéance : avant la phase 3**, c'est-à-dire avant que la moindre ligne de
+placement n'existe. Tant que rien ne s'exécute, l'absence de décision ne coûte
+rien ; le jour où l'étape 6 est écrite, elle coûte la question entière.
 
 ## 4. Une lecture manque à l'adapter, et c'est un prérequis de la phase 3
 
@@ -150,10 +260,13 @@ La propriété est tenue par deux moitiés, aucune n'étant une consigne.
 **Par le type.** Les soldes validés sortent dans un `ReconciledBalances` marqué
 par un symbole que `reconcile.ts` n'exporte pas. Hors du module, aucun littéral
 d'objet ne peut nommer la propriété : il faudrait une assertion
-`as unknown as`, qui se voit en revue. Et le champ `holdings` n'existe que sur la
-branche `RECONCILED` — la branche `ABORTED` n'en porte pas. Un run ne peut donc
-pas obtenir de soldes sans réconcilier, ni décider sur un abandon. Des assertions
-de types de `test/jobs/` figent ces quatre impossibilités.
+`as unknown as`, qui se voit en revue. Un run ne peut donc pas obtenir de soldes
+sans réconcilier. Des assertions de types de `test/jobs/` figent ces
+impossibilités.
+
+La moitié « et la branche `ABORTED` n'en porte pas » a disparu avec la branche
+elle-même : depuis Q10, la réconciliation rend toujours des soldes, et ce sont
+toujours ceux de l'exchange.
 
 **Par un garde-fou.** Restait le contournement : appeler soi-même
 `exchange.balances()` et se fabriquer un `Holdings` à la main. Un garde-fou de
@@ -173,21 +286,20 @@ attente, dernier snapshot.
   une réconciliation qui n'a rien réconcilié. Une absence de comparaison n'est
   pas une divergence nulle.
 - **Les `cash_flows` ne sont pas déduits du cache.** Un apport de plus de 1 % de
-  la ligne USDC, survenu entre deux runs, fait donc abandonner le run. C'est
-  conforme au §7, qui ne donne qu'un motif d'abandon et ne mentionne pas les
-  flux, et c'est le sens prudent en phase d'observation : l'agent ne décide pas
-  sur un portefeuille qui a bougé sans qu'il le sache. Le coût est réel — les
-  runs restent bloqués tant que le cache interne n'a pas été rafraîchi — et c'est
-  une décision à réexaminer quand le run quotidien saura écrire son snapshot.
+  la ligne USDC, survenu entre deux runs, déclenche donc une resynchronisation et
+  son alerte. Ce n'est plus un blocage depuis Q10 — le run conclut — mais c'est
+  une alerte `URGENT` pour un événement que l'opérateur a lui-même provoqué. Le
+  distinguer d'une divergence non expliquée demanderait de rapprocher l'écart de
+  la ligne USDC des `cash_flows` de la période ; c'est une amélioration possible,
+  pas une correction, et elle n'est pas faite.
 - **Les deux lectures de l'exchange ne sont pas atomiques.** Un ordre peut se
   dénouer entre la lecture des soldes et celle des ordres ouverts. La conséquence
-  va toujours dans le sens prudent — soit la ligne apparaît `INDETERMINABLE`,
-  soit les soldes divergent du cache et le run est abandonné —, jamais dans celui
-  d'un état périmé accepté en silence. En phase 1 la fenêtre est théorique :
-  aucun ordre n'est placé.
-- **Deux anomalies sont signalées sans abandonner le run** : un ordre ouvert
+  va toujours dans le sens de la vérité de l'exchange — soit la ligne apparaît
+  `INDETERMINABLE`, soit les soldes divergent du cache et la divergence est
+  déclarée —, jamais dans celui d'un état périmé accepté en silence. En phase 1 la
+  fenêtre est théorique : aucun ordre n'est placé.
+- **Deux anomalies sont signalées sans interrompre le run** : un ordre ouvert
   qu'aucune ligne `PENDING` ne réclame, et une devise non nulle hors
-  BTC / ETH / USDC. Le §7 ne donne qu'un seul motif d'abandon ; ces deux-là sont
-  rendues pour que le run les signale (lot Q6).
+  BTC / ETH / USDC. Elles sont rendues pour que le run les signale (lot Q6).
 - **Deux comptes de la même devise sont sommés**, pas réduits au premier trouvé :
   en retenir un seul rendrait un solde faux et plausible.

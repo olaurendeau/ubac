@@ -37,7 +37,7 @@ import type {
 import { renderDailyReport } from '../report/daily-report.js';
 import type { AlertInput } from './alerts.js';
 import { alertsFor } from './alerts.js';
-import type { ReconcileObservations } from './reconcile.js';
+import type { ReconcileObservations, Resynchronization } from './reconcile.js';
 import { reconcile } from './reconcile.js';
 import type { BenchmarkGap, DrawdownState, SnapshotWrite, Suspension } from './snapshot.js';
 import { prepareSnapshot } from './snapshot.js';
@@ -64,8 +64,10 @@ import { prepareSnapshot } from './snapshot.js';
  * 2. **La reconciliation precede toute decision.** Elle n'est pas seulement
  *    appelee en premier : les soldes sortent de `ReconciledBalances`, marque par
  *    un symbole que `reconcile.ts` n'exporte pas, donc un run qui deciderait
- *    d'abord n'aurait aucun `Holdings` a donner a `decide()`. Un abandon de
- *    reconciliation arrete le run **avant** la premiere ecriture.
+ *    d'abord n'aurait aucun `Holdings` a donner a `decide()`. Elle **n'arrete
+ *    plus le run** : au-dela du seuil, c'est le cache qui se rend, le run
+ *    poursuit sur les soldes reels et la photo de l'etape 7 le rafraichit. Le
+ *    jour est alors marque — en alerte, et en tete de `decisions.reason`.
  * 3. **La bougie du jour en cours est incomplete.** L'adapter la rend telle
  *    quelle et documente que c'est a l'appelant de ne pas la demander : c'est
  *    ici. La fenetre s'arrete au dernier jour **clos**, et `closingPrices` refuse
@@ -230,8 +232,12 @@ export interface RunReport {
   readonly ping: PingOutcome;
 }
 
+/**
+ * Les deux etapes ou le run peut encore s'arreter. **`RECONCILE` n'en est plus
+ * une** : la divergence de solde etait son unique motif, et elle rafraichit
+ * desormais le cache au lieu de geler le systeme.
+ */
 export type DailyAbort =
-  | { readonly step: 'RECONCILE'; readonly code: 'RECONCILIATION_DRIFT'; readonly reason: string }
   | { readonly step: 'VALUATION'; readonly code: ValuationIssue; readonly reason: string }
   | {
       readonly step: 'DECIDE';
@@ -265,6 +271,13 @@ type DailyOutcome =
        * seuil ce jour-la doit alerter meme si le run s'arrete.
        */
       readonly suspension: Suspension;
+      /**
+       * Toujours connue, meme ici : les deux abandons restants sont posterieurs
+       * a la reconciliation. Une resynchronisation suivie d'un abandon doit
+       * alerter des deux faits — le portefeuille a bouge hors du systeme, et le
+       * run ne s'est pas conclu.
+       */
+      readonly resync: Resynchronization;
     }
   | {
       readonly status: 'COMPLETED';
@@ -301,6 +314,8 @@ type DailyOutcome =
        */
       readonly snapshotSeries: readonly SnapshotPoint[];
       readonly observations: ReconcileObservations;
+      /** §7 : l'etat interne a-t-il du se rendre a l'exchange ce jour-la. */
+      readonly resync: Resynchronization;
       readonly outcomes: readonly StrategyOutcome[];
       readonly totalValue: UsdcAmount;
       /** Etape 7 : ce qui est parti dans `snapshots.benchmarks`. */
@@ -447,6 +462,34 @@ function suspendedIntent(
   };
 }
 
+/**
+ * Le marqueur de resynchronisation, en tete de `decisions.reason`. **C'est la
+ * trace durable du lot.** L'alerte reveille le jour meme, mais elle ne se relit
+ * pas six mois plus tard ; la ligne de `decisions`, si. Un lecteur du journal
+ * des decisions doit pouvoir dire, sans rien d'autre sous la main, que ce
+ * jour-la quelqu'un a bouge le portefeuille hors du systeme — et c'est la seule
+ * trace qui survive a un push manque.
+ *
+ * Le texte vient de `reconcile.ts` et n'est pas reecrit ici : une seule source,
+ * donc l'alerte et la base ne peuvent pas annoncer deux ecarts differents. Meme
+ * choix, et meme motif, que le motif de suspension qui vient de `snapshot.ts` ;
+ * la forme est la meme aussi, un marqueur en tete de la `reason`.
+ *
+ * **Les quatre strategies sont marquees**, pas seulement la production. L'etat
+ * resynchronise est celui du portefeuille, pas d'une strategie : n'en marquer
+ * qu'une laisserait les trois autres raconter une journee ordinaire, et c'est la
+ * ligne qu'on ne lit pas qui ment.
+ *
+ * Le marqueur **precede** le motif de la strategie et ne le remplace pas,
+ * contrairement a la ligne d'un jour suspendu : la decision du jour a bien eu
+ * lieu, sur les soldes reels, et son motif reste lisible tel que `decide()` l'a
+ * formule.
+ */
+function marquer(intent: Intent, resync: Resynchronization): Intent {
+  if (resync.status !== 'RESYNCHRONIZED') return intent;
+  return { ...intent, reason: `${resync.reason}\n${intent.reason}` };
+}
+
 interface Decided {
   readonly strategy: StrategyName;
   readonly isShadow: boolean;
@@ -546,20 +589,18 @@ async function executeRun(run: DailyRun): Promise<DailyOutcome> {
     `run quotidien — run_date=${runDate} git_sha=${gitSha} portefeuille=${permissions.portfolioUuid} lecture=${String(permissions.canView)}`,
   );
 
-  // 2. Reconciliation, avant toute decision.
+  /*
+   * 2. Reconciliation, avant toute decision. **Elle n'abandonne plus.** Au-dela
+   * du seuil, le cache se rend : le run garde les soldes de l'exchange, qui font
+   * foi, et la photo de l'etape 7 rafraichit la base. Ce n'est pas une
+   * indulgence, c'est la sortie de l'impasse — un abandon ne posait aucune photo,
+   * donc le run suivant relisait la meme photo perimee et abandonnait de nouveau.
+   */
   const reconciled = await reconcile({ exchange: ports.exchange, db: ports.db });
-  if (reconciled.status === 'ABORTED') {
-    log(`abandon : ${reconciled.reason}`);
-    return {
-      status: 'ABORTED',
-      runDate,
-      abort: { step: 'RECONCILE', code: reconciled.code, reason: reconciled.reason },
-      // L'etape 4bis n'a pas eu lieu : il n'y a pas encore de drawdown a connaitre.
-      suspension: { status: 'INACTIVE' },
-    };
-  }
+  const { resync } = reconciled;
   const { holdings } = reconciled.balances;
   log(`soldes reconcilies (${reconciled.balances.comparedTo})`);
+  if (resync.status === 'RESYNCHRONIZED') log(resync.reason);
 
   // 3. Soldes reels — ci-dessus — et prix du dernier jour clos.
   const pricedOn = shiftDay(runDate, -1, 'run_date');
@@ -582,6 +623,7 @@ async function executeRun(run: DailyRun): Promise<DailyOutcome> {
       runDate,
       abort: { step: 'VALUATION', code: valuation.code, reason: valuation.reason },
       suspension: { status: 'INACTIVE' },
+      resync,
     };
   }
   const depuis = dayStart(
@@ -630,11 +672,12 @@ async function executeRun(run: DailyRun): Promise<DailyOutcome> {
      * Seul abandon posterieur a l'etape 4bis : la suspension est connue, et un
      * drawdown au seuil ce jour-la doit alerter meme si le run s'arrete la.
      */
-    return { status: 'ABORTED', runDate, abort: decided.abort, suspension: step.suspension };
+    return { status: 'ABORTED', runDate, abort: decided.abort, suspension: step.suspension, resync };
   }
 
   const outcomes: StrategyOutcome[] = [];
-  for (const { strategy, isShadow, intent } of decided.decided) {
+  for (const { strategy, isShadow, intent: decide } of decided.decided) {
+    const intent = marquer(decide, resync);
     const verdict = validate(intent, {
       makeClientOrderId: clientOrderId,
       mids: prices,
@@ -700,6 +743,7 @@ async function executeRun(run: DailyRun): Promise<DailyOutcome> {
     previousSnapshot: previous,
     snapshotSeries: serie,
     observations: reconciled.observations,
+    resync,
     outcomes,
     totalValue: valuation.total,
     benchmarks: step.benchmarks,
@@ -738,6 +782,7 @@ function alertInputOf(outcome: DailyOutcome): AlertInput {
         reason: outcome.abort.reason,
       },
       suspension: outcome.suspension,
+      resync: outcome.resync,
       // Aucun verdict : un abandon survient avant que la couche risque ne parle.
       outcomes: [],
       executed: [],
@@ -747,6 +792,7 @@ function alertInputOf(outcome: DailyOutcome): AlertInput {
     runDate: outcome.runDate,
     ending: { status: 'COMPLETED' },
     suspension: outcome.suspension,
+    resync: outcome.resync,
     outcomes: outcome.outcomes.map(({ strategy, isShadow, verdict }) => ({
       strategy,
       isShadow,
@@ -804,15 +850,14 @@ async function announce(run: DailyRun, input: AlertInput): Promise<readonly Aler
  *
  * C'est la seconde qui est retenue, pour deux raisons.
  *
- * 1. **L'abandon est deja dit, et mieux.** `RECONCILIATION_DRIFT` ou
- *    `RUN_ABORTED` part en push dans la minute, en priorite `URGENT`, avec
- *    l'etape, le code et le motif. Un courrier qui repeterait la meme nouvelle
- *    au petit dejeuner arriverait apres la bataille. Le silence que le §9
- *    craignait — un abandon indistinguable d'un job qui n'a pas tourne — est
- *    ferme par l'alerte, pas par le rapport.
+ * 1. **L'abandon est deja dit, et mieux.** `RUN_ABORTED` part en push dans la
+ *    minute, en priorite `URGENT`, avec l'etape, le code et le motif. Un
+ *    courrier qui repeterait la meme nouvelle au petit dejeuner arriverait apres
+ *    la bataille. Le silence que le §9 craignait — un abandon indistinguable
+ *    d'un job qui n'a pas tourne — est ferme par l'alerte, pas par le rapport.
  * 2. **Un rapport d'abandon serait un rapport a trous.** Distance au
  *    declenchement, allocation, comparaison, P&L : rien de tout cela n'existe
- *    quand le run s'arrete a la reconciliation. Un courrier dont cinq sections
+ *    quand le run s'arrete a la valorisation. Un courrier dont cinq sections
  *    sur six disent « indisponible » apprend a ne plus ouvrir le courrier.
  *
  * Ce qui n'est pas retenu non plus : laisser le cas se resoudre tout seul.
@@ -1121,6 +1166,14 @@ export async function runDaily(run: DailyRun): Promise<DailyRunResult> {
       runDate,
       ending: { status: 'FAILED', reason: texte(error) },
       suspension: { status: 'INACTIVE' },
+      /*
+       * `NOT_NEEDED` faute de mieux : l'exception a pu tomber avant meme la
+       * reconciliation, et `executeRun` n'a rien rendu dont on pourrait lire le
+       * resultat. Ne pas alerter deux fois du meme jour est preferable a affirmer
+       * une resynchronisation qu'on n'a pas constatee — `JOB_FAILED` dit deja que
+       * ce run n'a rien conclu.
+       */
+      resync: { status: 'NOT_NEEDED' },
       outcomes: [],
       executed: [],
     });

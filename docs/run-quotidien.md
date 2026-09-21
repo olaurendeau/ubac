@@ -178,9 +178,10 @@ valeur totale nulle, aucun poids définissable, run abandonné proprement, aucun
 ligne écrite.
 
 C'est l'**alerte** du §9 qui fait la différence, et elle existe depuis le lot
-Q6a2 : tout abandon pousse `RECONCILIATION_DRIFT` ou `RUN_ABORTED`, quelle qu'en
-soit la cause — divergence, portefeuille non valorisable, stratégie indécidable.
-Une exception, elle, pousse `JOB_FAILED`. Voir [alertes.md](alertes.md). Les
+Q6a2 : tout abandon pousse `RUN_ABORTED`, quelle qu'en soit la cause —
+portefeuille non valorisable, stratégie indécidable. Une exception, elle, pousse
+`JOB_FAILED`. Depuis Q10 la divergence de réconciliation n'abandonne plus, et son
+`RECONCILIATION_DRIFT` annonce une resynchronisation, pas un arrêt. Voir [alertes.md](alertes.md). Les
 autres traces d'un abandon restent le journal du processus et le code de sortie
 **1**.
 
@@ -237,12 +238,14 @@ Aucune vente n'est déclenchée : la décision de sortir reste humaine (§6).
 
 À partir de ce lot, chaque run réussi **rafraîchit le cache** que la
 réconciliation du lendemain compare aux soldes réels. Avant, `snapshots` n'était
-alimentée par personne. La limite décrite dans
-[reconciliation.md](reconciliation.md) section 6 — un apport de plus de 1 % de la
-ligne USDC survenu entre deux runs fait abandonner le run — devient donc une
-limite d'un jour et non d'une durée indéfinie : le run suivant l'abandon reste
-bloqué, mais la photo la plus récente date bien de la veille dès qu'un run
-aboutit.
+alimentée par personne.
+
+Le lot **Q10** est allé au bout : une divergence au-delà de 1 % ne bloque plus
+rien. Le run décide sur les soldes de l'exchange, repose une photo à leurs
+quantités, pousse `RECONCILIATION_DRIFT` et marque ses quatre lignes de
+`decisions` d'un `ETAT_RESYNCHRONISE`. Un apport hors système, ou un
+rééquilibrage passé à la main, coûte donc une alerte et un marqueur — plus un job
+condamné. Voir [reconciliation.md](reconciliation.md) section 1 bis.
 
 ## 4. Ce que le run ne fait pas
 
