@@ -14,6 +14,7 @@ import type {
   Verdict,
   Weights,
 } from '../core/types.js';
+import { lexique } from './lexique.js';
 
 /**
  * Le **rendu** du rapport quotidien du §9. Pur : aucun reseau, aucune horloge,
@@ -524,6 +525,36 @@ function gapSection(run: CompletedRun): string {
   return section('Metriques indisponibles', table(['Cle', 'Code', 'Motif'], rows));
 }
 
+/**
+ * Le vocabulaire du rapport, **en derniere section**. Une seule section, aucune
+ * glose dans les tableaux : un en-tete `Max drawdown (pire recul subi depuis un
+ * sommet)` triplerait la largeur de sa colonne et ferait deborder le tableau
+ * horizontalement sur un telephone — il casserait precisement la lecture qu'on
+ * cherche a reparer.
+ *
+ * Les entrees conditionnelles suivent ce que **ce** rapport imprime : le
+ * contexte est lu sur le run, et pas devine.
+ */
+function lexiqueSection(run: CompletedRun): string {
+  const entrees = lexique({
+    triggers: run.outcomes.map((outcome) => outcome.intent.trigger),
+    rejets: run.outcomes.flatMap((outcome) =>
+      outcome.verdict.status === 'REJECTED'
+        ? outcome.verdict.rejections.map((rejet) => rejet.code)
+        : [],
+    ),
+    suspendu: run.suspension.status === 'ACTIVE',
+    metriquesIndisponibles: run.benchmarkGaps.length > 0,
+  });
+  return section(
+    'Lexique',
+    table(
+      ['Terme', 'Definition'],
+      entrees.map((entree) => [escape(entree.terme), escape(entree.definition)]),
+    ),
+  );
+}
+
 // --- Point d'entree ---------------------------------------------------------
 
 /** La strategie de production : la seule dont le trigger resume le run. */
@@ -571,6 +602,8 @@ export function renderDailyReport(input: DailyReportInput): DailyReportMail {
     allocationSection(run, input.params.targets) +
     comparisonSection(input) +
     gapSection(run) +
+    /* En dernier, et c'est donc ce que la coupure de Gmail emporte en premier, au-dela d'environ 102 ko. Le rapport en est loin ; ce qui l'en rapprocherait est un lot a venir, pas celui-ci. */
+    lexiqueSection(run) +
     '</div>';
 
   return { subject: subjectOf(run), html, tags: [REPORT_TAG] };

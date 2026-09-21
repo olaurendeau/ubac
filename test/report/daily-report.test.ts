@@ -121,11 +121,21 @@ const avecRun = (patch: Partial<CompletedRun>): DailyReportInput => ({
  * les balises ne tombent : sans eux, deux cellules voisines se recolleraient et
  * une valeur disparaitrait dans la suivante sans qu'aucune assertion ne bronche.
  */
+const ENTITES: Readonly<Record<string, string>> = {
+  '&amp;': '&',
+  '&lt;': '<',
+  '&gt;': '>',
+  '&quot;': '"',
+  '&#39;': "'",
+};
+
 function lignes(html: string): readonly string[] {
   return html
     .replace(/<\/t[dh]>/g, ' | ')
     .replace(/<\/(tr|p|h1|h2|div|table)>/g, '\n')
     .replace(/<[^>]+>/g, '')
+    /* Apres la chute des balises, et pas avant : sinon un `&lt;b&gt;` echappe redeviendrait une balise et disparaitrait a son tour. */
+    .replace(/&(amp|lt|gt|quot|#39);/g, (entite) => ENTITES[entite] ?? entite)
     .split('\n')
     .map((ligne) => ligne.replace(/\s+/g, ' ').replace(/\s*\|\s*$/, '').trim())
     .filter((ligne) => ligne.length > 0);
@@ -165,6 +175,29 @@ describe('rendu — la sortie attendue, ligne a ligne', () => {
       "Portefeuille : TWR depuis la premiere photo. Hold : fenetre OHLCV de 3 jour(s), du 2026-09-10 au 2026-09-12. Les deux periodes ne coincident pas tant que le systeme n'a pas tourne aussi longtemps que la fenetre.",
       "Recul actuel depuis le plus haut : -3.85 %. Ce n'est pas un max drawdown : la photo porte l'indice et son sommet, pas la serie — ni le pire recul passe ni le Sharpe du portefeuille ne s'en lisent.",
       'Ladder et DCA : leur decision du jour figure ci-dessus ; leur P&L demande un rejeu jour par jour, pas une photo.',
+      'Lexique',
+      'Terme | Definition',
+      "P&L | Profit and loss : ce que le portefeuille a gagne ou perdu sur la periode, en pourcentage de ce qu'il valait.",
+      "TWR | Time-weighted return : le rendement une fois les apports et les retraits neutralises, donc ce que la gestion a fait et non ce qu'un virement a ajoute.",
+      "indice | L'indice de croissance : le cumul des rendements quotidiens, flux exclus, parti de 1,00 a la premiere photo, et a 1,25 le portefeuille a gagne 25 % depuis l'origine.",
+      "photo | L'etat du portefeuille enregistre une fois par jour — valeur, poids, quantites et metriques — et jamais recalcule ensuite.",
+      "prix de cloture | Le dernier cours du dernier jour clos, le seul qui ne bouge plus ; celui du jour en cours change encore, et une decision prise dessus serait fausse sans qu'aucun seuil ne morde.",
+      "USDC | Le dollar numerique qui sert de monnaie au portefeuille : tout y est valorise, et le cash n'est detenu que sous cette forme.",
+      "bande | L'intervalle dans lequel une grandeur surveillee a le droit de flotter sans qu'aucun reequilibrage ne soit propose.",
+      "borne | L'une des deux extremites d'une bande. Elle appartient a la bande : etre exactement dessus ne declenche rien, le pas suivant si.",
+      "trigger | Ce qui a declenche la decision du jour, ou NONE quand rien ne l'a declenchee.",
+      "jambe | Un ordre elementaire d'un reequilibrage : un actif, un sens et un montant. Une decision en compte zero, une, ou plusieurs.",
+      'risque | Le verdict de la couche de risque sur la decision du jour : ACCEPTED si elle passe, REJECTED suivi du code du refus sinon.',
+      'poids | La part que represente une ligne dans la valeur totale, en pourcentage. La colonne Cible donne la part visee, la colonne Ecart la difference des deux.',
+      "ombre | Une strategie evaluee chaque jour mais qui ne place jamais d'ordre : elle sert de point de comparaison, pas de gestion.",
+      "hold | Ne rien faire, et le mesurer : Hold BTC garde du BTC seul, Hold 50/50 garde moitie BTC moitie ETH, aucun des deux n'arbitre jamais.",
+      "ladder | Une strategie en echelle : une ancre par actif, un achat quand le cours passe un palier sous elle, une vente quand il en passe un au-dessus. En phase 1 elle est en ombre.",
+      'DCA | Dollar cost averaging : acheter un montant fixe a intervalle fixe, sans regarder le cours. En phase 1 elle est en ombre.',
+      "max drawdown | La pire baisse jamais subie entre un sommet et le creux qui l'a suivi, sur toute la periode mesuree.",
+      "recul actuel depuis le plus haut | De combien l'indice est descendu sous son plus haut connu, aujourd'hui et non dans le passe. C'est la mesure sur laquelle la suspension se declenche.",
+      'Sharpe 90 j | Le rendement rapporte a son agitation sur les 90 derniers jours : plus il est haut, plus la performance a ete reguliere plutot que chanceuse.',
+      'fenetre OHLCV | Le nombre de jours de cours — ouverture, haut, bas, cloture, volume — que le run a relus pour calculer les courbes de reference.',
+      "NONE | Aucune bande n'est franchie : le run constate l'etat du portefeuille et ne propose rien.",
     ]);
   });
 
@@ -480,5 +513,112 @@ describe('§9 — la distance au prochain declenchement, aux deux bornes', () =>
     /* 0.41 / 0.28 = 1.4643, dans [0.9333, 1.7333] : 0.2690 sous la borne haute, en unites de ratio. */
     expect(rendu).toContain('Bande de ratio (B) | BTC/ETH 1.4643 | [0.9333, 1.7333] | 0.2690 de la borne haute');
     expect(lignes(renderDailyReport(INPUT).html).join('\n')).not.toContain('Bande de ratio');
+  });
+});
+
+// --- Le lexique -------------------------------------------------------------
+
+/**
+ * Le rapport porte lui-meme les definitions de son vocabulaire : l'operateur le
+ * lit sur son telephone, et n'a rien a ouvrir ailleurs.
+ *
+ * Deux garde-fous plutot qu'une relecture. **R3** refuse une entree morte — un
+ * mot defini que le rapport n'imprime pas —, et c'est ce qui force le terme
+ * d'une entree a etre ce que le corps affiche et non le nom savant de la chose.
+ * **R5** tient l'inverse pour les entrees conditionnelles : elles suivent ce que
+ * le rapport du jour imprime, sinon les neuf codes de refus seraient glosses tous
+ * les jours pour des rejets qui n'arrivent pas en phase 1.
+ *
+ * Ce qu'aucun test ne peut dire, et qui reste un point de relecture : les
+ * `reason` du noyau sont du texte libre, cites tels quels, et peuvent contenir
+ * un mot que le lexique ne couvre pas.
+ */
+describe('R1 a R6 — le lexique vit dans le rapport, et n’y est ni mort ni muet', () => {
+  /** Les deux moities du corps, separees au titre de la section. */
+  function coupe(html: string): { readonly corps: string; readonly lexique: string } {
+    const index = html.indexOf('>Lexique<');
+    expect(index).toBeGreaterThan(-1);
+    return { corps: html.slice(0, index), lexique: html.slice(index) };
+  }
+
+  const entrees = (html: string): readonly string[] =>
+    lignes(coupe(html).lexique).slice(2);
+
+  it('R1 — la section est la derniere du corps, tableau des trous compris', () => {
+    for (const input of [INPUT, avecRun({ benchmarkGaps: [{ key: 'hold_btc_twr', code: 'EMPTY_SERIES', reason: 'aucun jour' }] })]) {
+      const rendu = lignes(renderDailyReport(input).html);
+      expect(rendu.indexOf('Lexique')).toBeGreaterThan(rendu.indexOf('Comparaison'));
+      /* Rien apres : le titre de la derniere section est « Lexique », et aucun autre ne le suit. */
+      const titres = rendu.filter((ligne) => /^(Distance|Decision|Allocation|Comparaison|Metriques|Lexique)/.test(ligne));
+      expect(titres[titres.length - 1]).toBe('Lexique');
+    }
+  });
+
+  it('R2 — chaque entree porte un terme et une phrase, aucune vide', () => {
+    for (const entree of entrees(renderDailyReport(INPUT).html)) {
+      const [terme = '', definition = ''] = entree.split(' | ');
+      expect(terme.trim().length).toBeGreaterThan(0);
+      expect(definition.trim().length).toBeGreaterThan(20);
+      expect(definition.trim().endsWith('.')).toBe(true);
+    }
+  });
+
+  it('R3 — aucune entree morte : chaque terme est imprime ailleurs dans le corps', () => {
+    const { corps, lexique } = coupe(renderDailyReport(INPUT).html);
+    const texte = lignes(corps).join('\n').toLowerCase();
+    const termes = lignes(lexique)
+      .slice(2)
+      .map((entree) => (entree.split(' | ')[0] ?? '').toLowerCase());
+
+    expect(termes.length).toBe(21);
+    for (const terme of termes) expect(texte).toContain(terme);
+  });
+
+  it('R5 — les entrees conditionnelles suivent ce que le rapport du jour imprime', () => {
+    /* Le cas nominal : quatre triggers NONE, aucun rejet. Une seule glose de trigger, aucune de refus. */
+    const nominal = entrees(renderDailyReport(INPUT).html);
+    expect(nominal.filter((entree) => entree.startsWith('NONE |'))).toHaveLength(1);
+    expect(nominal.some((entree) => /^(CASH_BAND|RATIO_BAND|MIN_CASH|COOLDOWN) \|/.test(entree))).toBe(false);
+
+    /* Un refus : son code est glose, et lui seul des neuf. */
+    const rejete: ReportOutcome = {
+      ...OUTCOMES[0]!,
+      verdict: { status: 'REJECTED', rejections: [{ code: 'MIN_CASH', reason: 'cash projete trop bas' }] },
+    };
+    const avecRejet = entrees(renderDailyReport(avecRun({ outcomes: [rejete, ...OUTCOMES.slice(1)] })).html);
+    expect(avecRejet.some((entree) => entree.startsWith('MIN_CASH |'))).toBe(true);
+    expect(avecRejet.filter((entree) => /^(ASSET_NOT_ALLOWED|COOLDOWN|PRICE_SANITY) \|/.test(entree))).toHaveLength(0);
+
+    /* Une suspension : son entree apparait, et pas avant. */
+    expect(nominal.some((entree) => entree.startsWith('suspension |'))).toBe(false);
+    const suspendu = entrees(
+      renderDailyReport(avecRun({ suspension: { status: 'ACTIVE', drawdown: dec('-0.2612'), reason: 'SUSPENSION_DRAWDOWN : recul a -26.12 %' } })).html,
+    );
+    expect(suspendu.some((entree) => entree.startsWith('suspension |'))).toBe(true);
+
+    /* Le tableau des trous : la convention de nommage des cles est glosee avec lui, jamais sans. */
+    expect(nominal.some((entree) => entree.startsWith('cle |'))).toBe(false);
+    const troue = entrees(
+      renderDailyReport(avecRun({ benchmarkGaps: [{ key: 'hold_btc_*', code: 'EMPTY_SERIES', reason: 'aucun jour de marche fourni' }] })).html,
+    );
+    expect(troue.some((entree) => entree.startsWith('cle |'))).toBe(true);
+  });
+
+  /**
+   * Le corps est sans accent, comme les `reason` du noyau qu'il cite telles
+   * quelles. C'est la contrainte la plus facile a violer de ce lot : on ecrit
+   * vingt definitions en francais d'une traite, et « pondere » passe. La sonde
+   * couvre donc **tout le HTML**, pas seulement la nouvelle section.
+   */
+  it('R6 — aucun caractere accentue dans le rapport rendu, lexique compris', () => {
+    /* NFD decompose « e » accentue en « e » suivi d'une diacritique combinante ; ae et oe lies ne se decomposent pas. */
+    const accentue = /[̀-ͯ]|[æœÆŒ]/;
+    for (const input of [INPUT, avecRun({ benchmarkGaps: [{ key: 'hold_btc_*', code: 'EMPTY_SERIES', reason: 'aucun jour' }], suspension: { status: 'ACTIVE', drawdown: dec('-0.30'), reason: 'SUSPENSION_DRAWDOWN' } })]) {
+      const mail = renderDailyReport(input);
+      expect(mail.html.normalize('NFD')).not.toMatch(accentue);
+      expect(mail.subject.normalize('NFD')).not.toMatch(accentue);
+    }
+    /* La sonde sait voir un accent : sans ce controle, une regex fausse rendrait le test vert pour toujours. */
+    expect('pondere'.replace('e', 'é').normalize('NFD')).toMatch(accentue);
   });
 });
