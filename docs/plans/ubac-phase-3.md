@@ -181,11 +181,11 @@ ni dans un message d'erreur, ni dans une notification ntfy (E52).
 
 ## Décisions préalables
 
-Six ambiguïtés changent le travail d'un lot sans changer le besoin, et se
-tranchent **avant le dispatch du lot**. La recommandation est la mienne, pas une
-décision.
+Six ambiguïtés changeaient le travail d'un lot sans changer le besoin.
+**Elles sont tranchées** : l'opérateur a retenu les six recommandations le
+2026-09-21, avant tout dispatch concerné. Elles ne se reposent pas.
 
-| # | Décision | Avant | Recommandation |
+| # | Décision | Avant | Réponse retenue |
 |---|---|---|---|
 | **T1** | Preuve du `DRY_RUN` : `workflow_dispatch` (E13) ou run manuel sur l'image déployée ? | S7 | **run manuel accepté**, E13 porté par S6. Sinon la phase 3 attend la phase 2 en entier |
 | **T2** | Fixture d'un ordre exécuté : capturée ou fabriquée ? | S2 | **fabriquée et déclarée comme telle**, remplacée par une capture après le premier ordre réel. Une fixture fabriquée qu'on croit capturée est pire que les deux |
@@ -320,9 +320,30 @@ lignes**.
 `test/core/risk-contract.test.ts`, `docs/run-quotidien.md`,
 `docs/rapport-quotidien.md`.
 
-**Résultat** : `REBALANCE_TOO_LARGE_PCT` passe de `0.25` à **`0.05`**, avec le
+**Résultat** : `REBALANCE_TOO_LARGE_PCT` passe de `0.25` à **`0.08`**, avec le
 commentaire qui dit que c'est le plafond d'armement de la phase 3 et par quel
 geste il se lève (O3 = 3).
+
+**La valeur vient d'une mesure, pas d'un ordre de grandeur.** Le cadrage
+écrivait « de l'ordre de 5 % », un chiffre avancé sans données. Le rejeu les a
+produites : sur 974 jours, les douze rééquilibrages de production pesaient de
+5,0 à 10,7 % du portefeuille, et la bande cash 24–36 % fait qu'un simple retour
+à la cible en déplace déjà ~6 %.
+
+| Plafond | Jours refusés | Exécutions sur les 12 |
+|---|---|---|
+| 5 % | 594 | 3 |
+| 7 % | 353 | 6 |
+| **8 %** | **166** | **10** |
+| 11 % | 0 | 12 *(soit les 25 % actuels)* |
+
+À 5 %, le premier déclenchement réel aurait été refusé, avec une alerte
+`URGENT` chaque jour et rien d'armé avant la levée : le mois calendaire d'O4
+serait devenu un mois de refus. Un plafond qui refuse tout est sûr, mais il est
+indistinguable d'une panne, et il apprend à ignorer les alertes urgentes.
+**L'opérateur a retenu 8 % le 2026-09-21** : le plafond mord encore — deux des
+douze rééquilibrages passent à la trappe et 166 jours de déclenchement sont
+refusés — sans neutraliser la phase qu'il est censé protéger.
 
 **C'est le lot le plus court et le plus facile à sous-estimer.** Les trois
 décisions se referment l'une sur l'autre : `REBALANCE_TOO_LARGE` **refuse déjà le
@@ -332,14 +353,14 @@ motif s'écrit déjà dans `decisions.reason`, et son alerte existe depuis Q6a2.
 une valeur et constate que le chemin mord dessus. Ce qui coûte, c'est ce que la
 valeur touche ailleurs.
 
-**Validation** : un run dont les jambes pèsent 6 % du portefeuille est refusé et
-ne l'était pas ; un run à 4 % passe ; le motif cite la nouvelle valeur ; l'alerte
+**Validation** : un run dont les jambes pèsent 9 % du portefeuille est refusé et
+ne l'était pas ; un run à 7 % passe ; le motif cite la nouvelle valeur ; l'alerte
 part ; `make coverage` tient les 100 % lignes **et branches**.
 **Mutation** : remettre `0.25` — les sondes du plafond rougissent. Si elles ne
 rougissent pas, elles ne testaient pas le seuil.
 
 **Pièges.** (1) **La retombée sur les tests existants est le vrai volume du
-lot** : des cas construits pour passer sous 25 % tombent sous 5 %. Il ne faut
+lot** : des cas construits pour passer sous 25 % tombent sous 8 %. Il ne faut
 **pas** les « réparer » en retouchant leurs chiffres au hasard — chacun doit
 rester le cas qu'il testait. Le remède est d'exprimer le cas relativement au
 seuil, pas de recopier une constante dans le test. (2) **Le débordement sur les

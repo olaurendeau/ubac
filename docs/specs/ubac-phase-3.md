@@ -151,7 +151,7 @@ précédents, avec l'échéance « avant la phase 3 ».
 
 | # | Question | Réponse retenue |
 |---|---|---|
-| **O1** | Forme du plafond réduit (B2) | **3 — fraction de la valeur du portefeuille par run**, c'est-à-dire `REBALANCE_TOO_LARGE_PCT` abaissé, de l'ordre de **5 %** au lieu de 25 % |
+| **O1** | Forme du plafond réduit (B2) | **3 — fraction de la valeur du portefeuille par run**, c'est-à-dire `REBALANCE_TOO_LARGE_PCT` abaissé. **Valeur retenue le 2026-09-21 : 8 %** au lieu de 25 %, mesurée sur le rejeu et non estimée — voir E29 |
 | **O2** | Que fait le système quand une jambe dépasse le plafond ? | **3 — pas de rabotage.** Le run entier est refusé ; le portefeuille reste hors bande jusqu'à la levée du plafond |
 | **O3** | Par quel geste le plafond est-il levé ? | **3 — un geste explicite** : changement de constante dans le code, PR relue, déploiement. Jamais automatiquement, jamais par variable d'environnement |
 | **O4** | Qu'est-ce qui clôt la phase 3 ? | **1 — un mois calendaire de runs armés sans incident**, même si aucun rééquilibrage n'a eu lieu |
@@ -455,8 +455,15 @@ l'alerte existent depuis la phase 0 ; ce qui est neuf est la valeur.
 29. Un plafond réduit est **armé dès le premier run qui exécute**, et il est
     strictement plus contraignant que `REBALANCE_TOO_LARGE_PCT` à 25 %.
     **O1 = 3** : le plafond est une **fraction de la valeur du portefeuille par
-    run**, donc `REBALANCE_TOO_LARGE_PCT` lui-même, abaissé **de l'ordre de
-    5 %**. Aucune règle nouvelle n'est écrite : c'est la valeur d'une constante
+    run**, donc `REBALANCE_TOO_LARGE_PCT` lui-même, abaissé à **8 %**. Cette
+    valeur est **mesurée, pas estimée** : sur 974 jours de rejeu, les douze
+    rééquilibrages de production pesaient de 5,0 à 10,7 %, et un simple retour
+    à la cible depuis la bande cash 24–36 % en déplace déjà ~6 %. À 5 %, valeur
+    avancée par le cadrage sans données, 594 jours de déclenchement étaient
+    refusés et 3 rééquilibrages sur 12 passaient — le mois calendaire d'E56
+    serait devenu un mois d'alertes `URGENT` quotidiennes sans rien d'armé. À
+    8 %, 166 jours sont refusés et 10 rééquilibrages passent : le plafond mord
+    sans neutraliser la phase. Aucune règle nouvelle n'est écrite : c'est la valeur d'une constante
     existante qui change, et le lot qui l'abaisse est fusionné **avant** celui
     qui arme l'exécution. Le plafond s'applique donc à tout appel de
     `validate()`, verdicts shadow compris — voir E31.
