@@ -207,6 +207,61 @@ un base64 de 88 caractères, soit 64 octets — graine de 32 octets suivie de la
 clé publique — et non un bloc PEM. L'algorithme du JWT est `EdDSA`, pas `ES256`.
 Une bibliothèque ou un exemple qui suppose le format PEM échouera sur cette clé.
 
+## La clé de phase 3 : le portefeuille attendu, vérifié à chaque run
+
+Critères E6 à E8 de [la spec de phase 3](specs/ubac-phase-3.md), lot S1.
+
+**Le contrôle de la phase 1 est auto-référentiel.** L'adapter vérifie que chaque
+compte lu est rattaché au `portfolio_uuid` **que la clé déclare**. Il prouve que
+la réponse est cohérente avec la clé, pas que la clé est scopée sur le bon
+portefeuille : une clé créée par erreur sur *Primary* — sélectionné par défaut
+à l'étape 2 — le passe sans rien faire rougir. En phase 1, la conséquence est
+une lecture du portefeuille principal ; en phase 3, un rééquilibrage exécuté
+dessus.
+
+D'où **`COINBASE_PORTFOLIO_UUID`**, posée par l'opérateur chez Scaleway
+([deploiement.md](deploiement.md) section 1). Le lecteur Coinbase la reçoit à sa
+construction et compare **exactement** le `portfolio_uuid` de
+`key_permissions` avec elle ; **chaque lecture** commence par ce contrôle,
+quel que soit l'ordre des appels. Une clé scopée ailleurs arrête le run à
+l'étape 1, avant la réconciliation, avec l'alerte `JOB_FAILED`. Le contrôle de
+rattachement **reste** : l'un prouve l'identité du portefeuille, l'autre la
+cohérence de la réponse, et aucun des deux ne remplace l'autre.
+
+Chaque run journalise la clé **telle que la réponse la porte**, avant le
+verdict, pour qu'une clé refusée dise ce qu'elle est :
+
+```
+cle coinbase — portefeuille=<uuid> attendu=oui can_view=true can_trade=true can_transfer=false
+```
+
+Aucun secret n'y figure : le lecteur n'a jamais la clé en main, seul le
+transport la tient, et un test le vérifie par le vrai transport, jeton signé
+compris.
+
+### Procédure, au moment d'E4
+
+1. Créer une **nouvelle** clé, `ubac-phase-3-trade` par exemple, scopée sur
+   `ubac-agent` : lecture et trade, **pas** transfer. Pas une permission ajoutée
+   à la clé de phase 1.
+2. Vérifier ce qui a été accordé, comme à l'étape 4 : `can_view` et `can_trade`
+   vrais, `can_transfer` faux, `portfolio_uuid` celui de `ubac-agent`.
+3. Poser `COINBASE_PORTFOLIO_UUID` chez Scaleway **avant** de déployer l'image
+   qui l'exige, puis remplacer `COINBASE_API_KEY` et `COINBASE_API_SECRET`.
+4. Reporter le résultat dans Orca — l'UUID y va, **jamais dans ce dépôt** — et
+   révoquer la clé de phase 1.
+5. **Mesurer**, sur la nouvelle clé, si les endpoints v2 échappent aussi au
+   scoping pour les ordres (encadré plus haut). La réponse se mesure ; elle ne
+   se déduit pas.
+
+### Résultat du contrôle de la clé de phase 3
+
+**Pas encore fait** : la clé n'existe pas (E4). Le lot S1 est vérifié contre des
+fixtures — la réponse réelle de la clé de phase 1, et une réponse **fabriquée**
+avec `can_trade` vrai, déclarée comme telle dans le test. Le bout en bout contre
+la nouvelle clé reste à faire, et à reporter ici comme le contrôle du
+2026-09-11.
+
 ## Ce qui reste à décider plus tard
 
 - **Approvisionnement du portefeuille.** Rien n'est exigé en phase 1. Le montant
@@ -214,7 +269,8 @@ Une bibliothèque ou un exemple qui suppose le format PEM échouera sur cette cl
 - **Passage en lecture + trade.** La phase 3 active l'exécution et demandera une
   clé avec `can_trade`. Ce sera une nouvelle clé, créée à ce moment-là, pas une
   permission ajoutée discrètement à celle-ci. Une clé qui gagne des droits en
-  cours de route est une clé dont plus personne ne connaît la portée.
+  cours de route est une clé dont plus personne ne connaît la portée. Procédure
+  ci-dessus.
 - **Rotation.** À prévoir avec la phase 2, quand les secrets passeront en
   variables secrètes Scaleway.
 

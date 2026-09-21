@@ -26,6 +26,11 @@ import type { Price, Quantity, Side } from '../core/types.js';
  *    peine de 401 sur tout appel parametre. ccxt le tronque ; le test le fige.
  * 3. **Les grandeurs entrent par la chaine d'origine.** On lit les reponses
  *    brutes, jamais les structures unifiees de ccxt, qui rendent des `number`.
+ *
+ * Et un controle que la cle ne peut pas faire sur elle-meme (E6 de la phase 3) :
+ * le lecteur se construit avec le portefeuille **attendu**, pose par
+ * l'operateur, et aucune lecture ne rend quoi que ce soit tant que
+ * `key_permissions` n'a pas rendu exactement celui-la. Voir `openCoinbase`.
  */
 
 // --- Erreur de frontiere ----------------------------------------------------
@@ -222,6 +227,25 @@ export interface KeyPermissions {
 }
 
 /**
+ * Ce que le run attend de la cle. Pose **a la construction** du lecteur, et non
+ * passe a une methode : un controle qu'on esquive en appelant la bonne lecture
+ * dans le mauvais ordre n'en est pas un.
+ */
+export interface ExpectedKey {
+  /**
+   * `COINBASE_PORTFOLIO_UUID`, pose par l'operateur. Compare **exactement** au
+   * `portfolio_uuid` que rend `key_permissions`.
+   */
+  readonly portfolioUuid: string;
+  /**
+   * Recoit, une fois par run, la ligne des permissions effectives et du
+   * portefeuille (E8) — **avant** le verdict, pour qu'une cle refusee dise au
+   * journal ce qu'elle est reellement.
+   */
+  readonly log: (line: string) => void;
+}
+
+/**
  * Le solde d'une devise dans le portefeuille. `Quantity` et pas `UsdcAmount`,
  * meme pour la ligne USDC : la requalification en somme d'argent est une
  * decision du job, qui doit s'ecrire, pas se deduire du nom de la devise.
@@ -306,8 +330,31 @@ function instant(raw: unknown, contexte: string): Date {
   return date;
 }
 
-function permissionsFrom(raw: unknown): KeyPermissions {
+/**
+ * La ligne d'E8 : les permissions **telles que la reponse les porte**, pas telles
+ * que ce module les a comprises. Tous les champs `can_*`, dans l'ordre de la
+ * reponse et avec leur forme JSON — une permission rendue `"true"` en chaine ne
+ * se lit pas `true` —, celle de sortie comprise, que ce fichier journalise sans
+ * avoir a la nommer. Aucun secret n'y entre : la reponse n'en porte pas, et le
+ * lecteur n'a jamais la cle en main, seul le transport la tient.
+ */
+function keyLine(
+  record: Readonly<Record<string, unknown>>,
+  portfolioUuid: string,
+  attendu: boolean,
+): string {
+  const permissions = Object.entries(record)
+    .filter(([nom]) => nom.startsWith('can_'))
+    .map(([nom, valeur]) => `${nom}=${JSON.stringify(valeur)}`)
+    .join(' ');
+  return `cle coinbase — portefeuille=${portfolioUuid} attendu=${attendu ? 'oui' : 'NON'} ${permissions}`;
+}
+
+function permissionsFrom(raw: unknown, attendue: ExpectedKey): KeyPermissions {
   const record = asRecord(raw, 'key_permissions');
+  const portfolioUuid = asText(record['portfolio_uuid'], 'key_permissions.portfolio_uuid');
+  const attendu = portfolioUuid === attendue.portfolioUuid;
+  attendue.log(keyLine(record, portfolioUuid, attendu));
   /*
    * Toute permission a vrai autre que les deux attendues arrete la lecture. Le
    * nom est repris tel quel dans le message : il vient de la reponse, pas d'un
@@ -326,10 +373,27 @@ function permissionsFrom(raw: unknown): KeyPermissions {
       'key_permissions : can_view est faux, la cle ne peut rien lire du portefeuille.',
     );
   }
+  /*
+   * E6. **Ne pas confondre avec le controle de `balanceFrom`**, et ne supprimer
+   * ni l'un ni l'autre en le croyant redondant. Celui-la compare chaque compte
+   * a l'UUID que **la cle** declare : il prouve que la reponse est coherente
+   * avec la cle. Celui-ci compare la cle a l'UUID que **l'operateur** a pose :
+   * il prouve que la cle est scopee sur le bon portefeuille. Une cle creee par
+   * erreur sur *Primary*, selectionne par defaut dans le CDP Portal, passe le
+   * premier sans rien faire rougir, et c'est le second qui l'arrete.
+   *
+   * Les deux UUID sont cites, comme dans `balanceFrom` : sur un telephone, une
+   * faute d'un caractere ne se trouve qu'en les voyant l'un sous l'autre.
+   */
+  if (!attendu) {
+    throw new CoinbaseFrontierError(
+      `key_permissions : la cle est scopee sur le portefeuille ${portfolioUuid}, alors que COINBASE_PORTFOLIO_UUID attend ${attendue.portfolioUuid}. Aucune lecture n'est faite avec une cle qui n'est pas celle du portefeuille dedie.`,
+    );
+  }
   return {
     canView: true,
     canTrade: record['can_trade'] === true,
-    portfolioUuid: asText(record['portfolio_uuid'], 'key_permissions.portfolio_uuid'),
+    portfolioUuid,
   };
 }
 
@@ -453,16 +517,26 @@ async function allPages(
  * `transport` est un parametre et non une construction interne : c'est ce qui
  * rend le module testable contre des reponses reelles capturees, sans reseau et
  * sans cle. Le job compose `ccxtTransport(config.secrets)` avec ce lecteur.
+ *
+ * `attendue` porte le portefeuille que la cle doit servir. **Chaque lecture
+ * commence par la verifier**, `openOrders` compris qui n'a pas besoin de
+ * l'UUID : le controle ne depend donc pas de l'ordre dans lequel le run appelle
+ * les methodes. Le run quotidien lit `keyPermissions` en premier, et c'est la
+ * qu'une cle mal scopee l'arrete, avant la reconciliation.
  */
-export function openCoinbase(transport: CoinbaseTransport): CoinbaseReader {
+export function openCoinbase(transport: CoinbaseTransport, attendue: ExpectedKey): CoinbaseReader {
   /*
-   * Lues une fois par run : elles ne changent pas en cours de route, et
-   * `balances()` en a besoin a chaque appel pour son controle de portee.
+   * Lues une fois par run : elles ne changent pas en cours de route. Un refus
+   * est memoise comme une reponse — la promesse rejetee reste rejetee —, donc
+   * une cle refusee le reste pour toutes les lectures suivantes, et la ligne
+   * d'E8 n'est ecrite qu'une fois.
    */
   let permissions: Promise<KeyPermissions> | undefined;
 
   const lirePermissions = (): Promise<KeyPermissions> => {
-    permissions ??= transport.read({ kind: 'key_permissions' }).then(permissionsFrom);
+    permissions ??= transport
+      .read({ kind: 'key_permissions' })
+      .then((raw) => permissionsFrom(raw, attendue));
     return permissions;
   };
 
@@ -483,6 +557,7 @@ export function openCoinbase(transport: CoinbaseTransport): CoinbaseReader {
     },
 
     async openOrders(): Promise<readonly OpenOrder[]> {
+      await lirePermissions();
       const bruts = await allPages(
         transport,
         (cursor) => ({ kind: 'open_orders', ...(cursor === undefined ? {} : { cursor }) }),

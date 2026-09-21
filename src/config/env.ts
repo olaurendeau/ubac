@@ -101,11 +101,26 @@ export const NTFY_CANAL_OUVERT = 'CANAL-PUBLIC-SANS-JETON';
  * `docs/rapport-quotidien.md`, et **non** corrige dans la spec : aligner
  * celle-ci est une decision de l'operateur, pas un ajustement technique. Meme
  * traitement que la divergence MIN_CASH 22 % / 15 %.
+ *
+ * La onzieme, `COINBASE_PORTFOLIO_UUID`, n'est pas un ecart : elle est exigee
+ * par E6 de `docs/specs/ubac-phase-3.md`.
  */
 export interface Secrets {
   readonly databaseUrl: string;
   readonly coinbaseApiKey: string;
   readonly coinbaseApiSecret: string;
+  /**
+   * Le portefeuille sur lequel la cle **doit** etre scopee, pose par
+   * l'operateur. Ce n'est pas la cle qui le dit, et c'est tout son interet : le
+   * controle de `balanceFrom` compare les comptes a l'UUID **rendu par la cle**,
+   * donc une cle creee par erreur sur *Primary* — le portefeuille selectionne
+   * par defaut dans le CDP Portal — le passerait sans rien faire rougir.
+   *
+   * Pas un secret au sens strict — il n'ouvre rien —, mais il identifie le
+   * portefeuille : il vit chez Scaleway avec les autres, jamais dans un fichier
+   * versionne, et un refus de configuration ne le cite pas plus qu'eux.
+   */
+  readonly coinbasePortfolioUuid: string;
   readonly brevoApiKey: string;
   /** Expediteur du rapport quotidien. Sur le domaine authentifie SPF et DKIM. */
   readonly brevoSender: string;
@@ -218,6 +233,17 @@ const NTFY_TOPIC_TEXT = /^[A-Za-z0-9_-]{1,64}$/;
  * laisse passer le reste.
  */
 const EMAIL_TEXT = /^[^\s@,;<>"]+@[^\s@,;<>".]+(?:\.[^\s@,;<>".]+)+$/;
+
+/**
+ * Un UUID en minuscules, sous la forme canonique que `key_permissions` rend.
+ *
+ * Les minuscules sont exigees et non normalisees, parce que la comparaison avec
+ * la reponse de Coinbase est **exacte** (E6). Un UUID colle en majuscules ne
+ * designerait pas un autre portefeuille, mais il ferait refuser chaque run pour
+ * un motif qui ressemble a une cle mal scopee — le pire endroit ou decouvrir une
+ * faute de casse. Il est refuse ici, avec la bonne explication.
+ */
+const PORTFOLIO_UUID_TEXT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /**
  * Un secret : requis, non vide, et dont aucun message ne cite la valeur.
@@ -395,6 +421,11 @@ const schema = z.object({
   DATABASE_URL: secretUrl('DATABASE_URL', ['postgres:', 'postgresql:'], 'URL postgres://'),
   COINBASE_API_KEY: secret('COINBASE_API_KEY'),
   COINBASE_API_SECRET: secret('COINBASE_API_SECRET'),
+  COINBASE_PORTFOLIO_UUID: secretShaped(
+    'COINBASE_PORTFOLIO_UUID',
+    PORTFOLIO_UUID_TEXT,
+    'UUID de portefeuille attendu, en minuscules, tel que key_permissions le rend',
+  ),
   BREVO_API_KEY: secret('BREVO_API_KEY'),
   BREVO_SENDER: secretShaped(
     'BREVO_SENDER',
@@ -630,6 +661,7 @@ export function loadConfig(env: Env = process.env): UbacConfig {
       databaseUrl: parsed.data.DATABASE_URL,
       coinbaseApiKey: parsed.data.COINBASE_API_KEY,
       coinbaseApiSecret: parsed.data.COINBASE_API_SECRET,
+      coinbasePortfolioUuid: parsed.data.COINBASE_PORTFOLIO_UUID,
       brevoApiKey: parsed.data.BREVO_API_KEY,
       brevoSender: parsed.data.BREVO_SENDER,
       brevoRecipient: parsed.data.BREVO_RECIPIENT,

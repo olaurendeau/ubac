@@ -14,6 +14,7 @@ const SECRETS: Env = {
   DATABASE_URL: 'postgresql://utilisateur:motdepasse@hote.test/ubac',
   COINBASE_API_KEY: 'cle-de-test',
   COINBASE_API_SECRET: 'secret-de-test',
+  COINBASE_PORTFOLIO_UUID: '00000000-0000-4000-8000-000000000001',
   BREVO_API_KEY: 'brevo-de-test',
   BREVO_SENDER: 'ubac@exemple.test',
   BREVO_RECIPIENT: 'operateur@exemple.test',
@@ -56,6 +57,7 @@ describe('un environnement complet donne les defauts du noyau', () => {
       databaseUrl: SECRETS['DATABASE_URL'],
       coinbaseApiKey: SECRETS['COINBASE_API_KEY'],
       coinbaseApiSecret: SECRETS['COINBASE_API_SECRET'],
+      coinbasePortfolioUuid: SECRETS['COINBASE_PORTFOLIO_UUID'],
       brevoApiKey: SECRETS['BREVO_API_KEY'],
       brevoSender: SECRETS['BREVO_SENDER'],
       brevoRecipient: SECRETS['BREVO_RECIPIENT'],
@@ -86,19 +88,22 @@ describe('un secret absent ou mal forme arrete le demarrage', () => {
     for (const issue of issues) expect(issue).toContain(nom);
   });
 
-  // Corriger dix variables a dix redemarrages est ce qui pousse a poser un
+  // Corriger onze variables a onze redemarrages est ce qui pousse a poser un
   // defaut « en attendant ». Elles sortent donc toutes du meme appel.
   //
-  // Dix et non six : le §10 de la spec en fige six, et les deux canaux de
+  // Onze et non six : le §10 de la spec en fige six, et les deux canaux de
   // notification en demandent deux chacun. ntfy est auto-heberge, donc son URL
   // et son topic sans lesquels il n'y a rien a joindre (docs/alertes.md) ; Brevo
   // a une cle d'API qui ne dit ni de qui part le courrier ni a qui il va, donc
   // l'expediteur et le destinataire (docs/rapport-quotidien.md). Les deux ecarts
-  // sont assumes. Le compte est asserte sur la table elle-meme, pour qu'il ne
-  // puisse pas diverger en silence.
-  it('remonte les dix variables manquantes en une fois', () => {
+  // sont assumes. La onzieme, COINBASE_PORTFOLIO_UUID, est exigee par E6 de la
+  // phase 3. Le compte est asserte sur la table elle-meme, pour qu'il ne puisse
+  // pas diverger en silence : c'est le compte que docs/deploiement.md §1 fait
+  // poser chez Scaleway, et une variable de plus qu'il oublie est un run qui ne
+  // demarre plus le lendemain.
+  it('remonte les onze variables manquantes en une fois', () => {
     const issues = issuesOf(() => loadConfig({}));
-    expect(SECRET_NAMES).toHaveLength(10);
+    expect(SECRET_NAMES).toHaveLength(11);
     expect(issues).toHaveLength(SECRET_NAMES.length);
     for (const nom of SECRET_NAMES) {
       expect(issues.join('\n')).toContain(nom);
@@ -226,6 +231,34 @@ describe('un secret absent ou mal forme arrete le demarrage', () => {
     expect(tout).toContain('NTFY_TOPIC');
     expect(tout).not.toContain('ntfy-prive');
     expect(tout).not.toContain('topic/secret');
+  });
+
+  /*
+   * E6. La comparaison avec `key_permissions` est exacte, donc la forme se
+   * controle ici : un UUID colle en majuscules, entoure d'espaces ou tronque
+   * ferait refuser chaque run pour un motif qui ressemble a une cle mal scopee.
+   * Le refuser au demarrage coute un redemarrage, avec la bonne explication.
+   */
+  it.each([
+    '00000000-0000-4000-8000-00000000000A',
+    ' 00000000-0000-4000-8000-000000000001',
+    '00000000-0000-4000-8000-000000000001 ',
+    '{00000000-0000-4000-8000-000000000001}',
+    '00000000000040008000000000000001',
+    '00000000-0000-4000-8000-00000000001',
+    'ubac-agent',
+  ])('refuse COINBASE_PORTFOLIO_UUID « %s », sans recopier la valeur', (valeur) => {
+    const issues = issuesOf(() => loadConfig(env({ COINBASE_PORTFOLIO_UUID: valeur })));
+    expect(issues).toEqual([expect.stringContaining('COINBASE_PORTFOLIO_UUID')]);
+    expect(issues[0]).toContain('minuscules');
+    expect(issues[0]).not.toContain(valeur.trim());
+  });
+
+  it('expose le portefeuille attendu tel qu’il est pose, sans le normaliser', () => {
+    const uuid = '04f1112e-aaaa-4bbb-8ccc-0123456789ab';
+    expect(loadConfig(env({ COINBASE_PORTFOLIO_UUID: uuid })).secrets.coinbasePortfolioUuid).toBe(
+      uuid,
+    );
   });
 
   /*
