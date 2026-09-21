@@ -168,8 +168,8 @@ sans danger.
 
 ### Le plafond réduit de la phase 3
 
-`REBALANCE_TOO_LARGE_PCT` vaut **5 %** au lieu de 25 % (B2, O1 = 3) : un run dont
-la somme des |jambes| dépasse 5 % de la valeur du portefeuille est **refusé en
+`REBALANCE_TOO_LARGE_PCT` vaut **8 %** au lieu de 25 % (B2, O1 = 3) : un run dont
+la somme des |jambes| dépasse 8 % de la valeur du portefeuille est **refusé en
 entier**, jamais raboté (O2 = 3). Aucune règle n'est ajoutée : c'est la valeur
 d'une constante de `src/core/risk.ts`, armée dès le premier run qui exécute (E29).
 
@@ -179,12 +179,15 @@ d'une constante de `src/core/risk.ts`, armée dès le premier run qui exécute (
 Le portefeuille reste hors bande, et l'alerte repart chaque jour où il le reste.
 Ce texte n'est pas dans `decisions.reason`, qui porte le motif de la stratégie.
 
-**Ce que 5 % veut dire pour la production.** La bande de cash va de 24 à 36 %
+**Ce que 8 % veut dire pour la production.** La bande de cash va de 24 à 36 %
 autour d'une cible de 30 %, en mode `target` : un retour à la cible déplace déjà
 de l'ordre de 6 % du portefeuille. Sur le rejeu (974 jours), les 12
-rééquilibrages de production pesaient de 5,0 à 10,7 % ; à 5 %, 3 passent et 594
-jours de déclenchement sont refusés. Attendre une alerte par jour hors bande, et
-le plus souvent aucun ordre avant la levée.
+rééquilibrages de production pesaient de 5,0 à 10,7 % ; à 8 %, 10 passent et 166
+jours de déclenchement sont refusés. La valeur est mesurée, pas estimée : la
+table et la décision sont dans le [plan de la phase 3](plans/ubac-phase-3.md)
+(S3). Attendre, pour les
+rééquilibrages les plus amples, une alerte par jour hors bande et aucun ordre
+avant la levée.
 
 **Le bruit des ombres (E31).** `validate()` est appelée pour les quatre
 stratégies : `rebalance_ab`, `ladder` et `dca` verront aussi plus de

@@ -17,7 +17,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 /**
  * Valeurs figees pour cette fixture ; ce ne sont pas des jugements de performance (C31).
  * `rebalance*` passent par `validate()`, donc par le plafond reduit de la phase 3
- * (5 %) : la plupart de leurs retours a la cible y sont refuses et chaque jour
+ * (8 %) : une partie de leurs retours a la cible y sont refuses et chaque jour
  * hors bande recompte un declenchement. Lever le plafond (E34) refige ces deux-la.
  */
 const ORACLES: Record<
@@ -31,18 +31,18 @@ const ORACLES: Record<
   }
 > = {
   rebalance: {
-    finalValue: '21923.595202252101089',
-    twr: '0.3357091723347386746',
-    sharpe90: '1.9671021422780342119',
-    maxDrawdown: '-0.29673737722140743512',
-    triggerCount: 597,
+    finalValue: '21163.004751774530728',
+    twr: '0.2742821886308717625',
+    sharpe90: '1.9973294554458287241',
+    maxDrawdown: '-0.44296931338421931158',
+    triggerCount: 176,
   },
   rebalance_ab: {
-    finalValue: '21923.595202252101089',
-    twr: '0.3357091723347386746',
-    sharpe90: '1.9671021422780342119',
-    maxDrawdown: '-0.29673737722140743512',
-    triggerCount: 767,
+    finalValue: '21308.399366828224302',
+    twr: '0.2863160301302045295',
+    sharpe90: '1.9995101730999044903',
+    maxDrawdown: '-0.44386906385658183351',
+    triggerCount: 247,
   },
   ladder: {
     finalValue: '20984.999026077450747',
