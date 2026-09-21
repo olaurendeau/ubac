@@ -330,7 +330,8 @@ describe('les seuils de risque ne se configurent pas', () => {
     expect(config.risk.minCashPct.eq(MIN_CASH_PCT)).toBe(true);
   });
 
-  it.each(['UBAC_RISK_MIN_CASH_PCT', 'UBAC_RISK_COOLDOWN_DAYS'])(
+  /* Le plafond de la phase 3 se leve par un commit, jamais par l'environnement (E30, O3 = 3). */
+  it.each(['UBAC_RISK_MIN_CASH_PCT', 'UBAC_RISK_COOLDOWN_DAYS', 'UBAC_RISK_REBALANCE_TOO_LARGE_PCT'])(
     'refuse de demarrer si %s est pose',
     (nom) => {
       const issues = issuesOf(() => loadConfig(env({ [nom]: '0.15' })));

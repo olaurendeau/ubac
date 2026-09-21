@@ -165,7 +165,7 @@ seulement de la rejouer.
 ### Non appliquées, et pourquoi
 
 `validate()` de `src/core/risk.ts` **n'est pas appelée**, et ne doit pas l'être.
-Une liquidation déplace bien plus que les 25 % de `REBALANCE_TOO_LARGE_PCT` et
+Une liquidation déplace bien plus que le plafond de `REBALANCE_TOO_LARGE_PCT` et
 vide les lignes que `MAX_EXPOSURE` protège : elle serait rejetée à chaque fois.
 Ces seuils gouvernent un rééquilibrage, pas un arrêt. Les relâcher pour faire
 passer une liquidation aurait donné à la couche risque le mode de contournement

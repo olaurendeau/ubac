@@ -28,8 +28,13 @@ export const MAX_EXPOSURE_PCT = new Decimal('0.5');
 /** Reserve USDC minimale apres application des jambes (C16, C17). */
 export const MIN_CASH_PCT = new Decimal('0.22');
 
-/** Ampleur max d'un run : somme des |jambes| / valeur totale (C20). */
-export const REBALANCE_TOO_LARGE_PCT = new Decimal('0.25');
+/**
+ * Ampleur max d'un run : somme des |jambes| / valeur totale (C20). Stricte : 5 % passe.
+ * Plafond d'armement de la phase 3 (B2, O1) : 5 %, contre 25 % avant. Il refuse
+ * le run entier, sans raboter (O2). Il se leve par un commit relu qui change
+ * cette valeur, jamais par l'environnement ni automatiquement (O3, E34).
+ */
+export const REBALANCE_TOO_LARGE_PCT = new Decimal('0.05');
 
 /** Delai min entre deux reequilibrages complets (C21). */
 export const COOLDOWN_DAYS = 7;

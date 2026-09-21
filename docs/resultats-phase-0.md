@@ -1,7 +1,11 @@
 # Résultats du rejeu — phase 0
 
 Généré le 2026-09-10 sur `main`, commit `12cbac0`.
-Reproductible par `make ci` puis `./scripts/dev.sh npm run replay`.
+Reproductible par `make ci` puis `./scripts/dev.sh npm run replay`, **sur ce
+commit** : depuis le plafond réduit de la phase 3, `REBALANCE_TOO_LARGE_PCT`
+vaut 5 % et non 25 %, et les lignes `rebalance*`, qui passent par `validate()`,
+ne sont plus celles-ci sur `main`. Voir
+[run-quotidien.md](run-quotidien.md#le-plafond-réduit-de-la-phase-3).
 
 ## Ce que ce document est, et ce qu'il n'est pas
 

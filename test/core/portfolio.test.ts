@@ -198,7 +198,7 @@ describe('valeur non finie', () => {
     /*
      * Reproduction directe du defaut signale en relecture. Un total NaN repond
      * false a `gte` comme a `lte` : le seuil de C15 MAX_EXPOSURE (50 % de la
-     * valeur totale) et celui de C20 REBALANCE_TOO_LARGE (25 %) passeraient tous
+     * valeur totale) et celui de C20 REBALANCE_TOO_LARGE (son plafond) passeraient tous
      * les deux sans mordre. Le rejet en amont est la seule chose qui empeche ce
      * NaN d'atteindre E7.
      */

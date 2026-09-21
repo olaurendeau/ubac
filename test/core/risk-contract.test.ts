@@ -6,7 +6,7 @@ import { Decimal } from 'decimal.js';
 import { describe, expect, it } from 'vitest';
 
 import type { Holdings, Prices } from '../../src/core/portfolio.js';
-import { validate } from '../../src/core/risk.js';
+import { REBALANCE_TOO_LARGE_PCT, validate } from '../../src/core/risk.js';
 import type { RiskContext } from '../../src/core/risk.js';
 import type {
   Intent,
@@ -38,6 +38,9 @@ const HOLDINGS: Holdings = {
   ETH: qty(new Decimal('30000').div('3000').toString()),
   USDC: qty('30000'),
 };
+
+/** Deux jambes a ce montant pesent exactement le plafond de HOLDINGS (100 000 USDC). */
+const DEMI_PLAFOND = new Decimal(100_000).times(REBALANCE_TOO_LARGE_PCT).div(2);
 
 function context(overrides: Partial<RiskContext> = {}): RiskContext {
   return {
@@ -89,21 +92,29 @@ describe('C15 : les 9 codes de rejet sont atteints', () => {
     const reached = new Set<RejectionCode>([
       codeOf(intent([leg({ asset: 'SOL' })])),
       codeOf(intent([leg({ quote: 'EUR' })])),
+      /*
+       * MAX_EXPOSURE et MIN_CASH se franchissent ici par une jambe sous le
+       * plafond d'ampleur : REBALANCE_TOO_LARGE, ecrit en premier, les
+       * masquerait sinon dans `rejections[0]`.
+       */
       codeOf(
-        intent([leg({ amount: usdc('10000') })]),
+        intent([leg({ amount: usdc('3000') })]),
         context({
           holdings: {
-            BTC: qty(new Decimal('45000').div('60000').toString()),
-            ETH: qty(new Decimal('15000').div('3000').toString()),
+            BTC: qty(new Decimal('48000').div('60000').toString()),
+            ETH: qty(new Decimal('12000').div('3000').toString()),
             USDC: qty('40000'),
           },
         }),
       ),
-      codeOf(intent([leg({ amount: usdc('9000') })])),
+      codeOf(
+        intent([leg({ amount: usdc('2200') })]),
+        context({ holdings: { BTC: qty('0.73'), ETH: qty('11'), USDC: qty('23200') } }),
+      ),
       codeOf(
         intent([
-          leg({ asset: 'BTC', side: 'SELL', amount: usdc('13000') }),
-          leg({ asset: 'ETH', side: 'BUY', amount: usdc('13000') }),
+          leg({ asset: 'BTC', side: 'SELL', amount: DEMI_PLAFOND.add(500) as UsdcAmount }),
+          leg({ asset: 'ETH', side: 'BUY', amount: DEMI_PLAFOND.add(500) as UsdcAmount }),
         ]),
       ),
       (() => {
