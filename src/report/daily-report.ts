@@ -90,12 +90,29 @@ export interface PreviousSnapshot {
   readonly benchmarks: Readonly<Record<string, Decimal>>;
 }
 
+/**
+ * Une photo de la serie du graphe, **reduite aux deux colonnes qu'il lit** : ni
+ * valeur totale, ni poids, ni position. Le graphe ne trace donc pas la valeur —
+ * ce n'est pas une intention, c'est une impossibilite de forme (R9).
+ */
+export interface TwrPoint {
+  readonly runDate: IsoDate;
+  readonly benchmarks: Readonly<Record<string, Decimal>>;
+}
+
 export interface DailyReportInput {
   readonly run: CompletedRun;
   /** Cibles et bandes de la configuration de **production**. */
   readonly params: RebalanceParams;
   /** Absente au premier run, ou quand l'appelant ne l'a pas lue. */
   readonly previous?: PreviousSnapshot;
+  /**
+   * Les photos lues a l'etape 4bis, de la plus ancienne a la plus recente, et
+   * **arretees a la veille** : celle du jour n'est ecrite qu'a l'etape 7. Le
+   * rendu y ajoute le point du jour lui-meme. Absente : aucun graphe, et le
+   * rapport le dit plutot que de rendre un cadre vide.
+   */
+  readonly series?: readonly TwrPoint[];
 }
 
 /** Ce que le rendu produit, et tout ce dont l'envoi a besoin. */
@@ -446,6 +463,196 @@ function decisionSection(run: CompletedRun): string {
   return section('Decision du jour', table(['Strategie', 'Trigger', 'Jambes', 'Risque', 'Motif'], rows));
 }
 
+// --- Le graphe du TWR cumule ------------------------------------------------
+
+/** Une colonne : la derniere valeur de son paquet, ou rien. Jamais un zero, jamais une interpolation. */
+export type TwrColumn =
+  | { readonly status: 'VALUE'; readonly value: Decimal }
+  | { readonly status: 'BLANK' };
+
+/** Le graphe, calcule mais pas encore mis en forme : ce que la note doit dire en sort aussi. */
+export type TwrGraph =
+  | { readonly status: 'NONE'; readonly reason: string }
+  | {
+      readonly status: 'DRAWN';
+      readonly columns: readonly TwrColumn[];
+      /** Photos de la serie tracee, avant groupement. */
+      readonly points: number;
+      /** Photos par colonne : la resolution, que la note dit. */
+      readonly perColumn: number;
+      readonly from: IsoDate;
+      readonly to: IsoDate;
+      /** Les deux bornes de l'echelle, en TWR signe. Egales sur une serie plate. */
+      readonly low: Decimal;
+      readonly high: Decimal;
+      readonly blanks: number;
+    };
+
+/**
+ * Quatre-vingt-dix colonnes au plus, **pour toujours**. 90 barres de 4 px plus
+ * 1 px d'ecart tiennent dans les ~496 px utiles du §2, et une barre de 4 px
+ * reste visible sur un telephone.
+ *
+ * Ce n'est pas une troncature de la periode : le graphe montre toujours depuis
+ * la premiere photo, en groupant. Une agregation hebdomadaire a ete envisagee et
+ * ecartee — elle ne borne rien, elle repousse : 104 colonnes apres deux ans, 520
+ * apres dix, et le probleme reviendrait identique quand plus personne ne
+ * regarderait. Ce qui est borne ici, c'est la taille du HTML, donc la distance
+ * qui separe le rapport de la coupure de Gmail — et ce que Gmail coupe d'abord,
+ * c'est le lexique, qui est en dernier.
+ */
+export const MAX_COLONNES = 90;
+
+/** L'indice d'une photo, en TWR : `indice - 1`, exactement l'unite de la case « P&L cumule (TWR) ». */
+function twrAt(point: TwrPoint): TwrColumn {
+  const index = point.benchmarks[PORTFOLIO_KEYS.index];
+  return index !== undefined && index.isFinite()
+    ? { status: 'VALUE', value: index.minus(1) }
+    : { status: 'BLANK' };
+}
+
+/**
+ * Le graphe d'une serie deja composee. Tant que `N <= MAX_COLONNES`, une colonne
+ * par photo ; au-dela, des paquets consecutifs de `k = ceil(N / MAX_COLONNES)`.
+ *
+ * Chaque colonne porte la **derniere** valeur de son paquet, jamais une moyenne :
+ * l'indice est un niveau, et moyenner des niveaux aplatit la courbe qu'on veut
+ * voir. Le dernier paquet peut etre incomplet, et sa derniere valeur reste la
+ * photo la plus recente — la propriete qui compte.
+ */
+export function twrGraph(series: readonly TwrPoint[]): TwrGraph {
+  const points = series.length;
+  const premiere = series[0];
+  const derniere = series[points - 1];
+  if (premiere === undefined || derniere === undefined || points < 2) {
+    /* Un cadre vide, ou une colonne unique pleine hauteur, se lirait comme un rendu casse. */
+    return {
+      status: 'NONE',
+      reason: `Graphe indisponible : ${String(points)} photo(s) dans l'historique, et une courbe en demande deux. Il apparaitra des le run suivant.`,
+    };
+  }
+
+  const perColumn = Math.ceil(points / MAX_COLONNES);
+  const columns: TwrColumn[] = [];
+  for (let debut = 0; debut < points; debut += perColumn) {
+    const dernierDuPaquet = series[Math.min(debut + perColumn, points) - 1];
+    columns.push(dernierDuPaquet === undefined ? { status: 'BLANK' } : twrAt(dernierDuPaquet));
+  }
+
+  const valeurs = columns.flatMap((column) => (column.status === 'VALUE' ? [column.value] : []));
+  const premiereValeur = valeurs[0];
+  if (premiereValeur === undefined) {
+    return {
+      status: 'NONE',
+      reason: `Graphe indisponible : aucune des ${String(points)} photo(s) ne porte d'indice de croissance exploitable.`,
+    };
+  }
+
+  return {
+    status: 'DRAWN',
+    columns,
+    points,
+    perColumn,
+    from: premiere.runDate,
+    to: derniere.runDate,
+    low: Decimal.min(...valeurs),
+    high: Decimal.max(...valeurs),
+    blanks: columns.length - valeurs.length,
+  };
+}
+
+/**
+ * La serie tracee : les photos lues a l'etape 4bis, **arretees a la veille**,
+ * plus le point du jour compose de ce que le run porte deja.
+ *
+ * Le point du jour n'est pas relu parce qu'il n'est pas encore ecrit : la photo
+ * part a l'etape 7, la lecture a lieu a la 4bis. Et un point lu qui porterait
+ * deja la date du run — second run du meme jour — est **remplace**, pas ajoute :
+ * c'est ce qui rend un second run identique au premier par construction, sans
+ * qu'aucune condition ne le dise.
+ */
+function serieTracee(run: CompletedRun, lues: readonly TwrPoint[]): readonly TwrPoint[] {
+  return [
+    ...lues.filter((point) => point.runDate < run.runDate),
+    { runDate: run.runDate, benchmarks: run.benchmarks },
+  ];
+}
+
+/*
+ * Des cellules de tableau, et jamais une image : Gmail supprime `<svg>` du
+ * corps, une image distante est bloquee par defaut et ferait de surcroit appeler
+ * une URL qui porte la performance du portefeuille, et une piece jointe serait
+ * un fichier a ouvrir. Rien a charger, rien a autoriser, et le rendu reste une
+ * chaine que le test compare caractere par caractere.
+ */
+const GRAPHE_HAUTEUR = 90;
+/** La barre du minimum garde un pixel : a hauteur nulle, elle serait indiscernable d'une colonne vide, qui dit tout autre chose. */
+const GRAPHE_PLANCHER = 1;
+const GRAPHE_TABLE = `border-collapse:collapse;table-layout:fixed;height:${String(GRAPHE_HAUTEUR)}px;margin:8px 0 2px`;
+const GRAPHE_CELL = 'width:4px;padding:0 1px 0 0;vertical-align:bottom';
+const GRAPHE_HAUSSE = '#2f6f4f';
+const GRAPHE_BAISSE = '#c0392b';
+
+const GRAPHE_AMPLITUDE = new Decimal(GRAPHE_HAUTEUR - GRAPHE_PLANCHER);
+const GRAPHE_BASE = new Decimal(GRAPHE_PLANCHER);
+
+/**
+ * La hauteur d'une barre, en pixels, sur une echelle qui part du **minimum de la
+ * fenetre** et non de zero : un indice qui varie entre 1,00 et 1,05 trace depuis
+ * zero donne quatre-vingt-dix barres identiques.
+ *
+ * La contrepartie est assumee et compensee : une echelle non ancree a zero
+ * exagere visuellement le bruit, et 0,3 % peut remplir la hauteur. La note donne
+ * donc les deux bornes, de sorte que l'amplitude reelle ne soit jamais ambigue.
+ */
+function hauteurBarre(value: Decimal, low: Decimal, high: Decimal): string {
+  const etendue = high.minus(low);
+  /* Serie plate : toutes les colonnes a la meme hauteur, et aucune division par zero. */
+  if (etendue.lte(0)) return String(GRAPHE_HAUTEUR);
+  return GRAPHE_BASE.plus(value.minus(low).div(etendue).times(GRAPHE_AMPLITUDE)).toFixed(0);
+}
+
+const barre = (column: TwrColumn, low: Decimal, high: Decimal): string =>
+  column.status === 'BLANK'
+    ? `<td style="${GRAPHE_CELL}"></td>`
+    : `<td style="${GRAPHE_CELL}"><div style="height:${hauteurBarre(column.value, low, high)}px;background:${column.value.isNegative() ? GRAPHE_BAISSE : GRAPHE_HAUSSE}"></div></td>`;
+
+/**
+ * Ce que le graphe ne montre pas de lui-meme : la periode couverte, la
+ * resolution, l'echelle et les trous. L'axe est indexe par photo et non par
+ * date — deux colonnes voisines ne couvrent pas forcement la meme duree si un
+ * run a saute —, et c'est le nombre de photos et les deux dates extremes qui
+ * donnent de quoi reperer un historique troue.
+ */
+function grapheNote(graph: Extract<TwrGraph, { status: 'DRAWN' }>): string {
+  const resolution = `1 colonne = ${String(graph.perColumn)} photo${graph.perColumn > 1 ? 's' : ''}`;
+  const plate = graph.low.eq(graph.high)
+    ? ' Serie plate : toutes les colonnes ont la meme hauteur.'
+    : '';
+  const vides =
+    graph.blanks === 0
+      ? ''
+      : ` ${String(graph.blanks)} colonne(s) vide(s) : la photo du paquet ne portait pas d'indice exploitable, et une colonne vide vaut mieux qu'un zero.`;
+  return (
+    `<p style="${NOTE}">P&L cumule (TWR) depuis la premiere photo, lu sur l'indice de croissance : ` +
+    `${String(graph.points)} photo(s), du ${escape(graph.from)} au ${escape(graph.to)}, ${resolution}. ` +
+    `Echelle de ${signedPct(graph.low)} a ${signedPct(graph.high)}, et non depuis zero : une variation faible occupe toute la hauteur.` +
+    `${plate}${vides}</p>`
+  );
+}
+
+/** Le graphe rendu, ou la phrase qui dit pourquoi il n'y en a pas. Jamais un cadre vide. */
+function grapheSection(input: DailyReportInput): string {
+  const graph = twrGraph(serieTracee(input.run, input.series ?? []));
+  if (graph.status === 'NONE') return `<p style="${NOTE}">${escape(graph.reason)}</p>`;
+  return (
+    `<table style="${GRAPHE_TABLE}"><tr>` +
+    graph.columns.map((column) => barre(column, graph.low, graph.high)).join('') +
+    '</tr></table>' +
+    grapheNote(graph)
+  );
+}
+
 /** L'en-tete du tableau de comparaison : le nom, puis les colonnes de metriques. */
 const COMPARISON_HEADER: readonly string[] = [
   '',
@@ -505,9 +712,17 @@ function comparisonSection(input: DailyReportInput): string {
     signedPct,
   );
 
+  /*
+   * Le graphe est **dans** « Comparaison », entre le titre et le tableau : il est
+   * l'histoire de la ligne « Portefeuille » de ce tableau. Le mettre sous
+   * l'en-tete, en premier coup d'oeil, est defendable, mais repousserait d'autant
+   * la distance au prochain declenchement, que le §9 a placee en deuxieme
+   * position deliberement.
+   */
   return section(
     'Comparaison',
-    table(COMPARISON_HEADER, rows) +
+    grapheSection(input) +
+      table(COMPARISON_HEADER, rows) +
       `<p style="${NOTE}">Portefeuille : TWR depuis la premiere photo. Hold : fenetre OHLCV de ${String(window.length)} jour(s), du ${escape(first)} au ${escape(last)}. Les deux periodes ne coincident pas tant que le systeme n'a pas tourne aussi longtemps que la fenetre.</p>` +
       `<p style="${NOTE}">Recul actuel depuis le plus haut : ${recul}. Ce n'est pas un max drawdown : la photo porte l'indice et son sommet, pas la serie — ni le pire recul passe ni le Sharpe du portefeuille ne s'en lisent.</p>` +
       `<p style="${NOTE}">Ladder et DCA : leur decision du jour figure ci-dessus ; leur P&L demande un rejeu jour par jour, pas une photo.</p>`,
@@ -602,7 +817,7 @@ export function renderDailyReport(input: DailyReportInput): DailyReportMail {
     allocationSection(run, input.params.targets) +
     comparisonSection(input) +
     gapSection(run) +
-    /* En dernier, et c'est donc ce que la coupure de Gmail emporte en premier, au-dela d'environ 102 ko. Le rapport en est loin ; ce qui l'en rapprocherait est un lot a venir, pas celui-ci. */
+    /* En dernier, et c'est donc ce que la coupure de Gmail emporte en premier : d'ou le graphe borne, qui est ce qui ferait grossir le rapport jusqu'a ce seuil. */
     lexiqueSection(run) +
     '</div>';
 

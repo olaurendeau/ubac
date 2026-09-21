@@ -295,6 +295,16 @@ function harnais(scenario: Scenario = {}): Harnais {
           const derniere = [...photos.keys()].sort().pop();
           return Promise.resolve(derniere === undefined ? undefined : photos.get(derniere));
         },
+        /* La serie du graphe, lue sur la meme table que `latestSnapshot` et reduite aux deux colonnes que le rapport lit. */
+        snapshotSeries: () => {
+          appels.push('snapshotSeries');
+          return Promise.resolve(
+            [...photos.keys()].sort().map((runDate) => ({
+              runDate,
+              benchmarks: photos.get(runDate)?.benchmarks ?? {},
+            })),
+          );
+        },
         recordSnapshot: (input) => {
           appels.push('recordSnapshot');
           if (scenario.panne === 'recordSnapshot') throw new Error(PANNE);
@@ -394,6 +404,10 @@ describe('§8 etapes 1 a 5 — l’enchainement du run', () => {
       // positions, l'etape 7 la valeur et l'indice. Aucun flux n'est redemande,
       // faute de photo precedente.
       'latestSnapshot',
+      // La serie du graphe du rapport, lue ici et pas juste avant l'envoi : une
+      // lecture posterieure aux ecritures ferait echouer, apres coup, un run qui
+      // a deja tout ecrit.
+      'snapshotSeries',
       'recordDecision',
       'recordDecision',
       'recordDecision',

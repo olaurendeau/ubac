@@ -1,13 +1,15 @@
-import type { SnapshotRecord } from '../../src/adapters/db.js';
+import type { SnapshotPoint, SnapshotRecord } from '../../src/adapters/db.js';
 import type { DailyRunResult } from '../../src/jobs/daily.js';
 import type {
   CompletedRun,
+  DailyReportInput,
   PreviousSnapshot,
   ReportDrawdown,
   ReportGap,
   ReportMarketDay,
   ReportOutcome,
   ReportSuspension,
+  TwrPoint,
 } from '../../src/report/daily-report.js';
 
 /**
@@ -31,6 +33,7 @@ type Aborted = Extract<DailyRunResult, { status: 'ABORTED' }>;
 declare const acheve: Completed;
 declare const abandonne: Aborted;
 declare const photo: SnapshotRecord;
+declare const point: SnapshotPoint;
 
 /** V1 — le run acheve satisfait la forme entiere, sans adaptation. */
 const entier: CompletedRun = acheve;
@@ -106,6 +109,17 @@ rendre({
 });
 
 /**
+ * V6 bis — la serie du graphe. Meme forme de sonde que V6, et meme motif : le
+ * rendu la lit par `DailyReportInput.series` et non a travers `CompletedRun`,
+ * donc la compatibilite se ferme sur le champ reel du run **et** sur le type que
+ * l'adapter rend. Une photo reduite aux deux colonnes utiles est un point du
+ * graphe ; l'inverse n'a pas a etre vrai.
+ */
+const unPoint: TwrPoint = point;
+const serieDuRun: DailyReportInput['series'] = acheve.snapshotSeries;
+void [unPoint, serieDuRun];
+
+/**
  * V8 — ce que le run porte et que le rendu ne lit pas. Un champ **ajoute** a
  * `DailyRunResult` passerait sans bruit dans V1 : la forme du rendu est plus
  * etroite, et un objet plus large lui reste assignable. C'est voulu — le rapport
@@ -131,6 +145,10 @@ type NonLus = Exclude<keyof Completed, keyof CompletedRun>;
  * parametre du rendu, `DailyReportInput.previous`, et V6 ci-dessus etablit
  * qu'un `SnapshotRecord` y est assignable. Il ne peut donc pas entrer dans la
  * forme du run acheve sans y etre lu deux fois.
+ *
+ * `snapshotSeries` rejoint la liste pour exactement le meme motif que
+ * `previousSnapshot` : le graphe la lit, mais par `DailyReportInput.series`, et
+ * V6 bis le tient.
  */
 type NonLusAttendus =
   | 'status'
@@ -140,7 +158,8 @@ type NonLusAttendus =
   | 'observations'
   | 'snapshot'
   | 'report'
-  | 'previousSnapshot';
+  | 'previousSnapshot'
+  | 'snapshotSeries';
 type MemeEnsemble<A extends B, B> = A;
 declare const nonLus: [MemeEnsemble<NonLus, NonLusAttendus>, MemeEnsemble<NonLusAttendus, NonLus>];
 void nonLus;

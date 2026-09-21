@@ -124,7 +124,7 @@ describe('R5 — les entrees conditionnelles suivent ce que le rapport imprime',
     const fixes = termes();
     expect(fixes).toHaveLength(20);
     expect(fixes).toContain('P&L');
-    expect(fixes).toContain('indice');
+    expect(fixes).toContain('indice de croissance');
     /* Derive de la fenetre du noyau : la changer ne peut pas oublier le terme. */
     expect(fixes).toContain(`Sharpe ${String(SHARPE_WINDOW)} j`);
     /* Et rien de conditionnel : ni trigger, ni refus, ni suspension, ni convention de cle. */
