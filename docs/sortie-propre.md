@@ -120,33 +120,47 @@ Le jour où l'une se ferme, son test devient rouge — c'est le signal.
   du post-only : une vente sous le mid croiserait le carnet et serait rejetée.
   Le drapeau `postOnly` est du type `true` ; `false` ne compile pas.
 - **`client_order_id` déterministe (§7).** Dérivé de `src/core/order-id.ts`,
-  jamais recalculé.
+  dans le domaine propre de la sortie, jamais recalculé.
 - **Plancher de `MIN_LEG_USDC`.** Sous 200 USDC, la ligne devient un **résidu**
   déclaré dans le rapport au lieu d'un ordre que l'exchange refuserait. Une sortie
   qui laisse 12 USDC de poussière est propre ; une sortie qui émet un ordre
   irrecevable ne l'est pas.
 - **Aucun `number` flottant sur une grandeur de marché.** Prix, quantités et
   montants sont des `Decimal` marqués. Les seuls `number` du module sont des
-  compteurs et des rangs — numéros de phase, `DECALAGE_DE_JAMBE`, `leg_index`,
-  nombre d'ordres retirés — comme le noyau tient déjà ses comptes de jours.
+  compteurs et des rangs — numéros de phase, `leg_index`, nombre d'ordres
+  retirés — comme le noyau tient déjà ses comptes de jours.
   Un solde ou un mid non fini arrête le plan : `Decimal.lt` et
   `Decimal.gt` répondent tous deux `false` sur `NaN`, donc aucun seuil ne mordrait
   et la cession sortirait avec une quantité indéfinie — même piège que le total
   non fini de `portfolio.ts`.
 
-### Le décalage des numéros de jambe
+### Le domaine propre des identifiants de la sortie
 
 Le `client_order_id` du §7 est `sha256(run_date | asset | side | leg_index)`. Une
-sortie lancée le jour d'un rééquilibrage vendrait BTC en `SELL` avec le même
-`leg_index` que le run quotidien, **donc sous le même identifiant** : l'exchange
-avalerait la seconde au titre du doublon, et le portefeuille resterait à moitié
-liquide sans qu'aucune erreur ne remonte. La sortie numérote donc ses jambes à
-partir de `DECALAGE_DE_JAMBE` (900).
+sortie lancée le jour d'un rééquilibrage vend BTC en `SELL` avec le même
+`leg_index` que le run quotidien : sous un hachage commun, **elle prendrait le
+même identifiant**, l'exchange avalerait la seconde au titre du doublon, et le
+portefeuille resterait à moitié liquide sans qu'aucune erreur ne remonte.
 
-Ce n'est pas la solution de fond. Celle-ci consiste à donner à la sortie son
-propre domaine dans `src/core/order-id.ts`, qui en a déjà un, versionné. Elle
-touche `src/core/`, que ce lot n'a pas mandat de modifier. À reprendre au lot qui
-y touchera.
+La sortie a donc son **domaine propre** dans `src/core/order-id.ts` :
+`exitClientOrderId` hache les mêmes quatre composantes sous
+`ubac.exit-order-id.v1`, à côté du `ubac.order-id.v1` du run quotidien, qui ne
+bouge pas d'un octet. Les deux espaces sont séparés par construction, et la
+sortie numérote ses jambes à partir de 0. Le décalage à 900 qui en tenait lieu
+en phase 1 (Q7, sans mandat sur `core/`) est retiré (lot S10 de la phase 3,
+E45).
+
+La sonde d'E45 compare une cession et la jambe du run **de même numéro** : avec
+le décalage, les numéros différaient déjà, et une sonde à numéros distincts
+passait avant comme après le domaine.
+
+Ce que le domaine ne règle pas : deux sorties du même jour sur le même état
+redonnent les mêmes identifiants, et c'est voulu — c'est la protection du §7
+contre le rejeu. Mais une seconde sortie lancée le même jour parce que la
+première n'a rien cédé retire d'abord ses ordres (étape 1), puis les replace
+sous les mêmes identifiants, que l'exchange peut refuser comme doublons. Relancer
+une sortie le même jour demande donc de constater l'issue de la première, pas
+seulement de la rejouer.
 
 ### Non appliquées, et pourquoi
 

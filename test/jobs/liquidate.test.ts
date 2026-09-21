@@ -1,7 +1,7 @@
 import { Decimal } from 'decimal.js';
 import { describe, expect, it } from 'vitest';
 
-import { clientOrderId } from '../../src/core/order-id.js';
+import { clientOrderId, exitClientOrderId } from '../../src/core/order-id.js';
 import { MIN_LEG_USDC } from '../../src/core/risk.js';
 import type { MidPrices } from '../../src/core/risk.js';
 import type { IsoDate, Price } from '../../src/core/types.js';
@@ -12,7 +12,6 @@ import type {
   SortieInput,
 } from '../../src/jobs/liquidate.js';
 import {
-  DECALAGE_DE_JAMBE,
   ETAPES,
   MARGE_LIMITE_PCT,
   SortieError,
@@ -205,41 +204,58 @@ describe('§14.2, §7 — limit post-only, mid + 0,1 %', () => {
 });
 
 describe('§7 — le client_order_id est derive, pas recalcule', () => {
-  it('il vaut exactement ce que core/order-id.ts rend pour la jambe', async () => {
+  it('il vaut ce que core/order-id.ts rend pour la jambe, dans le domaine de la sortie', async () => {
     const p = await plan();
 
     expect(cessionsDe(p).map((c) => c.ordre.clientOrderId)).toEqual([
-      clientOrderId({ runDate: RUN_DATE, asset: 'BTC', side: 'SELL', legIndex: DECALAGE_DE_JAMBE }),
-      clientOrderId({
-        runDate: RUN_DATE,
-        asset: 'ETH',
-        side: 'SELL',
-        legIndex: DECALAGE_DE_JAMBE + 1,
-      }),
+      exitClientOrderId({ runDate: RUN_DATE, asset: 'BTC', side: 'SELL', legIndex: 0 }),
+      exitClientOrderId({ runDate: RUN_DATE, asset: 'ETH', side: 'SELL', legIndex: 1 }),
     ]);
     expect(p.rapport.cessions.map((l) => l.clientOrderId)).toEqual(
       cessionsDe(p).map((c) => c.ordre.clientOrderId),
     );
   });
 
-  it('le decalage ecarte la sortie des jambes du run quotidien du meme jour', async () => {
-    /*
-     * Sans decalage, une sortie lancee le jour d'un reequilibrage vendrait BTC
-     * sous le meme identifiant que la premiere jambe du run : l'exchange
-     * avalerait la seconde au titre du doublon et le portefeuille resterait a
-     * moitie liquide, sans erreur remontee.
-     */
-    const p = await plan();
-    // Tout l'espace que le run quotidien peut atteindre, et pas un echantillon.
-    const duRunQuotidien = new Set(
-      Array.from({ length: DECALAGE_DE_JAMBE }, (_, legIndex) =>
-        clientOrderId({ runDate: RUN_DATE, asset: 'BTC', side: 'SELL', legIndex }),
-      ),
-    );
-    expect(duRunQuotidien.size).toBe(DECALAGE_DE_JAMBE);
-    for (const cession of cessionsDe(p)) {
-      expect(duRunQuotidien.has(cession.ordre.clientOrderId)).toBe(false);
+  /*
+   * E45, sur le plan calcule et non sur le seul module. Une sortie lancee le
+   * jour d'un reequilibrage vend BTC en `SELL` a la jambe 0 ; si elle reprenait
+   * l'identifiant de la jambe 0 du run, l'exchange avalerait la seconde au titre
+   * du doublon et le portefeuille resterait a moitie liquide, sans erreur.
+   *
+   * La jambe du run est prise au **meme** `legIndex` que la cession. Avec
+   * l'ancien decalage a 900, les numeros differaient deja : une sonde a numeros
+   * distincts passait avant comme apres le domaine, et ne prouvait rien. D'ou la
+   * premiere assertion, qui constate le numero que la cession a reellement pris
+   * au lieu de le supposer.
+   */
+  it('E45 : une cession et la jambe du run de meme numero ont deux identifiants', async () => {
+    const cessions = cessionsDe(await plan());
+
+    expect(cessions).toHaveLength(2);
+    for (const [legIndex, { ordre }] of cessions.entries()) {
+      const jambe = { runDate: RUN_DATE, asset: ordre.asset, side: ordre.side, legIndex };
+      expect(ordre.clientOrderId).toBe(exitClientOrderId(jambe));
+      expect(ordre.clientOrderId).not.toBe(clientOrderId(jambe));
     }
+  });
+
+  it('aucune cession ne reprend un identifiant du run quotidien du meme jour', async () => {
+    /*
+     * La sonde ci-dessus compare numero a numero. Celle-ci couvre le cas ou la
+     * sortie prendrait le domaine du run avec un autre numero : chaque actif,
+     * chaque cote, et des numeros bien au-dela des jambes d'un reequilibrage.
+     */
+    const cessions = cessionsDe(await plan());
+    const duRunQuotidien = new Set<string>();
+    for (const asset of ['BTC', 'ETH', 'USDC'] as const) {
+      for (const side of ['BUY', 'SELL'] as const) {
+        for (let legIndex = 0; legIndex < 32; legIndex += 1) {
+          duRunQuotidien.add(clientOrderId({ runDate: RUN_DATE, asset, side, legIndex }));
+        }
+      }
+    }
+
+    expect(cessions.filter((c) => duRunQuotidien.has(c.ordre.clientOrderId))).toEqual([]);
   });
 
   it('deux cessions du meme plan ne partagent pas d’identifiant', async () => {

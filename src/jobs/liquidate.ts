@@ -1,7 +1,7 @@
 import { Decimal } from 'decimal.js';
 
 import type { OpenOrder } from '../adapters/coinbase.js';
-import { clientOrderId } from '../core/order-id.js';
+import { exitClientOrderId } from '../core/order-id.js';
 import type { Holdings } from '../core/portfolio.js';
 import { MIN_LEG_USDC, QUOTE } from '../core/risk.js';
 import type { MidPrices, TradableAsset } from '../core/risk.js';
@@ -41,8 +41,8 @@ import type { ReconciledBalances } from './reconcile.js';
  *
  * `docs/sortie-propre.md` porte les motifs : pourquoi les seuils de
  * rebalancement ne s'appliquent pas a un arret, ce que le verrou ne prouve pas,
- * le decalage des numeros de jambe, et le point laisse ouvert sur l'ordre des
- * etapes.
+ * le domaine propre des identifiants de la sortie, et le point laisse ouvert sur
+ * l'ordre des etapes.
  */
 
 /** Une entree dont la sortie ne peut rien faire : elle refuse au lieu de deviner. */
@@ -79,23 +79,6 @@ export const PHASE_D_APPLICATION = 3;
  * drapeau lui-meme.
  */
 export const MARGE_LIMITE_PCT = new Decimal('0.001');
-
-/**
- * Le decalage des numeros de jambe de la sortie.
- *
- * Le `client_order_id` du §7 est `sha256(run_date | asset | side | leg_index)`.
- * Une sortie lancee le jour d'un reequilibrage vendrait BTC en `SELL` avec le
- * meme `leg_index` que le run quotidien, donc **sous le meme identifiant** :
- * l'exchange avalerait la seconde au titre du doublon, et le portefeuille
- * resterait a moitie liquide sans qu'aucune erreur ne remonte. Le decalage ecarte
- * les deux espaces de numerotation.
- *
- * Ce n'est pas la solution de fond. Celle-ci consiste a donner a la sortie son
- * propre domaine dans `src/core/order-id.ts` — le module en a deja un, versionne.
- * Elle touche `src/core/`, ce lot n'en a pas mandat. Le decalage est ce qui tient
- * en attendant, et `test/jobs/liquidate.test.ts` constate qu'il tient.
- */
-export const DECALAGE_DE_JAMBE = 900;
 
 /** Le cron du §8, celui que l'etape 3 desarme. */
 export const CRON_QUOTIDIEN = '0 7 * * *';
@@ -368,14 +351,18 @@ function cessions(runDate: IsoDate, holdings: Holdings, mids: MidPrices): Cessio
     }
 
     /*
-     * Le numero de jambe suit le rang dans cette sequence, decale. Il depend de
-     * la sequence et non de l'actif : deux sorties du meme jour sur le meme etat
+     * Le numero de jambe suit le rang dans cette sequence. Il depend de la
+     * sequence et non de l'actif : deux sorties du meme jour sur le meme etat
      * redonnent les memes identifiants, ce qui est exactement la protection
      * contre le doublon que le §7 attend d'un rejeu.
+     *
+     * Il part de 0, comme celui du run quotidien : c'est le domaine de la sortie
+     * dans `core/order-id.ts`, et non un ecart de numerotation, qui empeche une
+     * cession de reprendre l'identifiant d'une jambe du reequilibrage du jour.
      */
-    const legIndex = DECALAGE_DE_JAMBE + intentions.length;
+    const legIndex = intentions.length;
     const limitPrice = prixLimiteDeVente(mid);
-    const identifiant = clientOrderId({ runDate, asset, side: 'SELL', legIndex });
+    const identifiant = exitClientOrderId({ runDate, asset, side: 'SELL', legIndex });
     const ordre: Order = {
       clientOrderId: identifiant,
       asset,
