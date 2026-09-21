@@ -301,6 +301,62 @@ describe.skipIf(URL_DE_TEST === undefined)('adapter de base, contre un Postgres 
       expect((await db.latestSnapshot())?.totalValueUsdc.toFixed()).toBe('101.5');
     });
 
+    /**
+     * R18 — la serie que le graphe du rapport lit. Elle **ne remplace pas**
+     * `latestSnapshot()`, que la reconciliation appelle aussi pour ses positions :
+     * les deux coexistent sur la meme table, et les appelants de la seconde sont
+     * inchanges.
+     */
+    it('snapshotSeries rend toutes les photos, de la plus ancienne a la plus recente', async () => {
+      expect(await db.snapshotSeries()).toEqual([]);
+
+      const base = {
+        totalValueUsdc: new Decimal('100') as UsdcAmount,
+        weights: poids('0.4', '0.3', '0.3'),
+        positions: { BTC: new Decimal('0.5') as Quantity },
+        createdAt: CREE_LE,
+      };
+      // Ecrites dans le desordre : c'est la requete qui ordonne, pas l'insertion.
+      await db.recordSnapshot({ ...base, runDate: '2026-09-10', benchmarks: { portfolio_twr_index: new Decimal('1.20000001') } });
+      await db.recordSnapshot({ ...base, runDate: '2026-09-08', benchmarks: { portfolio_twr_index: new Decimal('1.1') } });
+      await db.recordSnapshot({ ...base, runDate: '2026-09-09', benchmarks: {} });
+
+      const serie = await db.snapshotSeries();
+
+      expect(serie.map((point) => point.runDate)).toEqual(['2026-09-08', '2026-09-09', '2026-09-10']);
+      // La huitieme decimale survit : une conversion en flottant sur le trajet
+      // rendrait 1.2000000099999999, et le graphe tracerait un nombre qui n'a
+      // jamais ete ecrit.
+      expect(serie[2]?.benchmarks['portfolio_twr_index']?.toFixed()).toBe('1.20000001');
+      // Une photo sans metrique reste dans la serie : sa colonne sera vide, pas absente.
+      expect(serie[1]?.benchmarks).toEqual({});
+
+      // Reduite aux deux colonnes utiles : ni valeur totale, ni poids, ni position.
+      expect(Object.keys(serie[0] ?? {}).sort()).toEqual(['benchmarks', 'runDate']);
+
+      // Et `latestSnapshot` rend toujours la sienne, entiere : les deux lectures coexistent.
+      const derniere = await db.latestSnapshot();
+      expect(derniere?.runDate).toBe('2026-09-10');
+      expect(derniere?.totalValueUsdc.toFixed()).toBe('100');
+      expect(derniere?.positions['BTC']?.toFixed()).toBe('0.5');
+    });
+
+    it('snapshotSeries refuse un jsonb ou une metrique est un nombre JSON', async () => {
+      await db.recordSnapshot({
+        runDate: '2026-09-10',
+        totalValueUsdc: new Decimal('100') as UsdcAmount,
+        weights: poids('0.4', '0.3', '0.3'),
+        positions: {},
+        benchmarks: { portfolio_twr_index: new Decimal('1.2') },
+        createdAt: CREE_LE,
+      });
+      // Exactement la forme que `JSON.parse` produirait sur `{index: 1.2}`, et
+      // qu'on evite : un indice passe par un double n'est plus l'indice ecrit.
+      await brut.query(`UPDATE snapshots SET benchmarks = '{"portfolio_twr_index":1.2}'`);
+
+      await expect(db.snapshotSeries()).rejects.toThrow(DbFrontierError);
+    });
+
     it('recentCashFlows filtre, ordonne et garde le signe des retraits', async () => {
       await brut.query(`
         INSERT INTO cash_flows (occurred_at, amount_usdc, note) VALUES

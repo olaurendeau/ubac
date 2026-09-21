@@ -50,8 +50,9 @@ Les six points du §9, dans l'ordre où ils apparaissent :
 | Distance au prochain déclenchement | poids USDC contre sa bande, ratio BTC/ETH contre la sienne quand B est armé | calculée par le rendu |
 | Décision du jour | les quatre stratégies, `trigger NONE` compris, avec le verdict de risque | `outcomes` |
 | Allocation | poids constatés contre cibles, et l'écart | `weights`, `params.targets` |
-| Comparaison | TWR, max drawdown et Sharpe 90 j, portefeuille contre hold BTC et hold 50/50 ; ladder et DCA y figurent **sans courbe**, avec leur raison (section 6) | `snapshots.benchmarks` |
+| Comparaison | le **graphe du TWR cumulé** (section 10), puis TWR, max drawdown et Sharpe 90 j, portefeuille contre hold BTC et hold 50/50 ; ladder et DCA y figurent **sans courbe**, avec leur raison (section 6) | `snapshots.benchmarks`, `series` |
 | Métriques indisponibles | ce que le noyau n'a pas pu rendre, et pourquoi | `benchmarkGaps` |
+| **Lexique** | une définition d'une phrase par terme de jargon que le corps imprime (section 9) | `src/report/lexique.ts` |
 
 HTML en ligne, une colonne, largeur maximale de 520 px : ni feuille de style, ni
 image, ni police distante. Un client mobile qui bloque les ressources externes —
@@ -372,3 +373,192 @@ rapport mal adressé, elle donne un rapport perdu, et la différence ne se lit q
 dans un code HTTP. Le message d'erreur nomme la variable et **ne cite jamais sa
 valeur** : une adresse est une donnée personnelle, et un message d'erreur finit
 dans un journal.
+
+## 9. Le lexique : le rapport porte ses propres définitions
+
+L'opérateur lit le rapport sur son téléphone et ne sait pas ce que veulent dire
+P&L, TWR, Sharpe, borne ou jambe. Le rapport porte donc les définitions de son
+vocabulaire **dans le corps du courrier**, sans rien à ouvrir ailleurs.
+
+### Une section unique, en dernier
+
+Une seule section « Lexique », après « Métriques indisponibles », donc en
+dernier. Aucune glose dans les tableaux, aucune ligne sous les titres de section.
+
+La lecture littérale — une glose à côté de chaque terme — a été écartée, et pour
+une raison mesurable : le tableau « Comparaison » a quatre colonnes dans 520 px,
+« Décision du jour » en a cinq. Un en-tête `Max drawdown (pire recul subi depuis
+un sommet)` triple la largeur de sa colonne et fait déborder le tableau
+horizontalement sur un téléphone — il casse précisément la lecture qu'on
+cherchait à réparer. Et une glose répétée à chaque occurrence, tous les jours,
+transforme un rapport lu en trente secondes en une page qu'on cesse d'ouvrir :
+la définition sert les premiers jours, la donnée sert tous les jours.
+
+Conséquence traitée et non subie : **ce qui est en dernier est ce que Gmail coupe
+en premier**, au-delà d'environ 102 ko. C'est la raison d'être de la borne du
+graphe (section 10) et de la sonde qui rend un rapport sur 5 000 photos.
+
+### Ce que le lexique couvre, et comment on le sait
+
+La règle est une règle d'appartenance, pas un compte : **le lexique définit tout
+terme que le corps du rapport imprime et qui n'est pas du français courant.**
+
+Vingt entrées fixes, présentes chaque jour parce que les titres de section et les
+en-têtes de colonne qui les portent le sont. Et des entrées **conditionnelles**,
+rendues seulement quand le rapport du jour imprime ce qu'elles définissent : une
+par valeur de `Trigger` réellement imprimée, une par `RejectionCode` réellement
+imprimé, « suspension » quand l'encadré est présent, et la convention de nommage
+des clés de la photo quand le tableau des trous l'est. Gloser les neuf codes de
+refus tous les jours serait neuf lignes de bruit pour des rejets qui n'arrivent
+pas en phase 1.
+
+**Le terme d'une entrée est ce que le corps imprime**, et non le nom savant de la
+chose : un opérateur qui bute sur la colonne « Risque » cherche « risque », pas
+« verdict de la couche de risque ». Ce n'est pas seulement de l'ergonomie, c'est
+ce qui rend la règle vérifiable — une sonde relit le corps rendu et **refuse une
+entrée morte**, c'est-à-dire un mot défini que le rapport n'imprime nulle part.
+
+Deux entrées de la liste de cadrage sont donc nommées par ce que le rapport
+affiche plutôt que par leur libellé de spec : « poids » définit aussi les
+colonnes Cible et Écart, et « hold » couvre Hold BTC et Hold 50/50. Le compte de
+vingt est inchangé ; ce qui change est le mot sous lequel on les cherche.
+
+### L'exhaustivité est tenue par le typage, pas par la relecture
+
+Les deux vocabulaires fermés du noyau sont portés par des `Record<Trigger,
+string>` et `Record<RejectionCode, string>`. **Un code ajouté au noyau sans sa
+glose fait échouer `make typecheck` chez celui qui l'ajoute**, pas chez le
+lecteur du rapport six mois plus tard. C'est le même motif que
+`test/report/contrat-run.test-d.ts`.
+
+Le texte vit dans `src/report/lexique.ts`, pur, importé par le rendu. Pas dans un
+Markdown lu à l'exécution : ce serait une IO dans un rendu qui n'en a aucune.
+Il est **sans accent**, comme tout le corps, et la sonde couvre le lexique
+complet — codes de refus compris, que le rendu n'imprime jamais en phase 1.
+
+**Ce qui reste ouvert** : le lexique ne peut pas être prouvé complet dans les
+deux sens. Les `reason` du noyau sont du texte libre, citées telles quelles, et
+peuvent contenir un mot que le lexique ne couvre pas. Aucun test ne peut le
+dire ; c'est un point de relecture.
+
+## 10. Le graphe du TWR cumulé, en cellules de tableau
+
+« Comment le portefeuille a évolué depuis le début — une courbe, pas un
+chiffre. » Le graphe est rendu dans « Comparaison », entre le titre et le
+tableau : il est l'histoire de la ligne « Portefeuille » de ce tableau.
+
+### Ce qu'il trace, et ce qu'il ne trace pas
+
+La série tracée est `portfolio_twr_index - 1`, en pourcentage signé — exactement
+l'unité de la case « P&L cumulé (TWR) » de l'en-tête. **La valeur totale en USDC
+n'est pas tracée** : un apport de 10 000 USDC dessinerait une marche que l'œil
+lit comme une performance, et c'est le critère C27 — la même raison pour laquelle
+le P&L du rapport est déjà un TWR.
+
+Ce n'est pas une déclaration d'intention. La série arrive dans une forme
+**réduite à deux champs**, `runDate` et `benchmarks` : le rendu n'a aucun moyen
+de lire une valeur totale, et une sonde double `totalValue` sans changer un octet
+du graphe.
+
+Une courbe de valeur totale reste possible plus tard, à condition d'être nommée
+pour ce qu'elle mesure et tracée **à côté** de l'autre, jamais à sa place.
+
+### Pourquoi des cellules, et pas une image
+
+| Technique | Pourquoi elle est écartée |
+|---|---|
+| **SVG en ligne** | Gmail supprime `<svg>` du corps. Le graphe disparaîtrait chez le seul lecteur du rapport sans laisser de trace : ni erreur, ni case vide, rien. |
+| **Image distante** | Bloquée par défaut par la plupart des clients mobiles, et il faudrait héberger quelque part une image de la performance du portefeuille derrière une URL que le client appelle en clair — une fuite de donnée patrimoniale pour un ornement. |
+| **Pièce jointe CID** | Le corps de l'API Brevo `/v3/smtp/email` n'a pas de champ d'identifiant de contenu : la pièce arriverait **attachée**, donc un fichier à ouvrir, ce que la lecture sur téléphone ne fait pas. |
+| **Cellules de tableau** *(retenue)* | Rien à charger, rien à autoriser, aucune dépendance, et le rendu reste une chaîne que le test compare caractère par caractère. |
+
+Un `<tr>` de `<td>` alignés en bas, chacun portant un bloc de hauteur fixée en
+pixels et de couleur de fond — verte au-dessus de zéro, rouge en dessous. La
+règle de la section 2 — « ni feuille de style, ni image, ni police distante » —
+est **tenue telle quelle** plutôt qu'assouplie : une sonde cherche `<img`,
+`<svg`, `background-image`, `url(` et toute URL absolue dans le rapport entier.
+
+### Tout l'historique, avec une résolution qui décroît
+
+« Sans plafond » se lit comme **aucune troncature de la période** — le graphe
+montre toujours depuis la première photo — et non comme « une colonne par photo
+pour toujours », qui ne tiendrait ni dans 520 px ni sous la coupure de Gmail.
+
+`MAX_COLONNES` vaut 90 : 90 barres de 4 px plus 1 px d'écart tiennent dans les
+~496 px utiles. Tant que le nombre de photos `N` lui est inférieur ou égal, une
+colonne par photo ; au-delà, les photos sont groupées par paquets consécutifs de
+`k = ceil(N / MAX_COLONNES)` et chaque colonne porte **la dernière valeur de son
+paquet**, jamais une moyenne : l'indice est un niveau, et moyenner des niveaux
+aplatit la courbe qu'on veut voir. Le dernier paquet peut être incomplet ; sa
+dernière valeur reste la photo la plus récente, ce qui est la propriété qui
+compte.
+
+Le nombre de colonnes est donc **borné pour toujours**, et avec lui la taille du
+HTML. Une agrégation hebdomadaire a été envisagée et écartée : elle ne borne
+rien, elle repousse — 104 colonnes après deux ans, 520 après dix, et le problème
+reviendrait identique quand plus personne ne regarderait.
+
+L'axe est indexé par **photo**, pas par date : deux colonnes voisines ne couvrent
+pas forcément la même durée si un run a sauté. Compromis assumé — un axe
+calendaire demanderait des trous et une convention d'interpolation —, et la note
+donne le nombre de photos et les deux dates extrêmes, ce qui suffit à repérer un
+historique troué.
+
+### L'échelle part du minimum, et la note le dit
+
+Un indice qui varie entre 1,00 et 1,05, tracé depuis zéro, donne quatre-vingt-dix
+barres identiques. L'échelle couvre donc le minimum et le maximum de la fenêtre
+tracée.
+
+Contrepartie assumée et **compensée** : une échelle qui n'est pas ancrée à zéro
+exagère visuellement le bruit, et une variation de 0,3 % peut remplir la hauteur.
+La note sous le graphe donne donc les deux bornes en pourcentage signé, de sorte
+que l'amplitude réelle ne soit jamais ambiguë. Elle donne aussi le nombre de
+photos, les deux dates extrêmes, la résolution (« 1 colonne = k photo(s) ») et le
+compte des colonnes vides.
+
+La barre du minimum garde **un pixel** : à hauteur nulle, elle serait
+indiscernable d'une colonne vide, qui dit tout autre chose.
+
+### Les cas limites se disent, ils ne se devinent pas
+
+| Cas | Ce que le rapport fait |
+|---|---|
+| Zéro ou une photo | aucun graphe, une phrase nommée à la place. Un cadre vide, ou une colonne unique pleine hauteur, se lirait comme un rendu cassé |
+| Aucune photo ne porte l'indice | idem : une phrase, pas un cadre vide |
+| Photo sans `portfolio_twr_index`, ou valeur non finie | colonne **vide**, jamais interpolée, jamais mise à zéro — la règle de la section 5 — et la note les compte |
+| Série strictement plate | colonnes de hauteur égale, la note le dit, et aucune division par zéro |
+| Second run du même jour | exactement le même graphe : même nombre de colonnes, mêmes hauteurs, même note |
+
+### La lecture est faite au milieu du run, pas juste avant l'envoi
+
+Le graphe a besoin de la série des `portfolio_twr_index`, que seule la table
+`snapshots` porte. `UbacDatabase` expose donc une opération de plus,
+`snapshotSeries()`, qui rend la série ordonnée de la plus ancienne à la plus
+récente, réduite aux deux colonnes utiles. Elle **ne remplace pas**
+`latestSnapshot()`, que la réconciliation appelle aussi pour ses positions :
+dériver l'une de l'autre ferait entrer un lot intégré dans le périmètre.
+
+Elle est appelée à l'**étape 4bis**, là où `latestSnapshot()` l'est déjà, et son
+résultat est porté jusqu'au rendu comme `previousSnapshot` l'est. C'est une
+objection contre la première idée, qui était de lire juste avant `deliverReport`
+— c'est là qu'on s'en sert. Mais le rapport part **après** que tout est écrit
+(section 2 ter), et une lecture de base à cet endroit peut lever : une exception
+après les écritures transformerait un run réussi en `JOB_FAILED`, pour un graphe.
+À l'étape 4bis, une panne de base doit de toute façon arrêter le run, et elle ne
+ment sur rien.
+
+**Le point du jour n'est pas relu, il est composé.** La série lue s'arrête à la
+veille — la photo du jour part à l'étape 7, après la lecture — et le rendu y
+ajoute le point du jour, qu'il tient déjà de `run.runDate` et `run.benchmarks`.
+Si le dernier point lu porte la date du run — second run du même jour — il est
+**remplacé**, pas ajouté, ce qui rend l'identité des deux runs vraie par
+construction, sans qu'aucune condition ne le dise.
+
+Le rendu, lui, reste pur : il reçoit la série comme il reçoit le reste, dans
+`DailyReportInput`. Aucune IO, aucune horloge, aucun import de `src/jobs/`.
+
+**Ce qui reste ouvert** : sans plafond, la requête relit toutes les photos chaque
+jour — 365 lignes après un an, 3 650 après dix. Deux colonnes par ligne, c'est
+négligeable pour un job quotidien. Le jour où un plafond serait nécessaire, ce
+sera une décision, pas un ajustement technique.

@@ -4,6 +4,7 @@ import type { CoinbaseReader } from '../adapters/coinbase.js';
 import type {
   CashFlowRecord,
   RecordDecisionOutcome,
+  SnapshotPoint,
   SnapshotRecord,
   UbacDatabase,
 } from '../adapters/db.js';
@@ -180,7 +181,12 @@ export interface DailyPorts {
   readonly market: Pick<MarketReader, 'dailyCandles'>;
   readonly db: Pick<
     UbacDatabase,
-    'recordDecision' | 'recordSnapshot' | 'latestSnapshot' | 'recentCashFlows' | 'pendingOrders'
+    | 'recordDecision'
+    | 'recordSnapshot'
+    | 'latestSnapshot'
+    | 'snapshotSeries'
+    | 'recentCashFlows'
+    | 'pendingOrders'
   >;
   /** §9 : le canal court. Il ne rejette jamais, donc il n'est jamais entoure d'un `try`. */
   readonly notifier: Notifier;
@@ -294,6 +300,19 @@ type DailyOutcome =
        * relue.
        */
       readonly previousSnapshot: SnapshotRecord | undefined;
+      /**
+       * Les photos lues a l'etape 4bis, de la plus ancienne a la plus recente et
+       * **arretees a la veille** : celle du jour part a l'etape 7, apres cette
+       * lecture. Le graphe du rapport y ajoute le point du jour lui-meme.
+       *
+       * Lue au milieu du run, et non juste avant l'envoi du rapport, bien que ce
+       * soit la qu'elle serve : le rapport part **apres** que tout est ecrit, et
+       * une lecture de base a cet endroit peut lever. Une exception posterieure
+       * aux ecritures transformerait un run reussi en `JOB_FAILED` — pour un
+       * graphe. Ici, une panne de base doit de toute facon arreter le run, et
+       * elle ne ment sur rien.
+       */
+      readonly snapshotSeries: readonly SnapshotPoint[];
       readonly observations: ReconcileObservations;
       /** §7 : l'etat interne a-t-il du se rendre a l'exchange ce jour-la. */
       readonly resync: Resynchronization;
@@ -629,6 +648,8 @@ async function executeRun(run: DailyRun): Promise<DailyOutcome> {
    */
   const createdAt = clock.instant();
   const previous = await ports.db.latestSnapshot();
+  /* La serie du graphe du rapport, lue ici et pas apres les ecritures : voir `snapshotSeries` sur le resultat. */
+  const serie = await ports.db.snapshotSeries();
   const flows = previous === undefined ? [] : await ports.db.recentCashFlows(previous.createdAt);
   const step = prepareSnapshot({
     runDate,
@@ -720,6 +741,7 @@ async function executeRun(run: DailyRun): Promise<DailyOutcome> {
     history,
     cashFlows,
     previousSnapshot: previous,
+    snapshotSeries: serie,
     observations: reconciled.observations,
     resync,
     outcomes,
@@ -883,6 +905,7 @@ async function deliverReport(run: DailyRun, outcome: DailyOutcome): Promise<Repo
     run: outcome,
     params: productionParams(run.config),
     previous: outcome.previousSnapshot,
+    series: outcome.snapshotSeries,
   });
   const sent = await run.ports.mailer.sendReport(mail);
   run.log(
