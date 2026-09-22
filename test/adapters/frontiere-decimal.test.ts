@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { Decimal } from 'decimal.js';
 import { describe, expect, it } from 'vitest';
 
-import { riskVerdictText } from '../../src/adapters/db.js';
+import { decisionReasonText, riskVerdictText } from '../../src/adapters/db.js';
 import {
   cashFlows,
   DbFrontierError,
@@ -15,7 +15,16 @@ import {
   snapshots,
   textFromDecimal,
 } from '../../src/adapters/schema.js';
-import type { RejectionCode, UsdcAmount } from '../../src/core/types.js';
+import { REBALANCE_TOO_LARGE_PCT, validate } from '../../src/core/risk.js';
+import type {
+  Intent,
+  IntentLeg,
+  Price,
+  Quantity,
+  RejectionCode,
+  UsdcAmount,
+  Weight,
+} from '../../src/core/types.js';
 
 /**
  * La frontiere numerique de la base, testee sans base : ces controles tournent
@@ -93,6 +102,83 @@ describe('le verdict de risque prend la forme de la colonne', () => {
 
   it('refuse un rejet sans motif plutot que d’ecrire REJECTED: tout court', () => {
     expect(() => riskVerdictText({ status: 'REJECTED', rejections: [] })).toThrow(DbFrontierError);
+  });
+});
+
+/**
+ * E32 : `risk_verdict` ne porte qu'un code. Le motif quantifie d'un refus doit
+ * atteindre `decisions.reason`, sans y effacer celui de l'intention. La sonde
+ * contre la vraie base est dans `db.test.ts` ; celle-ci tourne sans base.
+ */
+describe('le motif d’un refus atteint la colonne reason (E32)', () => {
+  const MOTIF = 'cash a 23.4 %, sous le bord bas 24 %';
+  const BTC = new Decimal('80000') as Price;
+  const ETH = new Decimal('3000') as Price;
+  const poids = new Decimal('0.3') as Weight;
+
+  function intention(legs: readonly IntentLeg[]): Intent {
+    const weights = { BTC: poids, ETH: poids, USDC: poids };
+    return {
+      runDate: '2026-09-10',
+      strategy: 'rebalance',
+      trigger: 'CASH_BAND',
+      reason: MOTIF,
+      weightsBefore: weights,
+      weightsTarget: weights,
+      legs,
+    };
+  }
+
+  it('acceptee : le motif de l’intention, tel quel', () => {
+    const verdict = { status: 'ACCEPTED', orders: [], ignored: [] } as const;
+    expect(decisionReasonText(intention([]), verdict)).toBe(MOTIF);
+  });
+
+  it('refusee par le plafond : le motif de l’intention en tete, puis le refus quantifie', () => {
+    // 100 000 USDC ; deux jambes qui depassent le plafond de 1 000 USDC.
+    const jambe = new Decimal(100_000).times(REBALANCE_TOO_LARGE_PCT).div(2).add(500);
+    const intent = intention([
+      { asset: 'BTC', quote: 'USDC', side: 'SELL', amount: jambe as UsdcAmount, limitPrice: BTC },
+      { asset: 'ETH', quote: 'USDC', side: 'BUY', amount: jambe as UsdcAmount, limitPrice: ETH },
+    ]);
+    const verdict = validate(intent, {
+      makeClientOrderId: ({ asset, legIndex }) => `${asset}|${String(legIndex)}`,
+      mids: { BTC, ETH },
+      lastCompleteRebalanceOn: null,
+      balances: [],
+      holdings: {
+        BTC: new Decimal('0.5') as Quantity,
+        ETH: new Decimal('10') as Quantity,
+        USDC: new Decimal('30000') as Quantity,
+      },
+      prices: { BTC, ETH },
+    });
+    if (verdict.status !== 'REJECTED') throw new Error('refus attendu');
+    const [rejet] = verdict.rejections;
+
+    expect(rejet?.code).toBe('REBALANCE_TOO_LARGE');
+    // Le texte du rejet, et avec lui le plafond chiffre : pas seulement le code.
+    expect(rejet?.reason).toContain(`au-dela de ${REBALANCE_TOO_LARGE_PCT.times(100).toString()} %`);
+    expect(decisionReasonText(intent, verdict)).toBe(
+      `${MOTIF}\nrefus REBALANCE_TOO_LARGE : ${rejet?.reason ?? ''}`,
+    );
+  });
+
+  it('un refus multiple : une ligne par rejet, dans l’ordre du verdict, jambe comprise', () => {
+    const verdict = {
+      status: 'REJECTED',
+      rejections: [
+        { code: 'ASSET_NOT_ALLOWED', reason: 'actif SOL hors liste blanche (BTC, ETH)', legIndex: 0 },
+        { code: 'COOLDOWN', reason: 'dernier reequilibrage complet il y a 2 jour(s)' },
+      ],
+    } as const;
+    expect(decisionReasonText(intention([]), verdict)).toBe(
+      [
+        MOTIF,
+        'refus ASSET_NOT_ALLOWED (jambe 0) : actif SOL hors liste blanche (BTC, ETH)',
+        'refus COOLDOWN : dernier reequilibrage complet il y a 2 jour(s)',
+      ].join('\n'),
+    );
   });
 });
 

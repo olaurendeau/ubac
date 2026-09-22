@@ -170,9 +170,34 @@ export function riskVerdictText(verdict: Verdict): RiskVerdictText {
   }
   /*
    * Un seul code, comme le §4 le prevoit. Le detail lisible d'un rejet multiple
-   * va dans `reason`, qui est la colonne faite pour ca.
+   * va dans `reason`, qui est la colonne faite pour ca : voir `decisionReasonText`.
    */
   return `REJECTED:${premier.code}`;
+}
+
+/**
+ * La colonne `reason` d'une decision. Acceptee, c'est le motif de l'intention tel
+ * que `decide()` l'a formule. Refusee, ce motif **reste en tete** et chaque rejet
+ * s'y ajoute sur sa ligne : l'intention dit ce que la strategie voulait faire et
+ * pourquoi, le rejet dit pourquoi ca n'a pas eu lieu. Ne garder que le second
+ * effacerait le premier de l'historique ; ne garder que le premier laissait
+ * `decisions` sans le motif quantifie du refus, que seule l'alerte portait (E32).
+ *
+ * Toutes les decisions refusees passent ici, des quatre strategies et pour tous
+ * les codes, pas seulement `REBALANCE_TOO_LARGE` : une colonne qui porterait le
+ * motif du refus pour un code et pas pour les autres se lirait a deux vitesses.
+ *
+ * Le texte du rejet vient de `core/risk.ts` et n'est pas reecrit ici, et son
+ * ordre est celui du verdict : un run rejoue ecrit la meme ligne. Un verdict
+ * rejete sans motif est refuse par `riskVerdictText`, dans la meme insertion.
+ */
+export function decisionReasonText(intent: Intent, verdict: Verdict): string {
+  if (verdict.status === 'ACCEPTED') return intent.reason;
+  const refus = verdict.rejections.map((rejection) => {
+    const jambe = rejection.legIndex === undefined ? '' : ` (jambe ${String(rejection.legIndex)})`;
+    return `refus ${rejection.code}${jambe} : ${rejection.reason}`;
+  });
+  return [intent.reason, ...refus].join('\n');
 }
 
 function weightsToJson(weights: Weights, contexte: string): WeightsText {
@@ -295,7 +320,7 @@ export function openDatabase(secrets: Pick<Secrets, 'databaseUrl'>): UbacDatabas
             strategy: intent.strategy,
             isShadow: input.isShadow,
             trigger: intent.trigger,
-            reason: intent.reason,
+            reason: decisionReasonText(intent, input.verdict),
             weightsBefore: weightsToJson(intent.weightsBefore, 'weights_before'),
             weightsTarget: weightsToJson(intent.weightsTarget, 'weights_target'),
             legs: legsToJson(intent.legs),
