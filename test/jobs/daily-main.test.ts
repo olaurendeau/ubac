@@ -129,6 +129,25 @@ describe('point d’entree du run quotidien', { timeout: 30_000 }, () => {
   });
 
   /*
+   * **Un DRY_RUN perdu est un run reel.** Une faute de frappe sur le drapeau ne
+   * doit donc pas etre ignoree : elle arrete tout, avant la configuration. Le
+   * nom est cite, la valeur jamais — elle pourrait etre n'importe quoi.
+   */
+  it('refuse un argument inconnu, drapeau mal ecrit compris, sans en citer la valeur', async () => {
+    const sorties = await Promise.all(
+      ['--dryrun', '--dry-run=true', '--jeton=s3cr3t'].map((arg) => run(`--run-date=${JOUR}`, `--git-sha=${SHA}`, arg)),
+    );
+
+    expect(sorties.map((s) => s.code)).toEqual([1, 1, 1]);
+    expect(sorties.map((s) => s.stderr.split('\n')[0])).toEqual([
+      'argument inconnu : --dryrun',
+      'argument inconnu : --dry-run',
+      'argument inconnu : --jeton',
+    ]);
+    expect(sorties[2]?.stderr).not.toContain('s3cr3t');
+  });
+
+  /*
    * Arguments valides, environnement vide : le programme va jusqu'a la
    * configuration et s'arrete la. C'est la sonde qui etablit que la
    * configuration entre par `src/config/env.ts` — le message est celui de
@@ -137,8 +156,13 @@ describe('point d’entree du run quotidien', { timeout: 30_000 }, () => {
    * reseau.
    */
   it('lit la configuration par src/config/env.ts, qui refuse un environnement vide', async () => {
-    const sortie = await run(`--run-date=${JOUR}`, `--git-sha=${SHA}`);
+    const [sortie, enDryRun] = await Promise.all([
+      run(`--run-date=${JOUR}`, `--git-sha=${SHA}`),
+      run(`--run-date=${JOUR}`, `--git-sha=${SHA}`, '--dry-run'),
+    ]);
 
+    // Le drapeau est admis, et ne dispense pas de la configuration : meme image, memes secrets.
+    expect(enDryRun.stderr).toBe(sortie.stderr);
     expect(sortie.code).toBe(1);
     expect(sortie.stderr).toContain('configuration invalide');
     for (const variable of [
@@ -174,5 +198,26 @@ describe('composition du lecteur Coinbase', () => {
     expect(source).toMatch(
       /openCoinbase\(transport, \{\s*portfolioUuid: config\.secrets\.coinbasePortfolioUuid,\s*log,\s*\}\)/,
     );
+  });
+});
+
+/*
+ * E14 a E16 au point de composition, lus dans le source pour la meme raison
+ * que ci-dessus. Le run complet sous `portsInertes` est eprouve dans
+ * `test/jobs/daily.test.ts` ; ici, que ce soit bien cette fonction qui est
+ * composee, par **une seule condition**, et que le port d'execution reel ne le
+ * soit dans aucun des deux modes (A24 le tient pour tout `src/`).
+ */
+describe('composition du mode', () => {
+  it('une seule condition choisit les ports inertes, et le port d’execution journalise dans les deux modes', async () => {
+    const source = await readFile(ENTREE, 'utf8');
+
+    expect(source).toMatch(
+      /const mode = dryRun\s*\?\s*\{ ligne: LIGNE_DRY_RUN, effets: portsInertes\(reels, log\) \}\s*:\s*\{ ligne: LIGNE_NORMALE, effets: reels \};\s*log\(mode\.ligne\);/,
+    );
+    expect(source).toMatch(/ports: \{ exchange, market, \.\.\.mode\.effets \}/);
+    expect(source).toMatch(/execution: executionJournalisee\(log\),/);
+    // Declare, rendu par `readArguments`, lu dans `main`, teste une fois : une seconde condition rougit ici.
+    expect(source.match(/\bdryRun\b/g)).toHaveLength(4);
   });
 });

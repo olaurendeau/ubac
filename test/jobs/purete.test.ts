@@ -37,7 +37,7 @@ import { EXECUTION_METHODS, WRITE_ROUTES } from '../../src/adapters/coinbase.js'
  * **variante par variante**, car une affirmation qui annonce six formes et n'en
  * sonde que quatre est fausse d'un tiers.
  *
- * Chaque affirmation porte donc un numero — `A1`…`A23` pour ce qui est tenu,
+ * Chaque affirmation porte donc un numero — `A1`…`A25` pour ce qui est tenu,
  * `L1`…`L10` pour ce qui est declare ouvert — et chaque numero est cite par le
  * test qui le met a l'epreuve. Un numero sans test est un defaut de ce fichier.
  *
@@ -139,6 +139,22 @@ import { EXECUTION_METHODS, WRITE_ROUTES } from '../../src/adapters/coinbase.js'
  *   l'arbre reel est « exactement `src/jobs/execute.ts` », comme A19 et A20.
  *   Les noms sont lus dans `EXECUTION_METHODS` et `WRITE_ROUTES`, qu'E10
  *   enumere : ce fichier ne les recopie pas.
+ * - **A24** — E12 et B3 : le port reel d'execution n'est **compose nulle
+ *   part**. `openCoinbaseExecution` n'est nomme dans aucun fichier de `src/`
+ *   hors de `src/adapters/coinbase.ts`, qui le definit et **doit** y figurer.
+ *   Tant que ce verdict tient, l'etape 6 ne parle qu'au port journalisant, dans
+ *   les deux modes ; l'armement (S7) le changera expres, et ici.
+ * - **A25** — E15 et E17 : le mode n'a qu'un lieu. Nommer le `DRY_RUN` — en
+ *   identifiant, en chaine, en gabarit — tombe partout dans `src/`, et
+ *   `force` ou `bypass` comme identifiant aussi ; le verdict sur l'arbre reel
+ *   est « exactement `src/jobs/daily-main.ts` ». Un `if (dryRun)` descendu dans
+ *   `daily.ts`, un parametre `dryRun` sur une signature publique ou une
+ *   variable `DRY_RUN` lue par `src/config/env.ts` echouent ici.
+ *
+ * A24 et A25 lisent **tout `src/`**, pas `src/jobs/` : un second lieu de
+ * composition pourrait aussi bien etre un adapter. Ils ne sont donc pas des
+ * sept gardiens d'A3, et leur terrain se constate par leur verdict meme, qui
+ * nomme un fichier hors de `src/jobs/` pour A24.
  *
  * A8, A10 et A13 sont ecrits ainsi a la suite de revues : un selecteur qui
  * refusait `import { env } from 'node:process'` laissait passer
@@ -1300,6 +1316,61 @@ describe('A23 — l’ecriture sur l’exchange n’a qu’un module (E11)', () 
 
   it('A23 : execute.ts est le seul fichier de jobs/ ou la regle parle', async () => {
     expect(fautifs(await ECRITURE_SUR_L_EXCHANGE.lintFiles([JOBS]))).toEqual([EXECUTE]);
+  });
+});
+
+// --- A24, A25 : le port reel n'est compose nulle part, et le mode a un lieu --
+
+/**
+ * A24 remplace une propriete que S5 fait tomber : S4 livrait `execute.ts` sans
+ * appelant, et « rien n'ecrit sur l'exchange » se lisait a l'absence d'appel.
+ * L'etape 6 appelle desormais `placer` ; ce qui garantit qu'aucun ordre ne part
+ * avant l'armement est que **le seul constructeur du port reel n'est nomme par
+ * aucun code qui compose**. Un port reel fabrique a la main, sans lui, tombe
+ * sur A23 : il faudrait nommer les methodes ou les routes d'ecriture.
+ */
+const TOUT_SRC = 'src/**/*.ts';
+const PORT_REEL = gardien({
+  'no-restricted-syntax': [
+    'error',
+    {
+      selector: "Identifier[name='openCoinbaseExecution']",
+      message: "le port reel d'execution n'est compose nulle part avant l'armement (E12, B3).",
+    },
+  ],
+});
+
+const MODE_NOMME =
+  'le mode se lit au point d’entree et ne voyage pas (E15, E17) : ni condition, ni parametre, ni variable ailleurs.';
+const LE_MODE = gardien({
+  'no-restricted-syntax': [
+    'error',
+    { selector: 'Identifier[name=/dry_?run/i], Identifier[name=/^(?:force|bypass)$/i]', message: MODE_NOMME },
+    { selector: 'Literal[value=/dry.?run/i], TemplateElement[value.raw=/dry.?run/i]', message: MODE_NOMME },
+  ],
+});
+
+const MODES: Sondes = {
+  'la condition descendue dans le run': ['declare const run: Record<string, boolean>;\nexport const a = run.dryRun ? 1 : 2;', 1],
+  'le parametre sur une signature': ['export function valider(x: number, dryRun = false): number { return dryRun ? 0 : x; }', 2],
+  'la variable lue par la configuration': ["declare const env: Record<string, string>;\nexport const m = env['DRY_RUN'];", 1],
+  'le gabarit': ['export const m = `--dry-run`;', 1],
+  'force et bypass': ['export function valider(force: boolean, bypass: boolean): boolean { return force; }', 3],
+  'un mot voisin': ['export const forcer = 1;\nexport const runDate = 2;', 0],
+};
+
+describe('A24, A25 — le port reel n’est compose nulle part, et le mode n’a qu’un lieu', () => {
+  it('A24 : openCoinbaseExecution n’est nomme que la ou il est defini', async () => {
+    expect(await messagesDe(PORT_REEL, 'export const p = openCoinbaseExecution;', DAILY_MAIN)).toBe(1);
+    expect(fautifs(await PORT_REEL.lintFiles([TOUT_SRC]))).toEqual(['src/adapters/coinbase.ts']);
+  });
+
+  it('A25 : les formes du mode recoivent le verdict attendu', async () => {
+    expect(await verdicts(LE_MODE, MODES)).toEqual(attendus(MODES));
+  });
+
+  it('A25 : daily-main.ts est le seul fichier de src/ qui nomme le mode', async () => {
+    expect(fautifs(await LE_MODE.lintFiles([TOUT_SRC]))).toEqual([DAILY_MAIN]);
   });
 });
 

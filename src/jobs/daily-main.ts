@@ -2,6 +2,8 @@ import { ccxtTransport, openCoinbase } from '../adapters/coinbase.js';
 import { openDatabase } from '../adapters/db.js';
 import { openHealthcheck } from '../adapters/healthcheck.js';
 import { openHttp } from '../adapters/http.js';
+import type { Effets } from '../adapters/inertes.js';
+import { executionJournalisee, portsInertes } from '../adapters/inertes.js';
 import { openMailer } from '../adapters/mailer.js';
 import { openMarketData } from '../adapters/market.js';
 import { openNotifier } from '../adapters/notifier.js';
@@ -32,8 +34,13 @@ import { reported, runDaily } from './daily.js';
  * **seul** appel a `date -u`, une ligne de shell visible ; un rejeu les repasse
  * a la main.
  *
+ * **Il est aussi le seul lieu du mode.** `--dry-run` est lu ici, une fois, et
+ * ne voyage pas : il choisit quels ports sont composes, et aucun module en aval
+ * n'en recoit la valeur (E15, E17). A25 de `test/jobs/purete.test.ts` refuse
+ * que le mode soit nomme ailleurs dans `src/`.
+ *
  * `docs/run-quotidien.md` donne les commandes, les codes de sortie et les
- * limites.
+ * limites ; son §8, le `DRY_RUN`.
  */
 
 /**
@@ -49,11 +56,27 @@ import { reported, runDaily } from './daily.js';
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 const USAGE = [
-  'usage : tsx src/jobs/daily-main.ts --run-date=YYYY-MM-DD --git-sha=<sha> [--at=<instant ISO>]',
+  'usage : tsx src/jobs/daily-main.ts --run-date=YYYY-MM-DD --git-sha=<sha> [--at=<instant ISO>] [--dry-run]',
   '  --run-date  jour UTC du run. Aucun defaut : le job n’a pas d’horloge.',
   '  --git-sha   code qui tourne, journalise dans decisions.git_sha.',
   '  --at        instant de decisions.created_at ; par defaut 00:00:00Z du jour de run.',
+  '  --dry-run   lit tout, n’ecrit rien en base et n’envoie rien : ports inertes.',
 ].join('\n');
+
+/** Le drapeau du mode, sans valeur : `--dry-run=false` n'existe pas, il est refuse. */
+const DRY_RUN = '--dry-run';
+
+/** Les trois options a valeur. Tout autre argument est refuse, voir `readArguments`. */
+const OPTIONS = ['run-date', 'git-sha', 'at'] as const;
+
+/**
+ * La premiere ligne du journal, dans les deux modes : un `DRY_RUN` perdu en
+ * chemin est un run reel, et c'est ici qu'on le voit.
+ */
+const LIGNE_DRY_RUN =
+  'mode DRY_RUN : lectures reelles ; decisions, photo, alertes, rapport, ping et ordres retenus par des ports inertes.';
+const LIGNE_NORMALE =
+  'mode normal : ecritures et envois reels ; ordres journalises, jamais places — l’execution n’est pas armee.';
 
 /**
  * La derniere occurrence gagne : `npm run daily` pose ses defauts, et
@@ -78,9 +101,23 @@ interface Arguments {
   readonly runDate: IsoDate;
   readonly gitSha: string;
   readonly instant: Date;
+  readonly dryRun: boolean;
 }
 
 function readArguments(args: readonly string[]): Arguments {
+  /*
+   * **Un argument inconnu arrete tout**, et c'est le drapeau qui l'exige : une
+   * faute de frappe — `--dryrun`, `--dry-run=true` — ignoree en silence ferait
+   * un run reel de ce qui devait etre un essai a blanc. Seul le nom est cite,
+   * jamais la valeur : ce qui suit un `=` n'a rien a faire sur stderr.
+   */
+  const inconnus = args.filter(
+    (arg) => arg !== DRY_RUN && !OPTIONS.some((nom) => arg.startsWith(`--${nom}=`)),
+  );
+  if (inconnus.length > 0) {
+    const noms = inconnus.map((arg) => arg.split('=')[0]).join(' ');
+    throw new Error(`argument inconnu : ${noms}\n${USAGE}`);
+  }
   const runDate = option(args, 'run-date');
   const gitSha = option(args, 'git-sha');
   const at = option(args, 'at');
@@ -105,7 +142,7 @@ function readArguments(args: readonly string[]): Arguments {
   if (Number.isNaN(instant.getTime())) {
     throw new Error(`--at illisible : "${String(at)}".\n${USAGE}`);
   }
-  return { runDate, gitSha, instant };
+  return { runDate, gitSha, instant, dryRun: args.includes(DRY_RUN) };
 }
 
 function texte(error: unknown): string {
@@ -128,7 +165,7 @@ function texte(error: unknown): string {
  * sonde. Le motif de la seconde moitie est dans son en-tete.
  */
 async function main(argv: readonly string[]): Promise<number> {
-  const { runDate, gitSha, instant } = readArguments(argv);
+  const { runDate, gitSha, instant, dryRun } = readArguments(argv);
   const config = loadConfig();
   const clock: RunClock = { today: () => runDate, instant: () => instant };
   const log = (line: string): void => {
@@ -165,13 +202,35 @@ async function main(argv: readonly string[]): Promise<number> {
    * n'entre dans le `finally` ci-dessous.
    */
   const http = openHttp();
-  const notifier = openNotifier(config.secrets, http);
-  const mailer = openMailer(config.secrets, http);
-  const healthcheck = openHealthcheck(config.secrets, http);
+  /*
+   * **Le port d'execution est le port journalisant, dans les deux modes.** Le
+   * port reel, `openCoinbaseExecution`, n'est compose nulle part : A24 de
+   * `test/jobs/purete.test.ts` le constate et rougit le jour ou il l'est. C'est
+   * l'armement (S7) qui l'ecrira ici, apres ce lot dans l'historique de `main` :
+   * c'est ce qu'E12 verifie.
+   */
+  const reels: Effets = {
+    db,
+    notifier: openNotifier(config.secrets, http),
+    mailer: openMailer(config.secrets, http),
+    healthcheck: openHealthcheck(config.secrets, http),
+    execution: executionJournalisee(log),
+  };
+  /*
+   * **La seule condition de mode du depot** (E15). Les ports inertes sont des
+   * implementations des memes types : `runDaily` recoit un objet de la meme
+   * forme dans les deux cas, et rien en aval ne peut les distinguer. La base
+   * inerte garde les lectures de la vraie — un `DRY_RUN` doit rejouer la
+   * journee, pas une journee vide.
+   */
+  const mode = dryRun
+    ? { ligne: LIGNE_DRY_RUN, effets: portsInertes(reels, log) }
+    : { ligne: LIGNE_NORMALE, effets: reels };
+  log(mode.ligne);
 
   try {
     const result = await runDaily({
-      ports: { exchange, market, db, notifier, mailer, healthcheck },
+      ports: { exchange, market, ...mode.effets },
       clock,
       config,
       gitSha,

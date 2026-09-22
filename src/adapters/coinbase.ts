@@ -925,7 +925,12 @@ function textFromDecimal(value: Decimal, contexte: string): string {
   return value.toFixed();
 }
 
-function createOrderBody(order: Order): CreateOrderBody {
+/**
+ * Le corps d'un placement. Exporte pour le port journalisant
+ * (`src/adapters/inertes.ts`), qui journalise **ce corps-ci** : ce qui serait
+ * parti, et non une reconstitution libre de diverger.
+ */
+export function createOrderBody(order: Order): CreateOrderBody {
   const contexte = `create_order[${order.clientOrderId}]`;
   return {
     client_order_id: order.clientOrderId,
