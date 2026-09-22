@@ -625,7 +625,8 @@ vol.
 ### S8 — L'annulation des ordres de plus de 24 h, et les transitions persistées
 
 **Dépend de** : **S2**, **S4**, **S7** fusionnés. · **Report levé** : D2 du plan
-de phase 1. · **Critères** : E35, E36, E38, E39 (revérifié). · **Audit** :
+de phase 1. · **Critères** : E35, E36, **E37 (seconde moitié : le branchement,
+la lecture venant de S2)**, E38, E39 (revérifié). · **Audit** :
 argent → mutation **+** audit complet ; **`make test-db` obligatoire**. ·
 **Diff estimé compté** : **~850 lignes**.
 **Fichiers prévus** : `src/jobs/reconcile.ts`, `src/jobs/execute.ts`,
@@ -941,7 +942,7 @@ phase.
 | E33 | **sans objet** | clos par O2 = 3 ; numéro conservé |
 | E34 | **S3**, et le commit de levée — **hors plan** | O3 = 3 |
 | E35, E36 | **S8** | T4 |
-| E37 | **S2** | |
+| E37 | **S2** puis **S8** | critère en deux moitiés : S2 porte la lecture par l'adapter, S8 porte le branchement de `reconcile.ts` qui rend `INDETERMINABLE` inatteignable pour un ordre connu. **Clos après les deux**, pas après S2 |
 | E38 | **S8** | |
 | E39 | **S8** | **revérifié, inchangé** |
 | E40, E41 | **S9** | |
