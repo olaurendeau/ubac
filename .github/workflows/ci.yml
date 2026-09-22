@@ -1,0 +1,51 @@
+# La porte du depot : spec §10, lot R1 de la phase 2.
+#
+# Ce fichier est une seconde definition de « comment on teste », a cote du
+# Makefile et de Compose. test/ci/workflow.test.ts le tient aligne sur
+# package.json et sur les deux Dockerfile, et fait rougir la suite du poste
+# quand il diverge. docs/integration-continue.md dit ce que la porte garantit,
+# et ce qu'elle ne garantit pas.
+name: ci
+
+# Chaque poussee qui peut atteindre main : une PR vers main, et main lui-meme,
+# ou arrive le commit de squash qu'aucune PR n'a teste tel quel. Une branche
+# sans PR n'est pas fusionnable, elle n'est donc pas testee.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Depot public : le jeton ne fait que lire le code. Le defaut du depot est plus
+# large, et la suite fait tourner le code de toutes ses dependances.
+permissions:
+  contents: read
+
+# Une rafale de poussees sur une PR ne fait tourner que la derniere. Sur main,
+# rien n'est annule en cours de route : le meme workflow poussera une image a
+# partir de R2, et une poussee interrompue ne se rattrape pas.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # Le nom `test` est un contrat : la protection de main l'epingle comme
+  # controle requis. Le renommer desarmerait la protection sans rien rougir.
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          # Le majeur du poste (Dockerfile) et de la production (Dockerfile.prod).
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      # La couverture, et non `npm test` : elle rejoue toute la suite ET fait
+      # respecter les 100 % de src/core/risk.ts. Les deux paieraient la suite
+      # deux fois ; `npm test` seul ne garderait pas le seuil.
+      - run: npm run test:coverage
