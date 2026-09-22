@@ -2,7 +2,7 @@ import { Decimal } from 'decimal.js';
 import ccxt from 'ccxt';
 
 import type { Secrets } from '../config/env.js';
-import type { Price, Quantity, Side } from '../core/types.js';
+import type { Price, Quantity, Side, UsdcAmount } from '../core/types.js';
 
 /**
  * La lecture du compte Coinbase. **Lecture, et rien d'autre.**
@@ -31,6 +31,12 @@ import type { Price, Quantity, Side } from '../core/types.js';
  * le lecteur se construit avec le portefeuille **attendu**, pose par
  * l'operateur, et aucune lecture ne rend quoi que ce soit tant que
  * `key_permissions` n'a pas rendu exactement celui-la. Voir `openCoinbase`.
+ *
+ * Et une lecture que la reconciliation attendait (E37, lot S2) : le statut reel
+ * d'un ordre donne et ses executions — `orderStatus`, `orderFills`. **S2 porte
+ * la lecture, S8 porte le branchement dans `src/jobs/reconcile.ts`, et E37 n'est
+ * clos qu'apres les deux** : d'ici S8, `statusOf` rend encore `INDETERMINABLE`
+ * pour tout ordre denoue.
  */
 
 // --- Erreur de frontiere ----------------------------------------------------
@@ -110,10 +116,10 @@ export function requireUsdcQuote(productId: string, contexte: string): ProductPa
   return { base, quote };
 }
 
-// --- Les quatre requetes -----------------------------------------------------
+// --- Les six requetes -------------------------------------------------------
 
 /**
- * Les seules requetes que la phase 1 sait formuler. Aucune ne place, n'annule ni
+ * Les seules requetes que ce module sait formuler. Aucune ne place, n'annule ni
  * ne retire, et il n'existe pas de route generique par laquelle en fabriquer
  * une : ajouter un chemin est une modification visible de ce type.
  */
@@ -126,14 +132,18 @@ export type CoinbaseRoute =
       readonly product: string;
       readonly startSeconds: number;
       readonly endSeconds: number;
-    };
+    }
+  | { readonly kind: 'order'; readonly exchangeId: string }
+  | { readonly kind: 'fills'; readonly exchangeId: string; readonly cursor?: string };
 
-/** Les quatre `kind` ci-dessus, enumerables a l'execution pour le test de surface. */
+/** Les six `kind` ci-dessus, enumerables a l'execution pour le test de surface. */
 export const READ_ROUTES = [
   'key_permissions',
   'accounts',
   'open_orders',
   'daily_candles',
+  'order',
+  'fills',
 ] as const;
 
 /**
@@ -202,6 +212,25 @@ export function ccxtTransport(
             start: String(route.startSeconds),
             end: String(route.endSeconds),
             granularity: 'ONE_DAY',
+          });
+        case 'order':
+          /*
+           * La liste filtree, et non `orders/historical/{order_id}` : sur un
+           * identifiant inconnu, celle-ci repond 404, et ccxt 4.5.78 en fait une
+           * `ExchangeError` generique, indiscernable d'une panne — sa
+           * correspondance `OrderNotFound` cherche le message dans le champ
+           * `error`, qui vaut `unknown`. Le test le fige. Filtree, la liste rend
+           * `orders: []` : « l'exchange ne connait pas cet ordre » est une
+           * reponse, pas une exception a deviner.
+           */
+          return exchange.v3PrivateGetBrokerageOrdersHistoricalBatch({
+            order_ids: [route.exchangeId],
+          });
+        case 'fills':
+          return exchange.v3PrivateGetBrokerageOrdersHistoricalFills({
+            order_ids: [route.exchangeId],
+            limit: PAGE_SIZE,
+            ...(route.cursor === undefined ? {} : { cursor: route.cursor }),
           });
       }
     },
@@ -281,13 +310,59 @@ export interface OpenOrder {
 }
 
 /**
- * La surface entiere de Coinbase pour le reste du programme. Trois lectures et
+ * Ce que l'exchange dit d'un ordre qu'il connait (E37). `OPEN` regroupe les
+ * statuts ou l'ordre vit encore — `PENDING`, `QUEUED`, `OPEN`, `CANCEL_QUEUED` ;
+ * les quatre autres sont ses issues, et restent **distinctes** : ccxt replie
+ * `EXPIRED` et `FAILED` sur `canceled` dans ses structures unifiees, une raison
+ * de plus de lire la reponse brute. `FAILED` est l'ordre rejete.
+ *
+ * `filled` est porte par toutes les issues, `CANCELLED` comprise : un ordre
+ * partiellement execute puis annule existe, et le reduire a son statut perdrait
+ * la quantite executee — celle qui compte pour le solde.
+ */
+export interface KnownOrderStatus {
+  readonly kind: 'OPEN' | 'FILLED' | 'CANCELLED' | 'EXPIRED' | 'FAILED';
+  readonly exchangeId: string;
+  readonly clientOrderId: string;
+  readonly filled: Quantity;
+  /** `null` tant que rien n'est execute : un prix moyen de zero n'est pas un prix. */
+  readonly averageFilledPrice: Price | null;
+  /** `total_fees`, dans la devise de cotation — USDC, la paire est verifiee. */
+  readonly fees: UsdcAmount;
+}
+
+/**
+ * `INDETERMINABLE` reste atteignable, et doit l'etre, dans deux cas : l'exchange
+ * ne connait pas l'ordre — un ordre jamais accepte, qu'E23 rend possible —, ou
+ * il rend un statut que ce module ne sait pas interpreter. **L'issue ne se
+ * devine pas** : la replier sur `CANCELLED` classerait un ordre execute en
+ * annule, ce qui est pire que de ne pas le classer (`docs/reconciliation.md` §4).
+ */
+export type OrderStatus =
+  | KnownOrderStatus
+  | { readonly kind: 'INDETERMINABLE'; readonly reason: string };
+
+/** Une execution d'un ordre. `commission` est en devise de cotation, donc en USDC. */
+export interface OrderFill {
+  readonly tradeId: string;
+  readonly price: Price;
+  readonly size: Quantity;
+  readonly commission: UsdcAmount;
+  readonly tradeTime: Date;
+}
+
+/**
+ * La surface entiere de Coinbase pour le reste du programme. Cinq lectures et
  * une fermeture. Ce qui n'est pas dans cette liste ne se fait pas.
  */
 export interface CoinbaseReader {
   keyPermissions(): Promise<KeyPermissions>;
   balances(): Promise<PortfolioBalances>;
   openOrders(): Promise<readonly OpenOrder[]>;
+  /** Le statut reel d'un ordre, par l'identifiant que l'exchange lui a donne. */
+  orderStatus(exchangeId: string): Promise<OrderStatus>;
+  /** Ses executions, toutes pages suivies. */
+  orderFills(exchangeId: string): Promise<readonly OrderFill[]>;
   close(): Promise<void>;
 }
 
@@ -508,7 +583,127 @@ function openOrderFrom(raw: unknown): OpenOrder {
   };
 }
 
+/**
+ * Les statuts que ce module sait interpreter, et aucun autre : `UNKNOWN_ORDER_STATUS`,
+ * valeur par defaut de l'enumeration Coinbase, n'y est pas, pas plus qu'un statut
+ * que l'API ajouterait demain. Une `Map` et pas un litteral d'objet : un statut
+ * `toString` ou `constructor` y trouverait sinon une valeur, heritee du prototype.
+ */
+const STATUTS = new Map<string, KnownOrderStatus['kind']>([
+  ['PENDING', 'OPEN'],
+  ['QUEUED', 'OPEN'],
+  ['OPEN', 'OPEN'],
+  ['CANCEL_QUEUED', 'OPEN'],
+  ['FILLED', 'FILLED'],
+  ['CANCELLED', 'CANCELLED'],
+  ['EXPIRED', 'EXPIRED'],
+  ['FAILED', 'FAILED'],
+]);
+
+/**
+ * La liste est filtree sur un identifiant : elle en porte zero ou un, et c'est
+ * **celui-la**. Un autre ordre dans la reponse prouve que le filtre n'a pas ete
+ * honore, et lire le premier venu rendrait le statut d'un autre ordre — donc la
+ * lecture s'arrete. Une liste vide, elle, est une reponse : l'ordre est inconnu.
+ */
+function orderStatusFrom(raw: unknown, exchangeId: string): OrderStatus {
+  const liste = asList(asRecord(raw, 'order')['orders'], 'order.orders');
+  const contexte = `order[${exchangeId}]`;
+  const [brut] = liste;
+  if (brut === undefined) {
+    return {
+      kind: 'INDETERMINABLE',
+      reason: `${contexte} : inconnu de l'exchange — jamais accepte, ou identifiant faux. Son issue ne se deduit de rien.`,
+    };
+  }
+  const record = asRecord(brut, contexte);
+  const lu = asText(record['order_id'], `${contexte}.order_id`);
+  if (liste.length > 1 || lu !== exchangeId) {
+    throw new CoinbaseFrontierError(
+      `${contexte} : la reponse porte ${String(liste.length)} ordre(s), dont ${lu}. Le filtre order_ids n'a pas ete honore.`,
+    );
+  }
+  requireUsdcQuote(asText(record['product_id'], `${contexte}.product_id`), contexte);
+  const filled = decimalFromApi(record['filled_size'], `${contexte}.filled_size`) as Quantity;
+  const statut = asText(record['status'], `${contexte}.status`);
+  const kind = STATUTS.get(statut);
+  if (kind === undefined) {
+    return {
+      kind: 'INDETERMINABLE',
+      reason: `${contexte} : statut ${statut}, que ce module ne sait pas interpreter, quantite executee ${filled.toFixed()}. Il n'est pas replie sur CANCELLED : ce serait classer en annule un ordre peut-etre execute.`,
+    };
+  }
+  return {
+    kind,
+    exchangeId,
+    clientOrderId: asText(record['client_order_id'], `${contexte}.client_order_id`),
+    filled,
+    averageFilledPrice: filled.isZero()
+      ? null
+      : (decimalFromApi(record['average_filled_price'], `${contexte}.average_filled_price`) as Price),
+    fees: decimalFromApi(record['total_fees'], `${contexte}.total_fees`) as UsdcAmount,
+  };
+}
+
+/**
+ * Deux champs arretent la lecture plutot que d'etre interpretes. `trade_type`
+ * autre que `FILL` — une correction ou une annulation d'execution ne s'additionne
+ * pas sans regle. `size_in_quote` autre que le booleen `false` — la taille serait
+ * en devise de cotation, ou son unite non dite, et une taille dont l'unite se
+ * devine fausse le solde.
+ */
+function fillFrom(raw: unknown, exchangeId: string): OrderFill {
+  const record = asRecord(raw, 'fills[]');
+  const tradeId = asText(record['trade_id'], 'fills[].trade_id');
+  const contexte = `fills[${tradeId}]`;
+  const rattache = asText(record['order_id'], `${contexte}.order_id`);
+  if (rattache !== exchangeId) {
+    throw new CoinbaseFrontierError(
+      `${contexte} : execution de l'ordre ${rattache}, alors que ${exchangeId} etait demande. Le filtre order_ids n'a pas ete honore.`,
+    );
+  }
+  requireUsdcQuote(asText(record['product_id'], `${contexte}.product_id`), contexte);
+  if (record['trade_type'] !== 'FILL') {
+    throw new CoinbaseFrontierError(
+      `${contexte} : trade_type ${JSON.stringify(record['trade_type'])}, seul FILL s'additionne.`,
+    );
+  }
+  if (record['size_in_quote'] !== false) {
+    throw new CoinbaseFrontierError(
+      `${contexte} : size_in_quote vaut ${JSON.stringify(record['size_in_quote'])}, et seul le booleen false dit que la taille est en devise de base.`,
+    );
+  }
+  return {
+    tradeId,
+    price: decimalFromApi(record['price'], `${contexte}.price`) as Price,
+    size: decimalFromApi(record['size'], `${contexte}.size`) as Quantity,
+    commission: decimalFromApi(record['commission'], `${contexte}.commission`) as UsdcAmount,
+    tradeTime: instant(record['trade_time'], `${contexte}.trade_time`),
+  };
+}
+
 // --- Pagination -------------------------------------------------------------
+
+/** `has_next` et `cursor` : la forme des soldes et des ordres. */
+function curseurAnnonce(reponse: Readonly<Record<string, unknown>>): string | undefined {
+  const suivant = reponse['cursor'];
+  return reponse['has_next'] === true && typeof suivant === 'string' && suivant.length > 0
+    ? suivant
+    : undefined;
+}
+
+/**
+ * Les executions n'ont pas de `has_next` (echantillon de ccxt) : la suite existe
+ * tant que le curseur n'est pas vide, et la page non plus. S'arreter faute de
+ * `has_next` tronquerait en silence tout ce qui depasse la premiere page.
+ */
+function curseurSeul(
+  reponse: Readonly<Record<string, unknown>>,
+  page: readonly unknown[],
+): string | undefined {
+  const suivant = reponse['cursor'];
+  return page.length > 0 && typeof suivant === 'string' && suivant.length > 0 ? suivant : undefined;
+}
 
 /**
  * Suit `has_next` / `cursor` et accumule les elements. La borne sur le nombre de
@@ -519,17 +714,16 @@ async function allPages(
   transport: CoinbaseTransport,
   route: (cursor?: string) => CoinbaseRoute,
   champ: string,
+  suite: typeof curseurSeul = curseurAnnonce,
 ): Promise<readonly unknown[]> {
   const elements: unknown[] = [];
   let cursor: string | undefined;
-  for (let page = 0; page < MAX_PAGES; page += 1) {
+  for (let numero = 0; numero < MAX_PAGES; numero += 1) {
     const reponse = asRecord(await transport.read(route(cursor)), champ);
-    elements.push(...asList(reponse[champ], champ));
-    const suivant = reponse['cursor'];
-    if (reponse['has_next'] !== true || typeof suivant !== 'string' || suivant.length === 0) {
-      return elements;
-    }
-    cursor = suivant;
+    const page = asList(reponse[champ], champ);
+    elements.push(...page);
+    cursor = suite(reponse, page);
+    if (cursor === undefined) return elements;
   }
   throw new CoinbaseFrontierError(
     `${champ} : plus de ${MAX_PAGES} pages, le curseur ne progresse probablement pas.`,
@@ -544,10 +738,11 @@ async function allPages(
  * sans cle. Le job compose `ccxtTransport(config.secrets)` avec ce lecteur.
  *
  * `attendue` porte le portefeuille que la cle doit servir. **Chaque lecture
- * commence par la verifier**, `openOrders` compris qui n'a pas besoin de
- * l'UUID : le controle ne depend donc pas de l'ordre dans lequel le run appelle
- * les methodes. Le run quotidien lit `keyPermissions` en premier, et c'est la
- * qu'une cle mal scopee l'arrete, avant la reconciliation.
+ * commence par la verifier**, `openOrders` et les lectures d'un ordre compris,
+ * qui n'ont pas besoin de l'UUID : le controle ne depend donc pas de l'ordre
+ * dans lequel le run appelle les methodes. Le run quotidien lit `keyPermissions`
+ * en premier, et c'est la qu'une cle mal scopee l'arrete, avant la
+ * reconciliation.
  */
 export function openCoinbase(transport: CoinbaseTransport, attendue: ExpectedKey): CoinbaseReader {
   /*
@@ -589,6 +784,22 @@ export function openCoinbase(transport: CoinbaseTransport, attendue: ExpectedKey
         'orders',
       );
       return bruts.map(openOrderFrom);
+    },
+
+    async orderStatus(exchangeId: string): Promise<OrderStatus> {
+      await lirePermissions();
+      return orderStatusFrom(await transport.read({ kind: 'order', exchangeId }), exchangeId);
+    },
+
+    async orderFills(exchangeId: string): Promise<readonly OrderFill[]> {
+      await lirePermissions();
+      const bruts = await allPages(
+        transport,
+        (cursor) => ({ kind: 'fills', exchangeId, ...(cursor === undefined ? {} : { cursor }) }),
+        'fills',
+        curseurSeul,
+      );
+      return bruts.map((brut) => fillFrom(brut, exchangeId));
     },
 
     close: () => transport.close(),

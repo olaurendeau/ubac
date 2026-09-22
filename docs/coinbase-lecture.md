@@ -9,21 +9,22 @@ le code, pas répété ici. Chaque morceau apporte sa section avec son code.
 | **Q3a** | le transport et l'authentification | on s'authentifie et on appelle, ccxt fait ce qu'on croit |
 | **Q3b** | les lecteurs : soldes, ordres ouverts, périmètre | on lit le bon portefeuille, aucune écriture n'est atteignable |
 | **Q3c** | le marché : bougies journalières | une série complète, ou un refus |
+| **S2** (phase 3) | le statut d'un ordre donné et ses exécutions | un ordre dénoué se lit exécuté, annulé, expiré ou rejeté — ou se dit indéterminable |
 
 Chaque section arrive avec le code qu'elle explique : §1 à §3 avec Q3a,
-§4 à §7 avec Q3b, §8 avec Q3c.
+§4 à §7 avec Q3b, §8 avec Q3c, §10 avec S2.
 
 Références : `docs/specs/ubac-rebalance.md` §3, §7 et §11 ;
 `docs/plans/ubac-phase-1.md`, lot Q3 ; décision préalable **D4**, close ;
-`docs/cle-coinbase.md` pour la clé. Tout ce qui suit a été vérifié en direct
-contre la vraie clé, en lecture seule, le **2026-09-11**.
+`docs/cle-coinbase.md` pour la clé. Tout ce qui suit, sauf le §10, a été vérifié
+en direct contre la vraie clé, en lecture seule, le **2026-09-11**.
 
 ---
 
-## 1. Le transport : quatre requêtes, un seul verbe
+## 1. Le transport : six requêtes, un seul verbe
 
 `CoinbaseTransport` n'expose que `read(route)` et `close()`. `CoinbaseRoute` est
-un type somme **fermé à quatre requêtes**, toutes en lecture :
+un type somme **fermé à six requêtes**, toutes en lecture :
 
 | Route | Endpoint | Pour |
 |---|---|---|
@@ -31,9 +32,11 @@ un type somme **fermé à quatre requêtes**, toutes en lecture :
 | `accounts` | `GET /api/v3/brokerage/accounts` | Q3b |
 | `open_orders` | `GET /api/v3/brokerage/orders/historical/batch?order_status=OPEN` | Q3b |
 | `daily_candles` | `GET /api/v3/brokerage/market/products/{id}/candles` | Q3c |
+| `order` | `GET /api/v3/brokerage/orders/historical/batch?order_ids={id}` | S2 |
+| `fills` | `GET /api/v3/brokerage/orders/historical/fills?order_ids={id}` | S2 |
 
-Les quatre sont déclarées ensemble, y compris `daily_candles` que personne
-n'appelle encore : une surface close n'a de sens qu'énumérée en entier, et c'est
+Les quatre premières sont déclarées ensemble, y compris `daily_candles` que
+personne n'appelle encore : une surface close n'a de sens qu'énumérée en entier, et c'est
 cette énumération que le test vérifie.
 
 `read` rend la **réponse brute** de l'API. Les structures unifiées de ccxt ne
@@ -41,13 +44,15 @@ sont jamais utilisées : elles convertissent les chaînes en `number`, et un
 flottant déjà arrondi ne se répare pas. Voir §6.
 
 `CoinbaseReader`, ajouté par Q3b, est la surface que voit le reste du programme —
-trois lectures et une fermeture, et pas d'autre porte :
+cinq lectures depuis S2 et une fermeture, et pas d'autre porte :
 
 | Opération | Rend |
 |---|---|
 | `keyPermissions()` | `canView`, `canTrade`, `portfolioUuid` |
 | `balances()` | les soldes du portefeuille dédié, en `Decimal` |
 | `openOrders()` | les ordres non dénoués |
+| `orderStatus(id)` | le statut réel d'un ordre donné — §10 |
+| `orderFills(id)` | ses exécutions — §10 |
 | `close()` | — ferme le transport HTTP |
 
 `MarketReader`, ajouté par Q3c, en a une seule : `dailyCandles(asset, window)`,
@@ -224,6 +229,18 @@ l'échantillon que ccxt conserve dans son propre source et signalées comme
 fabriquées à chaque emploi. C'est la seule partie du lot qui repose sur une
 source secondaire.
 
+**Un ordre exécuté, fabriqué et déclaré comme tel (décision T2, lot S2).**
+`coinbase-order-filled.json` et `coinbase-order-fills.json` **ne sont pas des
+captures** : le portefeuille dédié n'a jamais passé d'ordre, et n'en passera pas
+avant S7. Leur forme est calquée sur les échantillons de `coinbase.js` (ccxt
+4.5.78), leurs grandeurs choisies pour qu'une somme en `number` se trompe —
+0,1 + 0,2 en taille, 1,001276 + 2,002552 en frais. Chacune le dit dans son
+champ `_fabrique` ; le test les charge par `fabriquee()`, qui exige ce champ, et
+`reelle()` refuse de charger un fichier qui le porte. **Elles seront remplacées
+par une capture après le premier ordre réel** — le champ retiré, et le
+chargement basculé sur `reelle()`. Une fixture fabriquée qu'on croit capturée
+est pire que les deux.
+
 **Ce que les tests garantissent vraiment.** Quatre mutations ont été appliquées
 au code et la suite a échoué à chaque fois : désarmer le contrôle de rattachement
 au portefeuille, faire accepter un `number` à `decimalFromApi`, accepter toute
@@ -303,3 +320,59 @@ donnée de compte : une bougie est publique.
 - **Aucune écriture en base.** `db.ts` est le lot Q2.
 - **Aucune horloge.** Les deux modules reçoivent les fenêtres qu'on leur demande
   et ne datent rien eux-mêmes — d'où le renvoi de la bougie partielle au job.
+
+---
+
+## 10. Le statut d'un ordre et ses exécutions (S2)
+
+Le prérequis que `docs/reconciliation.md` §4 posait à la phase 3 : distinguer
+les issues d'un ordre dénoué demande son statut réel, ou ses exécutions, pas la
+liste des ordres ouverts. **S2 porte la lecture, S8 porte le branchement dans
+`src/jobs/reconcile.ts`, et E37 n'est clos qu'après les deux** : d'ici S8, la
+réconciliation rend encore `INDETERMINABLE` pour tout ordre dénoué.
+
+**La liste filtrée, pas la lecture par identifiant.** Sur un identifiant
+inconnu, `GET …/orders/historical/{order_id}` répond 404, et ccxt 4.5.78 en fait
+une `ExchangeError` générique : sa correspondance `OrderNotFound` cherche le
+message dans le champ `error`, qui vaut `unknown` dans l'échantillon qu'il garde.
+Un ordre inconnu y serait indiscernable d'une panne. La liste filtrée par
+`order_ids` rend `orders: []` — une **réponse**, et la forme exacte de la liste
+vide capturée le 2026-09-11. Un test fige le comportement de ccxt. En
+contrepartie, la réponse doit porter **exactement** l'ordre demandé : un autre
+identifiant prouve que le filtre n'a pas été honoré, et la lecture s'arrête au
+lieu de rendre le statut d'un autre ordre. Même contrôle sur chaque exécution.
+
+| Statut Coinbase | Lu |
+|---|---|
+| `PENDING`, `QUEUED`, `OPEN`, `CANCEL_QUEUED` | `OPEN` — l'ordre vit encore |
+| `FILLED`, `CANCELLED`, `EXPIRED`, `FAILED` | le même nom ; `FAILED` est l'ordre rejeté |
+| tout autre, `UNKNOWN_ORDER_STATUS` compris | `INDETERMINABLE`, statut et quantité exécutée dans le motif |
+
+Les quatre issues restent **distinctes** : ccxt replie `EXPIRED` et `FAILED` sur
+`canceled` dans ses structures unifiées. **Un statut inconnu ne se replie jamais
+sur `CANCELLED`** — ce serait classer en annulé un ordre peut-être exécuté ; la
+sonde est un ordre exécuté à 100 % sous `UNKNOWN_ORDER_STATUS`. La table est une
+`Map` : en objet littéral, un statut `toString` trouverait une valeur dans le
+prototype. **La quantité exécutée accompagne toute issue**, `CANCELLED`
+comprise : un ordre partiellement exécuté puis annulé la garde.
+
+**Les exécutions.** La réponse n'a pas de `has_next` : la suite existe tant que
+le curseur et la page ne sont pas vides, sans quoi tout ce qui dépasse la
+première page serait tronqué en silence. `trade_type` autre que `FILL` — une
+correction ne s'additionne pas sans règle — et `size_in_quote` autre que le
+booléen `false` — une taille dont l'unité se devine fausse le solde — arrêtent la
+lecture. `trade_time` est publié à la nanoseconde ; `Date` le tronque à la
+milliseconde.
+
+**Les frais** entrent par `decimalFromApi` — `total_fees` pour l'ordre,
+`commission` par exécution —, jamais par une structure unifiée de ccxt, et en
+USDC, la paire étant vérifiée. `test/adapters/frontiere-decimal.test.ts` étend
+son contrôle de noms à `coinbase.ts`.
+
+**Ce qui n'est pas vérifié contre l'API**, faute d'ordre réel (T2) : que
+`order_ids` filtre bien les deux routes, que `fills` n'ait pas de `has_next`,
+que `size_in_quote` vaille `false` sur un ordre limit en taille de base. Chaque
+écart se lit **bruyamment** — la lecture s'arrête — et la première capture le
+tranchera. Le lecteur ne recoupe pas non plus la somme des exécutions avec
+`filled_size` et `total_fees` : les deux peuvent se suivre avec retard, et c'est
+au branchement de S8 d'en décider.

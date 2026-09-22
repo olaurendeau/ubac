@@ -1,0 +1,38 @@
+{
+  "_fabrique": "FABRIQUEE, PAS CAPTUREE (decision T2, lot S2). Les deux executions de coinbase-order-filled.json. Forme calquee sur l'echantillon que ccxt 4.5.78 garde dans coinbase.js (orders/historical/fills), horodatages a la nanoseconde compris. A remplacer par une capture apres le premier ordre reel.",
+  "fills": [
+    {
+      "entry_id": "b88b82cc89e326a2778874795102cbafd08dd979a2a7a3c69603fc4c23c2e0e1",
+      "trade_id": "00000000-0000-4000-8000-0000000000e1",
+      "order_id": "ab12cd34-0000-4000-8000-0000000000f1",
+      "trade_time": "2026-09-10T07:12:03.481920417Z",
+      "trade_type": "FILL",
+      "price": "2503.19",
+      "size": "0.1",
+      "commission": "1.001276",
+      "product_id": "ETH-USDC",
+      "sequence_timestamp": "2026-09-10T07:12:03.483001Z",
+      "liquidity_indicator": "MAKER",
+      "size_in_quote": false,
+      "user_id": "00000000-0000-4000-8000-000000000003",
+      "side": "BUY"
+    },
+    {
+      "entry_id": "b88b82cc89e326a2778874795102cbafd08dd979a2a7a3c69603fc4c23c2e0e2",
+      "trade_id": "00000000-0000-4000-8000-0000000000e2",
+      "order_id": "ab12cd34-0000-4000-8000-0000000000f1",
+      "trade_time": "2026-09-10T09:47:55.020113858Z",
+      "trade_type": "FILL",
+      "price": "2503.19",
+      "size": "0.2",
+      "commission": "2.002552",
+      "product_id": "ETH-USDC",
+      "sequence_timestamp": "2026-09-10T09:47:55.021337Z",
+      "liquidity_indicator": "MAKER",
+      "size_in_quote": false,
+      "user_id": "00000000-0000-4000-8000-000000000003",
+      "side": "BUY"
+    }
+  ],
+  "cursor": ""
+}

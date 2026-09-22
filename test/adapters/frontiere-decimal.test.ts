@@ -193,7 +193,7 @@ describe('le motif d’un refus atteint la colonne reason (E32)', () => {
  * indirecte, une bibliotheque tierce qui convertit pour nous. C'est le test
  * d'aller-retour contre la vraie base qui couvre ce terrain-la.
  */
-describe('aucun chemin flottant dans les modules d’acces a la base', () => {
+describe('aucun chemin flottant dans les modules de frontiere', () => {
   const INTERDITS = [
     /\bparseFloat\b/,
     /\bparseInt\b/,
@@ -215,7 +215,8 @@ describe('aucun chemin flottant dans les modules d’acces a la base', () => {
       .filter((ligne) => !/^\s*(\*|\/\/|\/\*)/.test(ligne))
       .join('\n');
 
-  it.each(['src/adapters/db.ts', 'src/adapters/schema.ts'])('%s', async (chemin) => {
+  // `coinbase.ts` depuis S2 : les frais d'un ordre y entrent, par `decimalFromApi`.
+  it.each(['src/adapters/db.ts', 'src/adapters/schema.ts', 'src/adapters/coinbase.ts'])('%s', async (chemin) => {
     const code = codeSeul(await readFile(resolve(ROOT, chemin), 'utf8'));
     const fautes = INTERDITS.filter((motif) => motif.test(code)).map(String);
     expect(fautes).toEqual([]);
