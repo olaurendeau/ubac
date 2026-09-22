@@ -174,10 +174,12 @@ entier**, jamais raboté (O2 = 3). Aucune règle n'est ajoutée : c'est la valeu
 d'une constante de `src/core/risk.ts`, armée dès le premier run qui exécute (E29).
 
 **Le refus n'est pas silencieux (E32).** La ligne de `decisions` porte
-`REJECTED:REBALANCE_TOO_LARGE` dans `risk_verdict`, et l'alerte urgente
-`REBALANCE_TOO_LARGE` porte le texte du rejet : l'ampleur du run et le plafond.
+`REJECTED:REBALANCE_TOO_LARGE` dans `risk_verdict`. Sa colonne `reason` garde le
+motif de la stratégie en première ligne, puis celui du refus :
+`refus REBALANCE_TOO_LARGE : somme des |jambes| … au-dela de 8 %`, l'ampleur du
+run et le plafond. L'alerte urgente `REBALANCE_TOO_LARGE` porte le même texte.
 Le portefeuille reste hors bande, et l'alerte repart chaque jour où il le reste.
-Ce texte n'est pas dans `decisions.reason`, qui porte le motif de la stratégie.
+Tout refus s'écrit ainsi dans `reason`, quels que soient le code et la stratégie.
 
 **Ce que 8 % veut dire pour la production.** La bande de cash va de 24 à 36 %
 autour d'une cible de 30 %, en mode `target` : un retour à la cible déplace déjà
