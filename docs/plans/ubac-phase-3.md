@@ -573,6 +573,20 @@ compte exécuté ; `max retries = 0` constaté dans la définition déployée.
 Seconde : placer avant d'écrire — la sonde de l'interruption rougit. Troisième :
 retirer le filtre de stratégie — la sonde des quatre verdicts `ACCEPTED` rougit.
 
+**Exigence ajoutée le 2026-09-22, constatée en revue de S1 (#52).** La revue a
+relevé que `permissionsFrom` accepte une réponse `key_permissions` dont la
+permission de sortie a **purement disparu** : l'absence du champ ne prouve pas
+qu'il vaut `false`. Ce n'était pas un défaut de S1 — la moitié acquise d'E7
+porte sur une permission **vraie**, et la règle `no-restricted-syntax`
+interdisait alors de nommer le champ dans `src/adapters/**`, ce qui rendait le
+contrôle littéralement inécrivable.
+
+S4 retire cette règle. **S7 doit donc exiger la présence du champ, et pas
+seulement sa fausseté** : une réponse où il manque se refuse, avec son test.
+C'est exactement la garantie que le retrait du garde-fou (B4) déplace sur la
+clé : la spec §7 promet « jamais de permission de retrait », et une promesse
+qu'on ne peut pas constater n'en est pas une.
+
 **Pièges.** (1) **E23 laisse une fenêtre, et c'est voulu** : entre `recordOrder`
 et le placement il y a un `await`, et le job peut mourir là. Une ligne `PENDING`
 sans ordre est rattrapable, un ordre sans ligne ne l'est pas — mais la ligne d'un
