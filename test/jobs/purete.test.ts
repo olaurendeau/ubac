@@ -1397,8 +1397,15 @@ describe('A3, A4 — la portee du glob, et un gardien qu’on n’eteint pas', (
    * rendrait les quatre premiers verts sans avoir rien lu. Cette sonde separe
    * les deux cas : le glob lit au moins un fichier, les sept le lisent de la meme
    * facon, et il ne lit que `src/jobs/`.
+   *
+   * Delai cible, pose sur ce test seul comme celui d'A22 : il linte `src/jobs/`
+   * sept fois, une par gardien. Sous couverture il tient en 1,3 s sur le poste,
+   * mais le runner de la porte (`ubuntu-24.04`, lot R1 de la phase 2) l'a mesure
+   * a 2 419 puis 3 650 ms sur 5 000, soit 73 % de son delai : a 80 % le
+   * reporter de marge fait rougir la porte. A4, dans le meme bloc, reste a 5 s.
+   * Mesures : `docs/integration-continue.md`.
    */
-  it('A3 : les sept gardiens lisent le meme glob, non vide, et rien hors de src/jobs/', async () => {
+  it('A3 : les sept gardiens lisent le meme glob, non vide, et rien hors de src/jobs/', { timeout: 30_000 }, async () => {
     expect(LES_GARDIENS).toHaveLength(7);
     for (const [nom, eslint] of LES_GARDIENS) {
       const fichiers = lus(await eslint.lintFiles([JOBS]));
