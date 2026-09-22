@@ -165,10 +165,13 @@ précédents, avec l'échéance « avant la phase 3 ».
 presque gratuit.** `REBALANCE_TOO_LARGE` refuse déjà le run entier : c'est une
 `Rejection` du verdict, pas un écrêtage de jambe. La forme retenue en O1 est
 donc **exactement** celle que O2 demande, et le plafond réduit se ramène à une
-constante abaissée dans `core/risk.ts`. Le motif écrit dans `decisions.reason`
-et l'alerte `REBALANCE_TOO_LARGE` qu'E32 exige **existent depuis la phase 0** :
-il n'y a rien à écrire pour eux, seulement à constater qu'ils mordent sur la
-nouvelle valeur. Le plan ne replanifie pas ce qui existe.
+constante abaissée dans `core/risk.ts`. Le cadrage tenait aussi pour acquis,
+depuis la phase 0, le motif écrit dans `decisions.reason` et l'alerte
+`REBALANCE_TOO_LARGE` qu'E32 exige, sans l'avoir vérifié. La revue du lot du
+plafond l'a infirmé pour le motif : `decisions.reason` ne portait que le motif
+de l'intention, le code du rejet vivant seul dans `risk_verdict`. Le lot du
+plafond satisfait E32 en composant le motif de l'intention et celui du rejet ;
+l'alerte, elle, existait bien.
 
 **O2 = 3 rend E33 sans objet**, et c'est la conséquence la plus utile des
 sept : aucun run raboté n'existe, donc `armsCooldown` n'a pas à distinguer un
