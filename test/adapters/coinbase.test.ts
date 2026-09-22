@@ -3,6 +3,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import ccxt from 'ccxt';
+import { Decimal } from 'decimal.js';
 import { describe, expect, it } from 'vitest';
 
 import * as coinbase from '../../src/adapters/coinbase.js';
@@ -13,7 +14,13 @@ import {
   READ_ROUTES,
   requireUsdcQuote,
 } from '../../src/adapters/coinbase.js';
-import type { CoinbaseReader, CoinbaseRoute, CoinbaseTransport } from '../../src/adapters/coinbase.js';
+import type {
+  CoinbaseReader,
+  CoinbaseRoute,
+  CoinbaseTransport,
+  KnownOrderStatus,
+  OrderStatus,
+} from '../../src/adapters/coinbase.js';
 
 /**
  * Aucun de ces tests ne touche au reseau. Deux regimes cohabitent :
@@ -28,16 +35,32 @@ import type { CoinbaseReader, CoinbaseRoute, CoinbaseTransport } from '../../src
  *   contient pas — il est vide et n'a jamais passe d'ordre. Elles sont calquees
  *   sur l'echantillon reel que ccxt conserve dans son propre source
  *   (`coinbase.js`, reponse de `orders/historical/batch`) et signalees comme
- *   telles a chaque fois.
+ *   telles a chaque fois. Celles d'un ordre execute (T2, lot S2) sont des
+ *   fichiers : chacune porte un champ `_fabrique`, que `fabriquee` exige et que
+ *   `reelle` refuse — une fixture fabriquee ne se charge pas comme une capture.
  */
 
 const FIXTURES = resolve(dirname(fileURLToPath(import.meta.url)), 'fixtures');
 
-async function reelle(nom: string): Promise<Record<string, unknown>> {
+async function fixture(nom: string): Promise<Record<string, unknown>> {
   return JSON.parse(await readFile(resolve(FIXTURES, `${nom}.json`), 'utf8')) as Record<
     string,
     unknown
   >;
+}
+
+async function reelle(nom: string): Promise<Record<string, unknown>> {
+  const lue = await fixture(nom);
+  if ('_fabrique' in lue) throw new Error(`${nom} est fabriquee, pas capturee.`);
+  return lue;
+}
+
+async function fabriquee(nom: string): Promise<Record<string, unknown>> {
+  const lue = await fixture(nom);
+  if (!String(lue['_fabrique']).startsWith('FABRIQUEE, PAS CAPTUREE')) {
+    throw new Error(`${nom} ne se declare pas fabriquee : capturee, elle se charge par reelle().`);
+  }
+  return lue;
 }
 
 const PORTEFEUILLE = '00000000-0000-4000-8000-000000000001';
@@ -48,6 +71,17 @@ const CLE = PORTEFEUILLE;
 
 /** La reponse reelle de `key_permissions`, que toute lecture verifie d'abord. */
 const PERMISSIONS_REELLES = await reelle('coinbase-key-permissions');
+
+/** L'ordre execute et ses deux executions, **fabriques** (T2). */
+const ORDRE_EXECUTE = 'ab12cd34-0000-4000-8000-0000000000f1';
+const LISTE_EXECUTE = await fabriquee('coinbase-order-filled');
+const EXECUTIONS = await fabriquee('coinbase-order-fills');
+
+/** La liste filtree sur l'ordre execute, dont on fait varier des champs. */
+function execute(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const [brut] = LISTE_EXECUTE['orders'] as Record<string, unknown>[];
+  return { ...LISTE_EXECUTE, orders: [{ ...brut, ...overrides }] };
+}
 
 /**
  * Journalise les routes demandees : c'est la preuve de ce que le module appelle.
@@ -168,20 +202,24 @@ describe('surface du module — aucune ecriture, ni exportee ni atteignable', ()
     ]);
   });
 
-  it('n’expose sur le lecteur que trois lectures et une fermeture', () => {
+  it('n’expose sur le lecteur que cinq lectures et une fermeture', () => {
     const { transport } = transportDe({});
     // `close` ferme le transport HTTP ; il ne denote pas une fermeture d'ordre,
     // et la regexp ci-dessus ne le confond pas (`close` seul n'y correspond pas).
-    expect(Object.keys(ouvrir(transport)).sort()).toEqual([
-      'balances',
-      'close',
-      'keyPermissions',
-      'openOrders',
-    ]);
+    const noms = Object.keys(ouvrir(transport)).sort();
+    expect(noms).toEqual(['balances', 'close', 'keyPermissions', 'openOrders', 'orderFills', 'orderStatus']);
+    expect(noms.filter((nom) => ECRITURE.test(nom))).toEqual([]);
   });
 
-  it('n’a que quatre routes, toutes en lecture', () => {
-    expect([...READ_ROUTES]).toEqual(['key_permissions', 'accounts', 'open_orders', 'daily_candles']);
+  it('n’a que six routes, toutes en lecture', () => {
+    expect([...READ_ROUTES]).toEqual([
+      'key_permissions',
+      'accounts',
+      'open_orders',
+      'daily_candles',
+      'order',
+      'fills',
+    ]);
     expect([...READ_ROUTES].filter((route) => ECRITURE.test(route))).toEqual([]);
   });
 
@@ -190,13 +228,23 @@ describe('surface du module — aucune ecriture, ni exportee ni atteignable', ()
       key_permissions: await reelle('coinbase-key-permissions'),
       accounts: await reelle('coinbase-accounts'),
       open_orders: await reelle('coinbase-orders-open-empty'),
+      order: execute(),
+      fills: EXECUTIONS,
     });
     const lecteur = ouvrir(transport);
     await lecteur.keyPermissions();
     await lecteur.balances();
     await lecteur.openOrders();
+    await lecteur.orderStatus(ORDRE_EXECUTE);
+    await lecteur.orderFills(ORDRE_EXECUTE);
     await lecteur.close();
-    expect(routes.map((route) => route.kind)).toEqual(['key_permissions', 'accounts', 'open_orders']);
+    expect(routes.map((route) => route.kind)).toEqual([
+      'key_permissions',
+      'accounts',
+      'open_orders',
+      'order',
+      'fills',
+    ]);
   });
 });
 
@@ -356,6 +404,17 @@ describe('E6 — la cle est celle du portefeuille que l’operateur attend', () 
       await expect(lecteur.keyPermissions()).rejects.toThrow(/COINBASE_PORTFOLIO_UUID/);
       await expect(lecteur.balances()).rejects.toThrow(/COINBASE_PORTFOLIO_UUID/);
       await expect(lecteur.openOrders()).rejects.toThrow(/COINBASE_PORTFOLIO_UUID/);
+      expect(routes.map((route) => route.kind)).toEqual(['key_permissions']);
+    },
+  );
+
+  it.each(['orderStatus', 'orderFills'] as const)(
+    'ne lit aucun ordre avec une cle refusee, par %s',
+    async (lecture) => {
+      const { transport, routes } = transportDe({ order: execute(), fills: EXECUTIONS });
+      await expect(lecteurDe(transport, VOISIN).lecteur[lecture](ORDRE_EXECUTE)).rejects.toThrow(
+        /COINBASE_PORTFOLIO_UUID/,
+      );
       expect(routes.map((route) => route.kind)).toEqual(['key_permissions']);
     },
   );
@@ -551,6 +610,150 @@ describe('ordres ouverts', () => {
   });
 });
 
+async function statutDe(reponse: unknown, exchangeId = ORDRE_EXECUTE): Promise<OrderStatus> {
+  const { transport } = transportDe({ order: reponse });
+  return ouvrir(transport).orderStatus(exchangeId);
+}
+
+function connu(statut: OrderStatus): KnownOrderStatus {
+  if (statut.kind === 'INDETERMINABLE') throw new Error(`issue attendue, lu : ${statut.reason}`);
+  return statut;
+}
+
+/**
+ * E37, la moitie de l'adapter. **S2 porte la lecture, S8 le branchement dans
+ * `reconcile.ts` ; E37 n'est clos qu'apres les deux.** Toutes les reponses
+ * d'ordre de ce bloc sont fabriquees (T2), sauf la liste vide, capturee.
+ */
+describe('E37 — le statut reel d’un ordre donne', () => {
+  it('lit un ordre execute, grandeurs et frais en Decimal', async () => {
+    const statut = connu(await statutDe(execute()));
+    expect(statut).toMatchObject({ kind: 'FILLED', exchangeId: ORDRE_EXECUTE, clientOrderId: '3f2a1b' });
+    expect(statut.filled.toFixed()).toBe('0.3');
+    expect(statut.averageFilledPrice?.toFixed()).toBe('2503.19');
+    expect(statut.fees.toFixed()).toBe('3.003828');
+  });
+
+  it('distingue execute, annule, expire et rejete — ccxt replie les trois derniers', async () => {
+    const issues: string[] = [];
+    for (const status of ['FILLED', 'CANCELLED', 'EXPIRED', 'FAILED']) {
+      issues.push((await statutDe(execute({ status }))).kind);
+    }
+    expect(issues).toEqual(['FILLED', 'CANCELLED', 'EXPIRED', 'FAILED']);
+  });
+
+  it.each(['PENDING', 'QUEUED', 'OPEN', 'CANCEL_QUEUED'])('lit %s comme un ordre encore vivant', async (status) => {
+    expect((await statutDe(execute({ status }))).kind).toBe('OPEN');
+  });
+
+  it('garde la quantite executee d’un ordre partiellement execute puis annule', async () => {
+    const statut = connu(
+      await statutDe(execute({ status: 'CANCELLED', filled_size: '0.1', total_fees: '1.001276' })),
+    );
+    expect(statut.kind).toBe('CANCELLED');
+    expect(statut.filled.toFixed()).toBe('0.1');
+    expect(statut.averageFilledPrice?.toFixed()).toBe('2503.19');
+    expect(statut.fees.toFixed()).toBe('1.001276');
+  });
+
+  it('ne donne pas de prix moyen a un ordre dont rien n’est execute', async () => {
+    const statut = connu(
+      await statutDe(execute({ status: 'CANCELLED', filled_size: '0', average_filled_price: '0', total_fees: '0' })),
+    );
+    expect(statut.filled.isZero()).toBe(true);
+    expect(statut.averageFilledPrice).toBeNull();
+  });
+
+  it('laisse INDETERMINABLE un ordre que l’exchange ne connait pas', async () => {
+    // La liste vide reelle du 2026-09-11 : la forme exacte que prend « aucun ordre ».
+    const statut = await statutDe(await reelle('coinbase-orders-open-empty'));
+    expect(statut).toEqual({ kind: 'INDETERMINABLE', reason: expect.stringMatching(/inconnu de l'exchange/) as unknown });
+  });
+
+  /*
+   * La sonde du piege de `docs/reconciliation.md` §4, et celle que la mutation
+   * de reference doit faire rougir : un statut inconnu replie sur `CANCELLED`
+   * classerait en annule cet ordre execute a 100 %.
+   */
+  it('ne replie pas sur CANCELLED un ordre execute dont le statut est illisible', async () => {
+    const statut = await statutDe(execute({ status: 'UNKNOWN_ORDER_STATUS' }));
+    expect(statut.kind).toBe('INDETERMINABLE');
+    expect(statut).toMatchObject({ reason: expect.stringContaining('quantite executee 0.3') as unknown });
+  });
+
+  it.each(['EDIT_QUEUED', 'SETTLED', 'filled', 'toString', 'constructor'])(
+    'laisse INDETERMINABLE le statut inconnu %s',
+    async (status) => {
+      expect((await statutDe(execute({ status }))).kind).toBe('INDETERMINABLE');
+    },
+  );
+
+  it.each([
+    ['un autre ordre', [{ order_id: 'ab12cd34-0000-4000-8000-0000000000f2' }]],
+    ['deux ordres', [{}, { order_id: 'ab12cd34-0000-4000-8000-0000000000f2' }]],
+  ])('refuse une reponse qui porte %s : le filtre n’a pas ete honore', async (_cas, ecarts) => {
+    const [brut] = execute()['orders'] as Record<string, unknown>[];
+    const reponse = { ...LISTE_EXECUTE, orders: ecarts.map((ecart) => ({ ...brut, ...ecart })) };
+    await expect(statutDe(reponse)).rejects.toThrow(/order_ids n'a pas ete honore/);
+  });
+
+  it.each([
+    ['des frais publies en nombre', { total_fees: 3.003828 }, /a perdu sa precision/],
+    ['une quantite executee illisible', { filled_size: '3e-1' }, /decimale litterale attendue/],
+    ['une paire en EUR', { product_id: 'ETH-EUR' }, /ETH-EUR refusee/],
+  ])('refuse %s', async (_cas, ecart, motif) => {
+    await expect(statutDe(execute(ecart))).rejects.toThrow(motif);
+  });
+});
+
+describe('E37 — les executions d’un ordre', () => {
+  it('les lit sans flottant : leurs sommes sont exactement celles de l’ordre', async () => {
+    // La fixture ne prouverait rien si le flottant tombait juste : il se trompe sur les deux.
+    expect(0.1 + 0.2).not.toBe(0.3);
+    expect(1.001276 + 2.002552).not.toBe(3.003828);
+    const { transport } = transportDe({ order: execute(), fills: EXECUTIONS });
+    const lecteur = ouvrir(transport);
+    const ordre = connu(await lecteur.orderStatus(ORDRE_EXECUTE));
+    const executions = await lecteur.orderFills(ORDRE_EXECUTE);
+    expect(Decimal.sum(...executions.map((e) => e.size)).toFixed()).toBe(ordre.filled.toFixed());
+    expect(Decimal.sum(...executions.map((e) => e.commission)).toFixed()).toBe(ordre.fees.toFixed());
+    expect(executions.map((e) => [e.tradeId, e.price.toFixed(), e.tradeTime.toISOString()])).toEqual([
+      ['00000000-0000-4000-8000-0000000000e1', '2503.19', '2026-09-10T07:12:03.481Z'],
+      ['00000000-0000-4000-8000-0000000000e2', '2503.19', '2026-09-10T09:47:55.020Z'],
+    ]);
+  });
+
+  it('suit le curseur, que la reponse n’accompagne pas de has_next', async () => {
+    const [premiere, seconde] = EXECUTIONS['fills'] as unknown[];
+    const { transport, routes } = transportDe({
+      fills: [
+        { fills: [premiere], cursor: 'p2' },
+        { fills: [seconde], cursor: '' },
+      ],
+    });
+    const executions = await ouvrir(transport).orderFills(ORDRE_EXECUTE);
+    expect(executions.map((e) => e.size.toFixed())).toEqual(['0.1', '0.2']);
+    expect(routes.flatMap((r) => (r.kind === 'fills' ? [r.cursor] : []))).toEqual([undefined, 'p2']);
+  });
+
+  it('rend une liste vide pour un ordre sans execution', async () => {
+    const { transport } = transportDe({ fills: { fills: [], cursor: '' } });
+    expect(await ouvrir(transport).orderFills(ORDRE_EXECUTE)).toEqual([]);
+  });
+
+  it.each([
+    ['d’un autre ordre', { order_id: 'ab12cd34-0000-4000-8000-0000000000f2' }, /order_ids n'a pas ete honore/],
+    ['qui corrige une execution', { trade_type: 'REVERSAL' }, /seul FILL/],
+    ['dont la taille est en devise de cotation', { size_in_quote: true }, /size_in_quote vaut true/],
+    ['dont l’unite de taille n’est pas dite', { size_in_quote: undefined }, /size_in_quote vaut undefined/],
+    ['dont la commission est un nombre', { commission: 1.001276 }, /a perdu sa precision/],
+  ])('refuse une execution %s', async (_cas, ecart, motif) => {
+    const [premiere] = EXECUTIONS['fills'] as Record<string, unknown>[];
+    const { transport } = transportDe({ fills: { fills: [{ ...premiere, ...ecart }], cursor: '' } });
+    await expect(ouvrir(transport).orderFills(ORDRE_EXECUTE)).rejects.toThrow(motif);
+  });
+});
+
 /**
  * Les deux pieges de `docs/cle-coinbase.md`, mesures par le coordinateur contre
  * l'API et figes ici sans reseau : `sign()` de ccxt ne fait que construire la
@@ -587,6 +790,25 @@ describe('ccxt face a une cle Ed25519', () => {
     const uris = payload['uris'] as string[];
     expect(uris[0]).toBe('GET api.coinbase.com/api/v3/brokerage/products/BTC-USDC/candles');
     expect(uris[0]).not.toContain('?');
+  });
+
+  /*
+   * Pourquoi la route `order` lit la liste filtree et pas
+   * `orders/historical/{order_id}` : l'erreur que ccxt garde dans son source
+   * pour un ordre inconnu ne s'y lit pas `OrderNotFound`, mais comme n'importe
+   * quelle panne. Un ordre inconnu y arreterait le run au lieu d'etre dit.
+   */
+  it('ne reconnait pas un ordre inconnu dans le 404 de la lecture par identifiant', () => {
+    const corps =
+      '{"error":"unknown","error_details":"order with this orderID was not found","message":"order with this orderID was not found"}';
+    let erreur: unknown;
+    try {
+      new ccxt.coinbase({}).handleErrors(404, 'Not Found', '', 'GET', {}, corps, JSON.parse(corps), {}, '');
+    } catch (e) {
+      erreur = e;
+    }
+    expect(erreur).toBeInstanceOf(ccxt.ExchangeError);
+    expect(erreur).not.toBeInstanceOf(ccxt.OrderNotFound);
   });
 });
 
@@ -696,5 +918,19 @@ describe('mappage des routes vers les endpoints', () => {
     expect(urls[4]).toContain('/api/v3/brokerage/market/products/BTC-USDC/candles');
     expect(urls[4]).toContain('granularity=ONE_DAY');
     expect(urls.every((url) => url.includes('/api/v3/'))).toBe(true);
+  });
+
+  it('lit un ordre par la liste filtree, et ses executions par la leur', async () => {
+    const [ordre, executions, suite] = await urlsDe([
+      { kind: 'order', exchangeId: ORDRE_EXECUTE },
+      { kind: 'fills', exchangeId: ORDRE_EXECUTE },
+      { kind: 'fills', exchangeId: ORDRE_EXECUTE, cursor: 'p2' },
+    ]);
+    expect(ordre).toContain(`/api/v3/brokerage/orders/historical/batch?order_ids=${ORDRE_EXECUTE}`);
+    expect(ordre).not.toContain('order_status');
+    expect(executions).toContain(`/api/v3/brokerage/orders/historical/fills?order_ids=${ORDRE_EXECUTE}`);
+    expect(executions).toContain('limit=250');
+    expect(executions).not.toContain('cursor=');
+    expect(suite).toContain('cursor=p2');
   });
 });

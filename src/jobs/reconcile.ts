@@ -27,8 +27,10 @@ import type { AllowedAsset, Quantity } from '../core/types.js';
  *    quand ce resultat dit que le cache doit se rendre : le rafraichissement est
  *    l'ecriture de la photo du jour, a l'etape 7 de `daily.ts`, sur les soldes
  *    que ce module vient de rendre. Voir la section « ordres » ci-dessous et
- *    `docs/reconciliation.md` : l'ecriture manque, mais c'est la *lecture* qui
- *    manque d'abord.
+ *    `docs/reconciliation.md` : l'ecriture manque, et la *lecture* du statut
+ *    d'un ordre denoue, que l'adapter sait faire depuis S2, n'est pas encore
+ *    branchee ici. **S2 porte la lecture, S8 porte le branchement, et E37 n'est
+ *    clos qu'apres les deux.**
  * 3. **Aucune horloge.** Ni systeme, ni injectee : aucune decision de ce module
  *    ne depend du temps. La seule regle du §7 qui en dependait, l'annulation des
  *    ordres de plus de 24 h, est reportee en phase 3. Le jour ou elle arrive,
@@ -37,7 +39,7 @@ import type { AllowedAsset, Quantity } from '../core/types.js';
  *    interdit tient par un garde-fou de `test/jobs/`, pas par le lint.
  *
  * `docs/reconciliation.md` porte les motifs : le choix de la base de comparaison
- * du seuil, le report de D2, et la lecture qui manque a l'adapter.
+ * du seuil, le report de D2, et la lecture que ce module n'utilise pas encore.
  */
 
 // --- La reconciliation precede toute decision -------------------------------
@@ -78,11 +80,11 @@ export interface ReconciledBalances {
  * Le statut reel d'un ordre `PENDING`, pour ce que le depot **sait lire**.
  *
  * `PENDING` et `PARTIAL` reprennent les valeurs de la colonne `status` du §4.
- * `INDETERMINABLE` n'en est pas une : le lecteur Coinbase n'expose que les
- * ordres **ouverts**, donc un `PENDING` absent de cette liste s'est denoue —
- * execute, annule ou rejete — et rien de ce qu'on lit ne dit lequel. C'est une
- * lecture qui manque a l'adapter, prerequis de la phase 3, pas une limite de la
- * cle en lecture seule ; `docs/reconciliation.md` §4 l'argumente.
+ * `INDETERMINABLE` n'en est pas une : ce module ne lit que les ordres
+ * **ouverts**, donc un `PENDING` absent de cette liste s'est denoue — execute,
+ * annule ou rejete — et rien de ce qu'il lit ne dit lequel. L'adapter sait le
+ * lire depuis S2 (`orderStatus`, `orderFills`) ; le brancher ici est S8.
+ * `docs/reconciliation.md` §4 l'argumente.
  *
  * L'union force l'appelant a traiter le troisieme cas. Le replier sur une valeur
  * par defaut classerait un ordre execute en annule, ce qui est pire que de ne
@@ -287,7 +289,7 @@ function statusOf(surExchange: OpenOrder | undefined, order: PendingOrderRecord)
   if (surExchange === undefined) {
     return {
       kind: 'INDETERMINABLE',
-      reason: `ordre ${order.clientOrderId} absent des ordres ouverts : il s'est denoue, mais la lecture de la phase 1 ne dit pas comment. Determiner l'issue demande le statut d'un ordre donne ou ses executions, que l'adapter ne sait pas encore lire.`,
+      reason: `ordre ${order.clientOrderId} absent des ordres ouverts : il s'est denoue, mais la reconciliation ne dit pas encore comment. Determiner l'issue demande le statut d'un ordre donne ou ses executions, que l'adapter lit mais que ce module n'utilise pas encore.`,
     };
   }
   // Un ordre encore ouvert et partiellement execute reste ouvert chez Coinbase :

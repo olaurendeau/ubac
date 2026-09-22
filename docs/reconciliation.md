@@ -187,7 +187,7 @@ venait de modifier, ce qui est exactement ce qu'on veut savoir.
 **En phase 3, ce ne sera plus vrai.** Une divergence constatée juste avant de
 passer des ordres est précisément le signal qu'il ne faut pas ignorer : elle peut
 signifier qu'un ordre précédent a eu un sort qu'on ignore — exécuté, partiel,
-annulé — et la section 4 ci-dessous dit que le dépôt ne sait pas encore lire
+annulé — et la section 4 ci-dessous dit que la réconciliation ne lit pas encore
 lequel. Rafraîchir le cache et placer des ordres dans la foulée reviendrait à
 agir sur un état dont on vient de constater qu'on ne le comprend pas.
 
@@ -212,7 +212,16 @@ choisie :
 placement n'existe. Tant que rien ne s'exécute, l'absence de décision ne coûte
 rien ; le jour où l'étape 6 est écrite, elle coûte la question entière.
 
-## 4. Une lecture manque à l'adapter, et c'est un prérequis de la phase 3
+## 4. Une lecture manquait à l'adapter : lue en S2, branchée en S8
+
+**Où l'on en est.** `CoinbaseReader` sait lire, depuis le lot S2, le statut
+réel d'un ordre donné et ses exécutions — `orderStatus` et `orderFills`,
+`docs/coinbase-lecture.md` §10. **`reconcile.ts` ne s'en sert pas encore** :
+`statusOf` rend toujours `INDETERMINABLE` pour un ordre dénoué. **S2 porte la
+lecture, S8 porte le branchement, et E37 n'est clos qu'après les deux.** Sans
+effet en production d'ici là : la table `orders` reste vide jusqu'à S7.
+
+Ce qui suit est le constat d'origine, qui reste celui du code de ce module.
 
 L'étape 2 du §7 est **calculée mais pas persistée**. La raison n'est pas
 l'écriture manquante ; elle est plus profonde.

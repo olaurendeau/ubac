@@ -1,0 +1,39 @@
+{
+  "_fabrique": "FABRIQUEE, PAS CAPTUREE (decision T2, lot S2). Le portefeuille dedie n'a jamais passe d'ordre : aucune capture n'existe. Forme calquee sur l'echantillon que ccxt 4.5.78 garde dans coinbase.js (orders/historical/batch), grandeurs choisies pour qu'une somme en number se trompe. A remplacer par une capture apres le premier ordre reel.",
+  "orders": [
+    {
+      "order_id": "ab12cd34-0000-4000-8000-0000000000f1",
+      "product_id": "ETH-USDC",
+      "user_id": "00000000-0000-4000-8000-000000000003",
+      "order_configuration": {
+        "limit_limit_gtc": { "base_size": "0.3", "limit_price": "2503.19", "post_only": true }
+      },
+      "side": "BUY",
+      "client_order_id": "3f2a1b",
+      "status": "FILLED",
+      "time_in_force": "GOOD_UNTIL_CANCELLED",
+      "created_time": "2026-09-10T07:00:00.123456Z",
+      "completion_percentage": "100",
+      "filled_size": "0.3",
+      "average_filled_price": "2503.19",
+      "fee": "",
+      "number_of_fills": "2",
+      "filled_value": "750.957",
+      "pending_cancel": false,
+      "size_in_quote": false,
+      "total_fees": "3.003828",
+      "size_inclusive_of_fees": false,
+      "total_value_after_fees": "753.960828",
+      "trigger_status": "INVALID_ORDER_TYPE",
+      "order_type": "LIMIT",
+      "reject_reason": "REJECT_REASON_UNSPECIFIED",
+      "settled": true,
+      "product_type": "SPOT",
+      "reject_message": "",
+      "cancel_message": ""
+    }
+  ],
+  "sequence": "0",
+  "has_next": false,
+  "cursor": ""
+}
