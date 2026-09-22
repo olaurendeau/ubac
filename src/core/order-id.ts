@@ -23,8 +23,25 @@ import type { AllowedAsset, IsoDate, Side } from './types.js';
  * Separation de domaine : le hachage ne porte pas que les quatre composantes,
  * il porte aussi ce a quoi elles servent. Le suffixe de version dit qu'un
  * changement d'encodage est une rupture, pas un detail d'implementation.
+ *
+ * Un domaine par emetteur d'ordres. Le run quotidien et la sortie du §14
+ * decrivent leurs jambes avec les memes quatre composantes : une sortie lancee
+ * le jour d'un reequilibrage vend BTC en `SELL` a la jambe 0, comme le run peut
+ * le faire. Sous un domaine commun, les deux ordres partageraient leur
+ * identifiant, l'exchange avalerait le second au titre du doublon sans aucune
+ * erreur, et le portefeuille resterait a moitie liquide. Le domaine separe les
+ * deux espaces par construction, au lieu de parier sur des numeros de jambe qui
+ * ne se croiseraient pas.
+ *
+ * Celui du run quotidien reste `ubac.order-id.v1` **a l'octet pres** : un
+ * changement d'encodage entre deux deploiements rouvre la porte au doublon, et
+ * les ordres deja passes perdraient leur protection contre le rejeu.
  */
-const DOMAIN = 'ubac.order-id.v1';
+const REBALANCE_DOMAIN = 'ubac.order-id.v1';
+
+const EXIT_DOMAIN = 'ubac.exit-order-id.v1';
+
+type Domain = typeof REBALANCE_DOMAIN | typeof EXIT_DOMAIN;
 
 const PREFIX = 'ubac-';
 
@@ -51,8 +68,8 @@ export interface OrderIdParts {
  * pas contenir de `|`, mais les types sont effaces a l'execution et cette
  * garantie disparait avec eux.
  */
-function canonical(parts: OrderIdParts): string {
-  return [DOMAIN, parts.runDate, parts.asset, parts.side, String(parts.legIndex)]
+function canonical(domain: Domain, parts: OrderIdParts): string {
+  return [domain, parts.runDate, parts.asset, parts.side, String(parts.legIndex)]
     .map((field) => `${String(field.length)}:${field}`)
     .join('');
 }
@@ -63,13 +80,27 @@ function canonical(parts: OrderIdParts): string {
  * differentes. C'est exactement la collision que le reste du module s'emploie a
  * rendre impossible, donc l'entree est refusee au lieu d'etre hachee.
  */
-export function clientOrderId(parts: OrderIdParts): string {
+function derive(domain: Domain, parts: OrderIdParts): string {
   if (!Number.isSafeInteger(parts.legIndex) || parts.legIndex < 0) {
     throw new RangeError(
       `legIndex doit etre un entier positif ou nul, recu ${String(parts.legIndex)}`,
     );
   }
 
-  const digest = createHash('sha256').update(canonical(parts), 'utf8').digest('hex');
+  const digest = createHash('sha256').update(canonical(domain, parts), 'utf8').digest('hex');
   return `${PREFIX}${digest.slice(0, HEX_LENGTH)}`;
+}
+
+/** L'identifiant d'une jambe du run quotidien, et du rejeu qui le reproduit. */
+export function clientOrderId(parts: OrderIdParts): string {
+  return derive(REBALANCE_DOMAIN, parts);
+}
+
+/**
+ * L'identifiant d'une cession de la sortie propre. Memes composantes, meme
+ * forme, domaine propre : la sortie numerote ses jambes a partir de 0 sans
+ * jamais rejoindre un identifiant du run quotidien du meme jour.
+ */
+export function exitClientOrderId(parts: OrderIdParts): string {
+  return derive(EXIT_DOMAIN, parts);
 }

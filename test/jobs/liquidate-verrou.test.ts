@@ -383,7 +383,6 @@ describe('V8, V9 — la surface publique n’a pas de porte', () => {
   it('V8 : les exports sont exactement ceux-ci', () => {
     expect(Object.keys(liquidate).sort()).toEqual([
       'CRON_QUOTIDIEN',
-      'DECALAGE_DE_JAMBE',
       'ETAPES',
       'MARGE_LIMITE_PCT',
       'PHASE_COURANTE',
