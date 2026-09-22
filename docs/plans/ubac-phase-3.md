@@ -312,7 +312,8 @@ frais. La coupure sépare deux routes et deux jeux de fixtures.
 ### S3 — Le plafond réduit
 
 **Dépend de** : **rien**. Parallélisable dès la vague 1. · **Décisions** :
-O1 = 3, O2 = 3, O3 = 3. · **Critères** : E29, E30, E31, E32 (constaté), E33
+O1 = 3, O2 = 3, O3 = 3. · **Critères** : E29, E30, E31, E32 (satisfait par le lot, et non constaté
+comme le cadrage le supposait), E33
 (acté sans objet), E34. · **Audit** : argent + garde-fou → mutation **+** audit
 complet ; **`make coverage` obligatoire**. · **Diff estimé compté** : **~500
 lignes**.
