@@ -144,54 +144,44 @@ describe('les regles ne se declenchent pas a tort', () => {
 });
 
 /**
- * C32, phase 0 : « src/adapters et src/jobs n'existent pas ». La phase 1 fait
- * entrer ces deux repertoires, donc la garantie ne peut plus porter sur
- * l'arborescence. Elle se deplace sur les **appels** : les repertoires existent,
- * et aucun chemin d'execution ne place, n'annule ni ne retire.
+ * B4, phase 3 : la regle de noms d'ecriture d'ordre qui tenait C32 en phase 1
+ * est retiree, et ses deux fixtures et son bloc de test avec elle — un
+ * garde-fou desarme qui reste vert est pire que pas de garde-fou (E9). Ce qui
+ * la remplace n'est pas ici : l'enumeration des routes et du port dans
+ * `test/adapters/coinbase.test.ts` (E10), la reservation de leur appel dans
+ * `test/jobs/purete.test.ts` (E11). `docs/phase-1-frontieres.md` §1.
  *
- * Le controle est un controle de noms, pas une preuve. `docs/phase-1-frontieres.md`
- * dit ce qu'il laisse passer. Le remplacer par un test de presence de fichier
- * aurait donne un garde-fou qui ne garantit rien du tout.
+ * Ce bloc tient les deux moities du retrait : la regle ne mord plus, et
+ * `noInlineConfig`, qui vivait dans le meme bloc de configuration, n'est pas
+ * parti avec elle.
  */
-describe("C32 (phase 1) — adapters/ et jobs/ existent, mais rien n'y passe d'ordre", () => {
-  it.each(['src/adapters/coinbase.ts', 'src/jobs/daily.ts'])(
-    'refuse placement, annulation et retrait dans %s',
+describe('B4 — la regle de noms d’ecriture d’ordre est retiree, noInlineConfig reste', () => {
+  const PLACEMENT = 'export const f = (c: Record<string, () => void>) => c.createOrder!();';
+
+  it.each(['src/adapters/coinbase.ts', 'src/jobs/execute.ts'])(
+    'laisse nommer un placement dans %s',
     async (virtualPath) => {
-      const result = await lintAs('bad-order-write', virtualPath);
-      // Cinq formes distinctes dans la fixture : appel de methode, reference
-      // sans appel, acces calcule par chaine, nom snake_case, retrait.
-      expect(ruleCounts(result)).toEqual({ 'no-restricted-syntax': 5 });
+      expect((await lintCode(PLACEMENT, virtualPath)).messages).toEqual([]);
     },
   );
 
-  // Un garde-fou qu'on eteint depuis le fichier qu'il surveille n'en est pas un.
-  it('ne se laisse pas desarmer par un commentaire eslint-disable', async () => {
-    const result = await lintAs('bad-order-write-disabled', 'src/adapters/coinbase.ts');
-    expect(errorCount(result, 'no-restricted-syntax')).toBeGreaterThan(0);
+  // La regle « personne n'importe jobs/ » ne s'eteint pas depuis l'adapter
+  // qu'elle surveille : la faute reste comptee, la directive est signalee.
+  it('ne laisse pas un eslint-disable desarmer une frontiere de couche dans adapters/', async () => {
+    const code = "// eslint-disable-next-line no-restricted-imports\nimport { runDaily } from '../jobs/daily.js';\nexport const x = runDaily;";
+    const result = await lintCode(code, 'src/adapters/coinbase.ts');
+    expect(errorCount(result, 'no-restricted-imports')).toBe(1);
   });
 
-  it('laisse ecrire un adapter de lecture', async () => {
-    const result = await lintAs('good-adapter-module', 'src/adapters/coinbase.ts');
-    expect(result.messages).toEqual([]);
-  });
-
-  // Le rejeu manipule legitimement des ordres simules : la regle est restreinte
-  // aux deux couches qui touchent l'exterieur, et ce test le verrouille.
-  it('n’applique pas la regle hors adapters/ et jobs/', async () => {
-    const result = await lintAs('bad-order-write', 'src/replay/engine.ts');
-    expect(result.messages).toEqual([]);
-  });
-
-  /*
-   * Les fixtures prouvent que la regle mord ; ce test prouve qu'elle est
-   * branchee sur le code reel. Les deux globs sont vides tant qu'aucun adapter
-   * n'est livre, et deviennent un verrou au premier fichier, sans qu'aucun lot
-   * ulterieur ait a y penser.
-   */
-  it('lint l’arbre reel de adapters/ et jobs/ sans erreur', async () => {
-    const results = await eslint.lintFiles(['src/adapters/**/*.ts', 'src/jobs/**/*.ts']);
-    expect(messageLines(results)).toEqual([]);
-  });
+  it.each(['src/adapters/coinbase.ts', 'src/jobs/execute.ts'])(
+    'signale toute directive inline dans %s comme sans effet',
+    async (virtualPath) => {
+      const result = await lintCode('/* eslint-disable */\nexport const x = 1;', virtualPath);
+      expect(result.messages.map((m) => m.message)).toEqual([
+        expect.stringContaining('noInlineConfig'),
+      ]);
+    },
+  );
 });
 
 describe('frontieres de couche — jobs/ est le point d’entree, personne ne l’importe', () => {

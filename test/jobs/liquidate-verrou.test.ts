@@ -461,12 +461,14 @@ describe('V11 — le fichier livre est dans le perimetre des garde-fous du depot
     /*
      * L'ordre des deux assertions est le point : sans la premiere, « aucun
      * message » ne distinguerait pas un fichier propre d'un fichier non couvert.
+     * Ce qui mord ici n'est plus la regle de noms d'ecriture d'ordre, retiree
+     * par B4 : c'est `noInlineConfig`, nomme dans le message — une directive
+     * inutilisee serait signalee partout, donc ne prouverait rien du perimetre.
      */
-    const [sonde] = await DEPOT.lintText(
-      'declare const c: { cancelOrder(): void };\nexport const f = () => c.cancelOrder();',
-      { filePath: resolve(ROOT, 'src/jobs/sonde.ts') },
-    );
-    expect(sonde?.messages.length ?? 0).toBeGreaterThan(0);
+    const [sonde] = await DEPOT.lintText('/* eslint-disable */\nexport const f = 1;', {
+      filePath: resolve(ROOT, 'src/jobs/sonde.ts'),
+    });
+    expect(sonde?.messages.map((m) => m.message)).toEqual([expect.stringContaining('noInlineConfig')]);
 
     const [livre] = await DEPOT.lintFiles([LIQUIDATE]);
     expect(livre?.messages).toEqual([]);

@@ -6,11 +6,13 @@ import type { Linter } from 'eslint';
 import tseslint from 'typescript-eslint';
 import { describe, expect, it } from 'vitest';
 
+import { EXECUTION_METHODS, WRITE_ROUTES } from '../../src/adapters/coinbase.js';
+
 /**
  * `src/jobs/` vit **hors** de `src/core/`, donc les regles de purete
  * d'`eslint.config.js` ne le couvrent pas : elles sont posees sur le glob
- * `src/core/**` et rien d'autre. Le seul garde-fou que la phase 1 y applique
- * porte sur les noms d'ecriture d'ordre, pas sur l'horloge.
+ * `src/core/**` et rien d'autre. La phase 1 y appliquait un garde-fou de noms
+ * d'ecriture d'ordre, jamais un garde-fou d'horloge ; la phase 3 l'a retire (B4).
  *
  * Ce fichier tient le reste. Le piege est nomme par le plan de la phase 1 :
  * « le job vit hors de core/, donc la regle de purete ne le protege pas. C'est
@@ -35,7 +37,7 @@ import { describe, expect, it } from 'vitest';
  * **variante par variante**, car une affirmation qui annonce six formes et n'en
  * sonde que quatre est fausse d'un tiers.
  *
- * Chaque affirmation porte donc un numero — `A1`…`A22` pour ce qui est tenu,
+ * Chaque affirmation porte donc un numero — `A1`…`A23` pour ce qui est tenu,
  * `L1`…`L10` pour ce qui est declare ouvert — et chaque numero est cite par le
  * test qui le met a l'epreuve. Un numero sans test est un defaut de ce fichier.
  *
@@ -51,24 +53,23 @@ import { describe, expect, it } from 'vitest';
  * - **A1** — aucune regle de purete d'`eslint.config.js` ne couvre `src/jobs/` :
  *   elles sont posees sur `src/core/**`. Sonde : la configuration **reelle** du
  *   depot, sur `Date.now()` et `process.env`, aux deux emplacements.
- * - **A2** — la configuration du depot applique bien **un** garde-fou a
- *   `src/jobs/`, sur les noms d'ecriture d'ordre. Meme sonde. Qu'il soit le
- *   seul n'est pas enumere ici : A1 constate seulement qu'il n'y garde ni
- *   l'horloge ni l'environnement, les deux que ce fichier reprend.
- * - **A3** — les six gardiens de ce fichier lintent le glob
+ * - **A2** — la configuration du depot n'applique **plus** de garde-fou de noms
+ *   d'ecriture d'ordre a `src/jobs/` : la regle est retiree en phase 3 (B4), et
+ *   A23 tient desormais la place, par enumeration. Meme sonde.
+ * - **A3** — les sept gardiens de ce fichier lintent le glob
  *   `src/jobs/**\/*.ts`, et ce glob designe aujourd'hui au moins un fichier.
  *   Sans cette derniere moitie, chaque verdict « aucun fautif » serait vrai par
  *   vacuite : c'est la sonde qui separe « rien a signaler » de « rien de lu ».
- *   Le sixieme lit **en plus** un terrain plus large, dont A22 constate la
+ *   Celui d'A22 lit **en plus** un terrain plus large, dont A22 constate la
  *   non-vacuite partie par partie.
  * - **A4** — un `eslint-disable` ecrit dans le fichier surveille n'eteint aucun
  *   de ces gardiens.
  *
- * ## Ce que les six gardiens attrapent
+ * ## Ce que les sept gardiens attrapent
  *
- * Six gardiens, chacun avec ses propres regles : ce que l'un refuse est refuse.
- * Les cinq premiers lintent le meme glob, `src/jobs/**\/*.ts`. Le sixieme —
- * celui d'A22 — est le seul dont l'affirmation porte hors de ce repertoire : il
+ * Sept gardiens, chacun avec ses propres regles : ce que l'un refuse est refuse.
+ * Tous lintent le meme glob, `src/jobs/**\/*.ts`. Celui d'A22 est le seul dont
+ * l'affirmation porte hors de ce repertoire : il
  * lit tout le TypeScript du depot, parce que « rien n'importe le point
  * d'entree » serait a moitie vide s'il ne regardait que `src/jobs/`.
  *
@@ -132,6 +133,12 @@ import { describe, expect, it } from 'vitest';
  *   n'est pas `src/jobs/` mais tout le TypeScript du depot : un job, un autre
  *   module de `src/`, un test, un fichier de configuration de la racine — aucun
  *   ne l'importe.
+ * - **A23** — E11 de la phase 3 : l'ecriture sur l'exchange n'a qu'un module.
+ *   Les methodes du port d'execution, nommees ou lues par chaine, et le `kind`
+ *   d'une route d'ecriture ecrit a la main tombent partout ; le verdict sur
+ *   l'arbre reel est « exactement `src/jobs/execute.ts` », comme A19 et A20.
+ *   Les noms sont lus dans `EXECUTION_METHODS` et `WRITE_ROUTES`, qu'E10
+ *   enumere : ce fichier ne les recopie pas.
  *
  * A8, A10 et A13 sont ecrits ainsi a la suite de revues : un selecteur qui
  * refusait `import { env } from 'node:process'` laissait passer
@@ -149,7 +156,8 @@ import { describe, expect, it } from 'vitest';
  * - **L1 — l'evaluation** : `eval('process.env.X')`, `new Function('return
  *   process')`. La lecture est dans une chaine ; aucun selecteur d'AST ne la voit.
  * - **L2 — la repartition dynamique sur un objet lui-meme calcule** : `o[k][m]()`,
- *   `Reflect.get(…)`, et de meme `ex['balances']()` ou `const { balances } = ex`.
+ *   `Reflect.get(…)`, et de meme `ex['balances']()` ou `const { balances } = ex`,
+ *   et `port[methode]()` pour l'ecriture d'A23.
  *   Le seul acces calcule ferme ici est celui dont l'objet est nomme (`Date`,
  *   `Math`, `process`), qui est la forme courte, donc la forme probable.
  * - **L3 — l'indirection par un module du depot** : un `src/partage/machin.ts`
@@ -293,8 +301,8 @@ function refusees(codes: Readonly<Record<string, string>>): Sondes {
  * fichier : `eslint.config.js`. Elle est la raison d'etre de tout ce qui suit,
  * et elle etait jusqu'ici la seule a n'avoir aucune sonde. Si la configuration
  * du depot venait un jour couvrir `src/jobs/`, ce fichier ferait double emploi
- * sans que rien ne le dise ; si elle cessait d'y appliquer le garde-fou
- * d'ecriture d'ordre, l'entete mentirait dans l'autre sens.
+ * sans que rien ne le dise ; si la regle de noms retiree par B4 y revenait,
+ * elle rendrait de nouveau inecrivable le module qu'A23 designe.
  *
  * Ce gardien-ci n'est donc pas l'un des cinq : il ne pose aucune regle, il lit
  * celles du depot.
@@ -313,9 +321,9 @@ describe('A1, A2 — le terrain que ce fichier declare', () => {
     expect(await messagesDe(DEPOT, environnement, 'src/core/sonde.ts')).toBe(1);
   });
 
-  it('A2 : le seul garde-fou que le depot applique a jobs/ porte sur les noms d’ecriture d’ordre', async () => {
+  it('A2 : le depot n’applique plus a jobs/ de garde-fou de noms d’ecriture d’ordre (B4)', async () => {
     const ordre = 'export const f = (c: Record<string, () => void>) => c.createOrder();';
-    expect(await messagesDe(DEPOT, ordre, 'src/jobs/sonde.ts')).toBe(1);
+    expect(await messagesDe(DEPOT, ordre, 'src/jobs/sonde.ts')).toBe(0);
   });
 });
 
@@ -1231,9 +1239,73 @@ describe('A22 — le point d’entree du run ne s’importe de nulle part', () =
   });
 });
 
+// --- A23 : l'ecriture sur l'exchange n'a qu'un module ------------------------
+
+/**
+ * E11 de la phase 3, et ce qui tient dans `src/jobs/` la place de la regle de
+ * noms que B4 retire : **l'appel du port d'execution et des routes d'ecriture
+ * est reserve a `src/jobs/execute.ts`**. Meme forme qu'A19 : la regle mord
+ * partout, et c'est le verdict sur l'arbre reel qui dit ou elle a le droit de
+ * parler. `execute.ts` **doit** y figurer — un garde-fou qui ne designe
+ * personne est vide, et c'est pourquoi S4 livre ce module sans appelant.
+ *
+ * La sortie propre (S11) et l'annulation des ordres anciens (S8) passeront
+ * **par** `execute.ts` : la liste reste a un module, et elle ne s'allonge pas.
+ *
+ * Les noms ne sont pas recopies : ils viennent d'`EXECUTION_METHODS` et de
+ * `WRITE_ROUTES`, que `test/adapters/coinbase.test.ts` enumere (E10). Une
+ * methode ajoutee au port est donc gardee ici sans que ce fichier change, et ne
+ * s'ajoute pas sans que l'enumeration rougisse. Le `kind` d'une route est pris
+ * comme chaine : un job qui tiendrait le transport ne contourne pas le port en
+ * ecrivant la route a la main.
+ */
+const EXECUTE = 'src/jobs/execute.ts';
+const METHODES_DU_PORT = `/^(?:${EXECUTION_METHODS.join('|')})$/`;
+const NOMS_D_ECRITURE = `/^(?:${[...EXECUTION_METHODS, ...WRITE_ROUTES].join('|')})$/`;
+
+const ECRITURE_SUR_L_EXCHANGE = gardien({
+  'no-restricted-syntax': [
+    'error',
+    {
+      selector: `Identifier[name=${METHODES_DU_PORT}], Literal[value=${NOMS_D_ECRITURE}]`,
+      message:
+        "l'ecriture sur l'exchange appartient a execute.ts (E11) : ecrite ailleurs, elle sort de l'enumeration.",
+    },
+  ],
+});
+
+const PORT = 'declare const port: Record<string, (x?: unknown) => void>;\n';
+
+const ECRITURES: Sondes = {
+  "l'appel nomme": [`${PORT}export const a = () => port.placeOrder({});`, 1],
+  'la reference sans appel': [`${PORT}export const f = port.cancelOrders;`, 1],
+  "l'acces calcule par chaine": [`${PORT}export const a = () => port['placeOrder']!();`, 1],
+  'la route ecrite a la main': [`${PORT}export const a = () => port.write!({ kind: 'cancel_orders' });`, 1],
+  'une lecture sur le meme objet': [`${PORT}export const a = () => port.orderStatus!('x');`, 0],
+};
+
+describe('A23 — l’ecriture sur l’exchange n’a qu’un module (E11)', () => {
+  it('A23 : la regle mord sur les quatre positions et se tait sur une lecture', async () => {
+    expect(await verdicts(ECRITURE_SUR_L_EXCHANGE, ECRITURES)).toEqual(attendus(ECRITURES));
+  });
+
+  it('A23 : chaque methode du port et chaque route d’ecriture est gardee', async () => {
+    for (const nom of EXECUTION_METHODS) {
+      expect(await messagesDe(ECRITURE_SUR_L_EXCHANGE, `${PORT}export const f = port.${nom};`), nom).toBe(1);
+    }
+    for (const kind of WRITE_ROUTES) {
+      expect(await messagesDe(ECRITURE_SUR_L_EXCHANGE, `export const r = { kind: '${kind}' };`), kind).toBe(1);
+    }
+  });
+
+  it('A23 : execute.ts est le seul fichier de jobs/ ou la regle parle', async () => {
+    expect(fautifs(await ECRITURE_SUR_L_EXCHANGE.lintFiles([JOBS]))).toEqual([EXECUTE]);
+  });
+});
+
 // --- A3, A4 : la portee du glob et l'impossibilite d'eteindre ---------------
 
-/** Les six gardiens, dans l'ordre de l'entete : A3 parle d'eux tous. */
+/** Les sept gardiens, dans l'ordre de l'entete : A3 parle d'eux tous. */
 const LES_GARDIENS = [
   ['horloge', HORLOGE],
   ['modules', MODULES],
@@ -1241,20 +1313,22 @@ const LES_GARDIENS = [
   ['soldes', LECTURE_DES_SOLDES],
   ['adapters', IMPORTS_DE_VALEUR],
   ["point d'entree", IMPORTS_DU_POINT_D_ENTREE],
+  ['ecriture', ECRITURE_SUR_L_EXCHANGE],
 ] as const;
 
 describe('A3, A4 — la portee du glob, et un gardien qu’on n’eteint pas', () => {
   /*
-   * Quatre des six gardiens concluent par « aucun fichier fautif » — horloge,
-   * modules, configuration, point d'entree — et les deux autres par « exactement
-   * ce fichier-la », `reconcile.ts` pour A19 et `daily-main.ts` pour A20. Un
+   * Quatre des sept gardiens concluent par « aucun fichier fautif » — horloge,
+   * modules, configuration, point d'entree — et les trois autres par « exactement
+   * ce fichier-la » : `reconcile.ts` pour A19, `daily-main.ts` pour A20,
+   * `execute.ts` pour A23. Un
    * glob qui ne designerait plus rien — un repertoire renomme, un `**` perdu —
    * rendrait les quatre premiers verts sans avoir rien lu. Cette sonde separe
-   * les deux cas : le glob lit au moins un fichier, les six le lisent de la meme
+   * les deux cas : le glob lit au moins un fichier, les sept le lisent de la meme
    * facon, et il ne lit que `src/jobs/`.
    */
-  it('A3 : les six gardiens lisent le meme glob, non vide, et rien hors de src/jobs/', async () => {
-    expect(LES_GARDIENS).toHaveLength(6);
+  it('A3 : les sept gardiens lisent le meme glob, non vide, et rien hors de src/jobs/', async () => {
+    expect(LES_GARDIENS).toHaveLength(7);
     for (const [nom, eslint] of LES_GARDIENS) {
       const fichiers = lus(await eslint.lintFiles([JOBS]));
       expect(fichiers, nom).toContain(RECONCILE);
@@ -1299,6 +1373,7 @@ describe('A3, A4 — la portee du glob, et un gardien qu’on n’eteint pas', (
         IMPORTS_DU_POINT_D_ENTREE,
         "/* eslint-disable */\nimport './daily-main.js';\nexport const x = 1;",
       ],
+      ['ecriture', ECRITURE_SUR_L_EXCHANGE, `/* eslint-disable */\n${PORT}export const f = port.placeOrder;`],
     ];
     expect(desarmes.map(([nom]) => nom)).toEqual(LES_GARDIENS.map(([nom]) => nom));
     for (const [nom, eslint, code] of desarmes) {
@@ -1325,7 +1400,7 @@ describe('L1 a L7 — les limites declarees sont constatees', () => {
     }
   });
 
-  it('L2 : la repartition sur un objet calcule echappe, y compris pour les soldes', async () => {
+  it('L2 : la repartition sur un objet calcule echappe, y compris pour les soldes et l’ecriture', async () => {
     const calcule = 'declare const o: Record<string, Record<string, () => unknown>>;\ndeclare const k: string;\nexport const a = () => o[k]!.now!();';
     expect(await messagesDe(HORLOGE, calcule)).toBe(0);
     expect(await messagesDe(HORLOGE, "export const a = Reflect.get(Date, 'now');")).toBe(0);
@@ -1340,6 +1415,9 @@ describe('L1 a L7 — les limites declarees sont constatees', () => {
         LECTURE_DES_SOLDES,
         'declare const ex: { balances(): void };\nconst { balances } = ex;\nexport const a = () => balances();',
       ),
+    ).toBe(0);
+    expect(
+      await messagesDe(ECRITURE_SUR_L_EXCHANGE, `${PORT}declare const m: string;\nexport const a = () => port[m]!();`),
     ).toBe(0);
   });
 

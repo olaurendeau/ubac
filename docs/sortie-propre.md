@@ -30,9 +30,10 @@ composition est une décision du coordinateur, pas un ajustement technique.
 
 ## 2. Le garde-fou de phase, franchi sans être affaibli
 
-`eslint.config.js` interdit dans `src/adapters/**` et `src/jobs/**` tout nom qui
-dénote un placement, une annulation ou un retrait. Ce lot décrit précisément ces
-opérations. Le conflit est résolu par la conception, pas par une exception :
+Au lot Q7, `eslint.config.js` interdisait dans `src/adapters/**` et
+`src/jobs/**` tout nom qui dénote un placement, une annulation ou un retrait —
+règle retirée depuis par B4, au lot S4 de la phase 3
+(`docs/phase-1-frontieres.md` §1). Ce lot décrit précisément ces opérations. Le conflit est résolu par la conception, pas par une exception :
 
 **le module ne fait aucun appel.** Il calcule et rend des données. C'est la même
 forme que `src/jobs/reconcile.ts`, qui calcule les transitions d'ordres sans en
@@ -78,8 +79,8 @@ refus est une décision et non une omission.
 V11 existe parce que « les garde-fous s'appliquent au fichier livré » serait
 sinon une affirmation invérifiable : un fichier hors périmètre produit exactement
 le même « aucune erreur » qu'un fichier propre. La sonde constate d'abord que la
-règle d'écriture d'ordre **mord** à cet emplacement, puis qu'elle se tait sur le
-fichier.
+configuration du dépôt **mord** à cet emplacement — la règle d'écriture d'ordre
+jusqu'à B4, `noInlineConfig` depuis —, puis qu'elle se tait sur le fichier.
 
 `SortieVerrouillee` n'est **pas une union** : il n'existe aucun type pour une
 sortie appliquée. Armer la sortie demande d'écrire ce type, le chemin qui y mène

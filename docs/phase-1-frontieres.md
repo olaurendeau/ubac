@@ -6,12 +6,15 @@ phase 1 garantissent, et ce qu'ils ne garantissent pas.
 Le lot Q1b y ajoute la configuration validée : la divergence `MIN_CASH` 22 %
 contre 15 % et la frontière de lecture de l'environnement (sections 3 et 4).
 
+Le lot S4 de la phase 3 réécrit le §1 : la règle de noms est retirée (B4), et
+la section dit ce que le dépôt perd et ce qui la remplace.
+
 Références : `docs/specs/ubac-rebalance.md` §2, §3, §6 et §7 ;
 `docs/plans/ubac-phase-1.md`, lot Q1.
 
 ---
 
-## 1. Le garde-fou C32, converti
+## 1. Le garde-fou C32, converti, puis retiré
 
 ### Ce qu'il était
 
@@ -27,89 +30,103 @@ describe('C32 — aucun adapter ni job en phase 0', () => {
 C'était solide et bon marché tant que la phase 0 durait. Ça tombe à la première
 ligne de la phase 1.
 
-### Ce qu'il est devenu
+### Ce qu'il est devenu en phase 1
 
-Les deux répertoires peuvent exister. La garantie se déplace de l'arborescence
-vers les **appels** : dans `src/adapters/**` et `src/jobs/**`, aucun nom qui
-dénote un placement, une annulation ou un retrait n'est écrit.
+Une règle ESLint `no-restricted-syntax` sur `src/adapters/**` et `src/jobs/**` :
+aucun nom qui dénote un placement, une annulation ou un retrait — onze verbes
+(`create`, `place`, `submit`, `send`, `post`, `edit`, `amend`, `modify`,
+`replace`, `cancel`, `close`) suivis de `Order`/`order(s)`, et tout nom
+contenant `withdraw` ou `transfer` —, quelle que soit sa position syntaxique.
+`linterOptions.noInlineConfig` empêchait de la désarmer depuis le fichier
+surveillé. Elle ne prouvait pas l'absence d'exécution : elle laissait passer la
+répartition dynamique, **un client HTTP générique**, la réflexion, une
+dépendance tierce, et tout ce qui vivait hors de ces deux globs.
 
-Le mécanisme est une règle ESLint `no-restricted-syntax`
-(`eslint.config.js`), vérifiée de deux façons dans `test/structure.test.ts` :
+### Son retrait (B4, lot S4 de la phase 3)
 
-1. des **fixtures** de `test/lint/fixtures/` prouvent que la règle mord, et
-   qu'elle ne mord pas sur un adapter de lecture légitime ;
-2. un lint de **l'arbre réel** (`src/adapters/**/*.ts`, `src/jobs/**/*.ts`)
-   branche la règle sur le code livré. Les deux globs sont vides aujourd'hui et
-   deviennent un verrou au premier fichier, sans qu'aucun lot ultérieur ait à y
-   penser.
+La règle est retirée d'`eslint.config.js`, avec ses deux fixtures
+(`bad-order-write`, `bad-order-write-disabled`) et le bloc « C32 (phase 1) » de
+`test/structure.test.ts`, **le même jour** : un garde-fou désarmé qui reste vert
+est pire que pas de garde-fou (E9). Une règle qui interdit de **nommer** un
+placement ne cohabite pas avec une phase dont l'objet est d'en placer.
 
-C'est un contrôle de lint et non une recherche de chaînes : il travaille sur
-l'arbre syntaxique, distingue un identifiant d'un commentaire, et ne peut pas
-être satisfait en renommant une variable de commentaire.
+**Un constat que le cadrage n'avait pas fait.** Le sélecteur est **ancré** sur
+les onze verbes, et `v3PrivatePostBrokerageOrders` — la méthode ccxt qui place
+réellement un ordre — ne commence par aucun d'eux : **la règle n'aurait pas
+attrapé l'appel réel**. Ce qu'elle interdisait, c'était de nommer honnêtement le
+port, `placeOrder`. Cette section listait déjà « un client HTTP générique » parmi
+ce qu'elle ne garantit pas, sans en tirer la conséquence : **la règle rendait le
+contournement plus lisible que le chemin droit.** C'est l'argument le plus fort
+en faveur de son retrait.
 
-### Ce qu'il attrape
+### Ce que le dépôt perd
 
-Les noms sont pris **quelle que soit leur position syntaxique** — appel,
-déclaration, propriété lue sans être appelée, clé d'objet, spécificateur
-d'import, chaîne de caractères. Un sélecteur posé sur le seul `CallExpression`
-serait contourné par `const f = client.createOrder;` suivi de `f()`.
+La propriété : *aucun module de `src/adapters/**` et `src/jobs/**` ne prononce
+un verbe d'écriture d'ordre, ou il rougit*. Elle attrapait l'erreur qui compte —
+un placement écrit **ailleurs** que dans le module prévu — et rien ne la tient
+plus sous cette forme : un nom d'écriture peut désormais apparaître en silence
+dans n'importe quel fichier de ces deux répertoires.
 
-| Forme | Exemple |
-|---|---|
-| Appel de méthode | `client.createOrder(…)` |
-| Référence sans appel | `const f = client.cancelOrder` |
-| Accès calculé par chaîne | `client['createLimitBuyOrder'](…)` |
-| snake_case natif Coinbase | `client.cancel_all_orders(…)` |
-| Retrait et transfert | `client.withdraw(…)`, `transferFunds(…)` |
-| Import nommé | `import { placeOrder } from …` |
-| Déclaration | `export function submitOrder() {}` |
+Deux conséquences à ne pas laisser deviner :
 
-Le motif couvre les verbes `create`, `place`, `submit`, `send`, `post`, `edit`,
-`amend`, `modify`, `replace`, `cancel`, `close` suivis de `Order`/`order(s)`, en
-camelCase comme en snake_case, ainsi que tout nom contenant `withdraw` ou
-`transfer`.
+- **`noInlineConfig` ne part pas avec la règle.** Le bloc de configuration qui
+  la portait reste, réduit à cette option : le supprimer entier aurait rendu
+  `eslint-disable` de nouveau utilisable dans ces deux répertoires pour toutes
+  les règles, frontière « personne n'importe `jobs/` » comprise.
+  `test/structure.test.ts` le tient sur les deux globs.
+- **Le mot de la permission de sortie redevient écrivable** dans
+  `src/adapters/`. `permissionsFrom` refuse toute permission inattendue qui
+  n'est pas le booléen `false`, sans la nommer : **c'est désormais le seul
+  contrôle sur ce point**, et il laisse passer une réponse où le champ a disparu
+  — S7 doit en exiger la présence.
 
-`// eslint-disable-next-line` ne le désarme pas : `linterOptions.noInlineConfig`
-est posé sur ces deux globs. Un garde-fou qu'on éteint depuis le fichier qu'il
-surveille n'en est pas un — vérifié par une fixture dédiée.
+### Ce qui la remplace : une énumération positive
 
-### Ce qu'il ne garantit PAS
+1. **La surface d'écriture est énumérée (E10).** `WRITE_ROUTES` —
+   `create_order`, `cancel_orders` — et `EXECUTION_METHODS` — `placeOrder`,
+   `cancelOrders` — sont lisibles à l'exécution, et
+   `test/adapters/coinbase.test.ts` les écrit en toutes lettres : ajouter une
+   route ou une méthode fait rougir la suite, et `tsc` rougit si le type et sa
+   liste divergent. Le verbe `write` vit sur `CoinbaseWriteTransport`,
+   distinct du transport du lecteur : le lecteur ne sait toujours rien écrire.
+2. **Un seul module les appelle (E11).** A23 de `test/jobs/purete.test.ts`
+   réserve l'appel des méthodes du port et le `kind` d'une route d'écriture à
+   `src/jobs/execute.ts`, qui **doit** y figurer — un garde-fou qui ne désigne
+   personne est vide. `execute.ts` n'a pas d'appelant à la fin de S4 : le lot
+   livre la capacité, pas l'usage. **La liste reste à un module** : la sortie
+   propre (S11) et l'annulation des ordres anciens (S8, T4) passent *par*
+   `execute.ts`, qui applique des intentions sans rien valider.
+3. **La clé, à chaque run (E6 à E8).** Les permissions effectives sont lues,
+   journalisées et confrontées au portefeuille attendu ; et `can_trade` est
+   une **condition de construction** de l'exécuteur (E7) : sans elle,
+   `openCoinbaseExecution` lève, et il n'existe aucun paramètre `dryRun`,
+   `force` ni `bypass` pour le faire exister autrement.
 
-**Ce n'est pas une preuve d'absence d'exécution.** C'est un contrôle de noms,
-et un contrôle de noms se contourne. En clair, il laisse passer :
+### Ce que cela ne garantit PAS
 
-- **la répartition dynamique** : `client[methode]()` où `methode` vient de la
-  configuration, d'un `switch`, d'une table construite à l'exécution ;
-- **un client HTTP générique** : `http.post('/api/v3/brokerage/orders', …)` ne
-  contient aucun des noms surveillés ;
-- **la réflexion** : `Reflect.get`, `Object.entries(client)`, `eval` ;
-- **une dépendance transitive** : une bibliothèque tierce appelée par un nom
-  neutre et qui place l'ordre elle-même ;
-- **tout ce qui vit hors de `src/adapters/**` et `src/jobs/**`** — la règle est
-  restreinte à ces deux globs, parce que l'appliquer au dépôt entier casserait
-  le rejeu, qui manipule légitimement des ordres simulés.
+**La surface d'écriture est énumérée, pas prouvée.** E10 et E11 disent quelles
+routes existent et qui les appelle ; ils ne disent pas qu'un client HTTP
+générique, une répartition dynamique (`port[methode]()`, constatée par L2 de
+`purete.test.ts`) ou une dépendance tierce ne peut pas en fabriquer une autre.
+C'est la limite du lint retiré, déplacée.
 
-La seule garantie *structurelle* que rien ne part reste celle de la spec §7 :
-une clé API scopée sur un portefeuille dédié, **sans permission de retrait**, et
-en phase 1 sans permission de trade (décision D4, non encore prise à la date de
-ce lot). Le lint réduit la surface d'erreur ; la clé est ce qui rend l'erreur
-impossible.
-
-C'est le même statut que le test de contrat de `risk.ts` : utile, tenu, et
-explicitement pas une démonstration.
+La seule garantie *structurelle* reste celle de la spec §7 : une clé scopée sur
+le portefeuille dédié, **sans permission de retrait**, vérifiée contre une
+valeur attendue. Le contrôle de noms, puis l'énumération, réduisent la surface
+d'erreur ; la clé est ce qui rend le retrait impossible.
 
 ---
 
 ## 2. Frontières de couche
 
-Trois règles, dans `eslint.config.js`, chacune adossée à une fixture de lint qui
-la met en défaut.
+Deux règles, dans `eslint.config.js`, chacune adossée à une fixture de lint qui
+la met en défaut. La troisième, sur les noms d'écriture d'ordre, est retirée
+en phase 3 : voir §1.
 
 | Règle | Portée | Fixture |
 |---|---|---|
 | `core` n'importe ni `adapters/` ni `jobs/` | `src/core/**` | `bad-cross-layer-import` (phase 0, inchangée) |
 | Personne n'importe `jobs/` | `src/**` sauf `core/`, `jobs/`, `replay/`, `fixture/` | `bad-jobs-import` |
-| Aucun nom d'écriture d'ordre | `src/adapters/**`, `src/jobs/**` | `bad-order-write`, `bad-order-write-disabled` |
 
 `jobs/` est le point d'entrée exécutable : le runtime l'appelle, le code ne
 l'importe pas. Un adapter qui importe un job inverse la composition et rend un
