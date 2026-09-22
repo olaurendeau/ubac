@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -131,7 +132,7 @@ describe('point d’entree du run quotidien', { timeout: 30_000 }, () => {
    * Arguments valides, environnement vide : le programme va jusqu'a la
    * configuration et s'arrete la. C'est la sonde qui etablit que la
    * configuration entre par `src/config/env.ts` — le message est celui de
-   * `ConfigError`, avec les dix variables nommees et aucune valeur citee — et
+   * `ConfigError`, avec les onze variables nommees et aucune valeur citee — et
    * qu'aucun adapter n'ouvre quoi que ce soit avant elle : ni base, ni cle, ni
    * reseau.
    */
@@ -144,6 +145,7 @@ describe('point d’entree du run quotidien', { timeout: 30_000 }, () => {
       'DATABASE_URL',
       'COINBASE_API_KEY',
       'COINBASE_API_SECRET',
+      'COINBASE_PORTFOLIO_UUID',
       'BREVO_API_KEY',
       'BREVO_SENDER',
       'BREVO_RECIPIENT',
@@ -155,5 +157,22 @@ describe('point d’entree du run quotidien', { timeout: 30_000 }, () => {
       expect(sortie.stderr, variable).toContain(variable);
     }
     expect(sortie.stdout).toBe('');
+  });
+});
+
+/*
+ * E6 au point de composition. Le lecteur refuse une cle scopee ailleurs que sur
+ * le portefeuille qu'on lui donne (`test/adapters/coinbase.test.ts`) ; encore
+ * faut-il que ce soit celui de la configuration, et non une valeur relue chez
+ * Coinbase, qui rendrait le controle auto-referentiel sans qu'aucun type ne
+ * proteste. Aucun run ne pouvant partir d'ici sans reseau, la sonde lit le
+ * source : elle garde le branchement, pas son effet, et c'est sa limite.
+ */
+describe('composition du lecteur Coinbase', () => {
+  it('lui passe le portefeuille attendu de la configuration, et le journal du run', async () => {
+    const source = await readFile(ENTREE, 'utf8');
+    expect(source).toMatch(
+      /openCoinbase\(transport, \{\s*portfolioUuid: config\.secrets\.coinbasePortfolioUuid,\s*log,\s*\}\)/,
+    );
   });
 });

@@ -182,6 +182,7 @@ const ENV = {
   DATABASE_URL: 'postgres://ubac:mot-de-passe-de-test@localhost:5432/ubac',
   COINBASE_API_KEY: 'cle-de-test',
   COINBASE_API_SECRET: 'secret-de-test',
+  COINBASE_PORTFOLIO_UUID: '00000000-0000-4000-8000-000000000001',
   BREVO_API_KEY: 'brevo-de-test',
   BREVO_SENDER: 'ubac@exemple.test',
   BREVO_RECIPIENT: 'operateur@exemple.test',

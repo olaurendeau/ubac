@@ -131,14 +131,27 @@ async function main(argv: readonly string[]): Promise<number> {
   const { runDate, gitSha, instant } = readArguments(argv);
   const config = loadConfig();
   const clock: RunClock = { today: () => runDate, instant: () => instant };
+  const log = (line: string): void => {
+    process.stdout.write(`${line}\n`);
+  };
 
   /*
    * Un seul transport pour les deux lectures Coinbase : la cle signe les routes
    * privees, les bougies sont publiques, et c'est le meme client HTTP. Le
    * fermer une fois ferme les deux.
+   *
+   * Le lecteur recoit le portefeuille **attendu** et le journal (E6, E8) : la
+   * premiere lecture du run — `keyPermissions`, etape 1 — journalise les
+   * permissions effectives, puis refuse une cle scopee ailleurs. Le controle
+   * n'est pas anticipe ici par un appel avant `runDaily` : il leverait hors de
+   * son `try`, et le refus partirait sans l'alerte qui le signale a
+   * l'operateur. A l'etape 1, rien d'autre n'est encore lu, decide ni ecrit.
    */
   const transport = ccxtTransport(config.secrets);
-  const exchange = openCoinbase(transport);
+  const exchange = openCoinbase(transport, {
+    portfolioUuid: config.secrets.coinbasePortfolioUuid,
+    log,
+  });
   const market = openMarketData(transport);
   const db = openDatabase(config.secrets);
   /*
@@ -162,7 +175,7 @@ async function main(argv: readonly string[]): Promise<number> {
       clock,
       config,
       gitSha,
-      log: (line) => process.stdout.write(`${line}\n`),
+      log,
     });
     return reported(result) ? 0 : 1;
   } finally {

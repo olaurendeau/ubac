@@ -13,7 +13,7 @@ import {
   READ_ROUTES,
   requireUsdcQuote,
 } from '../../src/adapters/coinbase.js';
-import type { CoinbaseRoute, CoinbaseTransport } from '../../src/adapters/coinbase.js';
+import type { CoinbaseReader, CoinbaseRoute, CoinbaseTransport } from '../../src/adapters/coinbase.js';
 
 /**
  * Aucun de ces tests ne touche au reseau. Deux regimes cohabitent :
@@ -46,13 +46,20 @@ const PORTEFEUILLE = '00000000-0000-4000-8000-000000000001';
 const SECRET = Buffer.alloc(64, 7).toString('base64');
 const CLE = PORTEFEUILLE;
 
-/** Journalise les routes demandees : c'est la preuve de ce que le module appelle. */
+/** La reponse reelle de `key_permissions`, que toute lecture verifie d'abord. */
+const PERMISSIONS_REELLES = await reelle('coinbase-key-permissions');
+
+/**
+ * Journalise les routes demandees : c'est la preuve de ce que le module appelle.
+ * `key_permissions` rend la reponse reelle sauf mention contraire : chaque
+ * lecture commence par elle, `openOrders` compris.
+ */
 function transportDe(
   reponses: Partial<Record<CoinbaseRoute['kind'], unknown | readonly unknown[]>>,
 ): { transport: CoinbaseTransport; routes: CoinbaseRoute[] } {
   const routes: CoinbaseRoute[] = [];
   const restes = new Map<string, unknown[]>();
-  for (const [kind, valeur] of Object.entries(reponses)) {
+  for (const [kind, valeur] of Object.entries({ key_permissions: PERMISSIONS_REELLES, ...reponses })) {
     restes.set(kind, Array.isArray(valeur) ? [...valeur] : [valeur]);
   }
   return {
@@ -69,6 +76,19 @@ function transportDe(
       async close(): Promise<void> {},
     },
   };
+}
+
+/** Le lecteur, attendant le portefeuille de la fixture, et le journal qu'il a ecrit. */
+function lecteurDe(
+  transport: CoinbaseTransport,
+  portfolioUuid = PORTEFEUILLE,
+): { lecteur: CoinbaseReader; journal: string[] } {
+  const journal: string[] = [];
+  return { journal, lecteur: openCoinbase(transport, { portfolioUuid, log: (l) => journal.push(l) }) };
+}
+
+function ouvrir(transport: CoinbaseTransport): CoinbaseReader {
+  return lecteurDe(transport).lecteur;
 }
 
 /** Un compte v3 calque sur la reponse reelle, dont on fait varier un champ. */
@@ -152,7 +172,7 @@ describe('surface du module — aucune ecriture, ni exportee ni atteignable', ()
     const { transport } = transportDe({});
     // `close` ferme le transport HTTP ; il ne denote pas une fermeture d'ordre,
     // et la regexp ci-dessus ne le confond pas (`close` seul n'y correspond pas).
-    expect(Object.keys(openCoinbase(transport)).sort()).toEqual([
+    expect(Object.keys(ouvrir(transport)).sort()).toEqual([
       'balances',
       'close',
       'keyPermissions',
@@ -171,7 +191,7 @@ describe('surface du module — aucune ecriture, ni exportee ni atteignable', ()
       accounts: await reelle('coinbase-accounts'),
       open_orders: await reelle('coinbase-orders-open-empty'),
     });
-    const lecteur = openCoinbase(transport);
+    const lecteur = ouvrir(transport);
     await lecteur.keyPermissions();
     await lecteur.balances();
     await lecteur.openOrders();
@@ -183,7 +203,7 @@ describe('surface du module — aucune ecriture, ni exportee ni atteignable', ()
 describe('reponses reelles capturees le 2026-09-11', () => {
   it('lit les permissions effectives de la cle', async () => {
     const { transport } = transportDe({ key_permissions: await reelle('coinbase-key-permissions') });
-    expect(await openCoinbase(transport).keyPermissions()).toEqual({
+    expect(await ouvrir(transport).keyPermissions()).toEqual({
       canView: true,
       canTrade: false,
       portfolioUuid: PORTEFEUILLE,
@@ -195,7 +215,7 @@ describe('reponses reelles capturees le 2026-09-11', () => {
       key_permissions: await reelle('coinbase-key-permissions'),
       accounts: await reelle('coinbase-accounts'),
     });
-    const { portfolioUuid, balances } = await openCoinbase(transport).balances();
+    const { portfolioUuid, balances } = await ouvrir(transport).balances();
     expect(portfolioUuid).toBe(PORTEFEUILLE);
     /*
      * Le portefeuille reel contient un compte EUR, cree par Coinbase avec le
@@ -211,7 +231,7 @@ describe('reponses reelles capturees le 2026-09-11', () => {
 
   it('lit une absence d’ordre ouvert sans la confondre avec une erreur', async () => {
     const { transport } = transportDe({ open_orders: await reelle('coinbase-orders-open-empty') });
-    expect(await openCoinbase(transport).openOrders()).toEqual([]);
+    expect(await ouvrir(transport).openOrders()).toEqual([]);
   });
 });
 
@@ -220,28 +240,201 @@ describe('permissions — la cle ne doit rien pouvoir de plus que lire', () => {
     /*
      * `can_transfer` s'ecrit ici et pas dans `src/adapters/` : `eslint.config.js`
      * y interdit le mot meme en lecture, et `noInlineConfig` empeche de
-     * desarmer la regle. L'adapter refuse donc **toute** permission a vrai qu'il
-     * ne connait pas, sans la nommer ; ce test verifie que ce detour attrape
-     * bien celle qui compte.
+     * desarmer la regle. L'adapter refuse donc **toute** permission qu'il ne
+     * connait pas et qui n'est pas franchement refusee, sans la nommer ; ce test
+     * verifie que ce detour attrape bien celle qui compte.
      */
     const { transport } = transportDe({
       key_permissions: { can_view: true, can_trade: false, can_transfer: true, portfolio_uuid: PORTEFEUILLE },
     });
-    await expect(openCoinbase(transport).keyPermissions()).rejects.toThrow(/can_transfer/);
+    await expect(ouvrir(transport).keyPermissions()).rejects.toThrow(/can_transfer/);
   });
 
   it('refuse une permission que Coinbase ajouterait demain', async () => {
     const { transport } = transportDe({
       key_permissions: { can_view: true, can_trade: false, can_stake: true, portfolio_uuid: PORTEFEUILLE },
     });
-    await expect(openCoinbase(transport).keyPermissions()).rejects.toThrow(/can_stake/);
+    await expect(ouvrir(transport).keyPermissions()).rejects.toThrow(/can_stake/);
+  });
+
+  /*
+   * Le bloquant de la revue de S1 : le filtre s'ecrivait `valeur === true`, et
+   * `can_transfer: "true"` passait. Seul le booleen `false` vaut refus ; toute
+   * autre valeur est lue comme accordee, `"false"` compris — le contrat de
+   * l'API est un booleen, une chaine en sort deja, et rien ne dit alors si elle
+   * se lit par son texte ou, comme en JavaScript, comme une valeur vraie.
+   */
+  it.each([['true'], ['false'], [1], [0], [null], [{ value: false }]])(
+    'refuse la permission de sortie rendue %j, faute d’un refus franc',
+    async (valeur) => {
+      const { transport } = transportDe({
+        key_permissions: { ...PERMISSIONS_REELLES, can_transfer: valeur },
+      });
+      await expect(ouvrir(transport).keyPermissions()).rejects.toThrow(
+        /permission inattendue.*\(can_transfer\)/,
+      );
+    },
+  );
+
+  it.each([
+    ['nommee comme les autres, en chaine', { can_stake: 'true' }, /\(can_stake\)/],
+    ['sous un nom sans prefixe', { withdrawal_enabled: 'yes' }, /\(withdrawal_enabled\)/],
+  ])('refuse une permission inconnue %s', async (_cas, ecart, nom) => {
+    const { transport } = transportDe({ key_permissions: { ...PERMISSIONS_REELLES, ...ecart } });
+    await expect(ouvrir(transport).keyPermissions()).rejects.toThrow(nom);
   });
 
   it('refuse une cle qui ne peut meme pas lire', async () => {
     const { transport } = transportDe({
       key_permissions: { can_view: false, can_trade: false, portfolio_uuid: PORTEFEUILLE },
     });
-    await expect(openCoinbase(transport).keyPermissions()).rejects.toThrow(CoinbaseFrontierError);
+    await expect(ouvrir(transport).keyPermissions()).rejects.toThrow(CoinbaseFrontierError);
+  });
+
+  it.each([['true'], [1], [null]])('refuse une lecture rendue %j, pas le booleen true', async (valeur) => {
+    const { transport } = transportDe({ key_permissions: { ...PERMISSIONS_REELLES, can_view: valeur } });
+    await expect(ouvrir(transport).keyPermissions()).rejects.toThrow(/can_view vaut/);
+  });
+
+  /*
+   * Le trade est admis dans les deux sens, mais `canTrade` ne se devine pas :
+   * une valeur qui n'est ni `true` ni `false` arrete la lecture plutot que de
+   * se lire « refuse », le meme trou que la permission de sortie, a l'envers.
+   */
+  it.each([['true'], ['false'], [1], [null], [undefined]])(
+    'refuse un trade rendu %j, ni vrai ni faux',
+    async (valeur) => {
+      const { transport } = transportDe({ key_permissions: { ...PERMISSIONS_REELLES, can_trade: valeur } });
+      await expect(ouvrir(transport).keyPermissions()).rejects.toThrow(/can_trade vaut/);
+    },
+  );
+});
+
+/** Le portefeuille de la fixture, faux d'un seul caractere : le dernier. */
+const VOISIN = '00000000-0000-4000-8000-000000000002';
+
+/** Un autre portefeuille du meme compte : *Primary*, selectionne par defaut dans le CDP Portal. */
+const PRIMARY = '00000000-0000-4000-8000-0000000000aa';
+
+describe('E6 — la cle est celle du portefeuille que l’operateur attend', () => {
+  it('refuse une cle scopee sur un portefeuille faux d’un seul caractere', async () => {
+    const { transport } = transportDe({});
+    await expect(lecteurDe(transport, VOISIN).lecteur.keyPermissions()).rejects.toThrow(
+      /COINBASE_PORTFOLIO_UUID/,
+    );
+  });
+
+  /*
+   * Le cas pour lequel E6 existe. Une cle creee sur *Primary* rend une reponse
+   * **coherente avec elle-meme** : ses comptes sont rattaches au portefeuille
+   * qu'elle declare, et le controle de `balanceFrom` n'a rien a redire. Si la
+   * valeur attendue etait lue dans la reponse plutot que dans la configuration,
+   * c'est ce test qui passerait au vert — et celui-la seul le dirait.
+   */
+  it('arrete une cle coherente avec elle-meme, mais scopee sur un autre portefeuille', async () => {
+    const { transport, routes } = transportDe({
+      key_permissions: { ...PERMISSIONS_REELLES, portfolio_uuid: PRIMARY },
+      accounts: comptes(compte({ retail_portfolio_id: PRIMARY })),
+    });
+    await expect(ouvrir(transport).balances()).rejects.toThrow(
+      `la cle est scopee sur le portefeuille ${PRIMARY}, alors que COINBASE_PORTFOLIO_UUID attend ${PORTEFEUILLE}`,
+    );
+    expect(routes.map((route) => route.kind)).toEqual(['key_permissions']);
+  });
+
+  /*
+   * Piege (5) du plan : `keyPermissions` est memoisee, donc un controle pose
+   * dans une seule methode dependrait de l'ordre d'appel. Chaque lecture
+   * commence par la verification, et un refus reste un refus.
+   */
+  it.each(['keyPermissions', 'balances', 'openOrders'] as const)(
+    'ne lit rien d’autre quand %s est appelee la premiere, et refuse les suivantes',
+    async (premiere) => {
+      const { transport, routes } = transportDe({ accounts: comptes(compte()), open_orders: ordres() });
+      const { lecteur } = lecteurDe(transport, VOISIN);
+      await expect(lecteur[premiere]()).rejects.toThrow(/COINBASE_PORTFOLIO_UUID/);
+      await expect(lecteur.keyPermissions()).rejects.toThrow(/COINBASE_PORTFOLIO_UUID/);
+      await expect(lecteur.balances()).rejects.toThrow(/COINBASE_PORTFOLIO_UUID/);
+      await expect(lecteur.openOrders()).rejects.toThrow(/COINBASE_PORTFOLIO_UUID/);
+      expect(routes.map((route) => route.kind)).toEqual(['key_permissions']);
+    },
+  );
+
+  /*
+   * **Fabriquee, pas capturee** : la cle de phase 3 n'existe pas encore (E4).
+   * C'est la reponse reelle de la cle de phase 1, `can_trade` bascule. La
+   * moitie acquise d'E7 : le trade est admis, et lui seul en plus de la
+   * lecture — le refus du reste est le bloc precedent, inchange.
+   */
+  it('admet la cle de phase 3, lecture et trade, sur le bon portefeuille', async () => {
+    const { transport } = transportDe({ key_permissions: { ...PERMISSIONS_REELLES, can_trade: true } });
+    expect(await ouvrir(transport).keyPermissions()).toEqual({
+      canView: true,
+      canTrade: true,
+      portfolioUuid: PORTEFEUILLE,
+    });
+  });
+});
+
+describe('E8 — les permissions effectives et le portefeuille, au journal de chaque run', () => {
+  it('ecrit une ligne et une seule, quel que soit l’ordre des lectures', async () => {
+    const { transport } = transportDe({
+      accounts: await reelle('coinbase-accounts'),
+      open_orders: await reelle('coinbase-orders-open-empty'),
+    });
+    const { lecteur, journal } = lecteurDe(transport);
+    await lecteur.openOrders();
+    await lecteur.balances();
+    await lecteur.keyPermissions();
+    expect(journal).toEqual([
+      `cle coinbase — portefeuille=${PORTEFEUILLE} attendu=oui can_view=true can_trade=false can_transfer=false`,
+    ]);
+  });
+
+  it.each([
+    ['sur un autre portefeuille', { portfolio_uuid: PRIMARY }, `portefeuille=${PRIMARY} attendu=NON`],
+    ['avec la permission de sortie', { can_transfer: true }, 'can_transfer=true'],
+  ])('journalise la cle telle qu’elle est, avant de la refuser %s', async (_cas, ecart, attendu) => {
+    const { transport } = transportDe({ key_permissions: { ...PERMISSIONS_REELLES, ...ecart } });
+    const { lecteur, journal } = lecteurDe(transport);
+    await expect(lecteur.keyPermissions()).rejects.toThrow(CoinbaseFrontierError);
+    expect(journal).toHaveLength(1);
+    expect(journal[0]).toContain(attendu);
+  });
+
+  /*
+   * Par le **vrai** transport, signature comprise, la couche HTTP de ccxt
+   * interceptee : c'est la chaine entiere qui ne laisse rien passer, pas le
+   * seul lecteur, qui n'a jamais la cle en main. Le jeton signe compte parmi
+   * les secrets : il vaut la cle pendant sa duree de vie.
+   */
+  it('ne laisse passer ni la cle, ni son secret, ni le jeton signe', async () => {
+    const CLE_API = '11111111-2222-4333-8444-555555555555';
+    const prototype = ccxt.coinbase.prototype as unknown as Record<string, unknown>;
+    const original = prototype['fetch'];
+    const jetons: string[] = [];
+    prototype['fetch'] = (_url: string, _methode: string, entetes?: Record<string, string>) => {
+      jetons.push((entetes?.['Authorization'] ?? '').replace('Bearer ', ''));
+      return Promise.resolve({ ...PERMISSIONS_REELLES });
+    };
+    const vus: string[] = [];
+    try {
+      for (const attendu of [PORTEFEUILLE, PRIMARY]) {
+        const transport = ccxtTransport({ coinbaseApiKey: CLE_API, coinbaseApiSecret: SECRET });
+        const lecteur = openCoinbase(transport, { portfolioUuid: attendu, log: (l) => vus.push(l) });
+        await lecteur.keyPermissions().catch((e: unknown) => vus.push((e as Error).message));
+        await transport.close();
+      }
+    } finally {
+      prototype['fetch'] = original;
+    }
+    // Deux lignes de journal et un refus ; deux jetons signes, donc bien deux appels reels.
+    expect(vus).toHaveLength(3);
+    expect(jetons).toHaveLength(2);
+    for (const secret of [CLE_API, SECRET, ...jetons]) {
+      expect(secret.length).toBeGreaterThan(30);
+      expect(vus.join('\n')).not.toContain(secret);
+    }
   });
 });
 
@@ -258,7 +451,7 @@ describe('portee du portefeuille — une reduction de surface, pas une barriere'
       key_permissions: await reelle('coinbase-key-permissions'),
       accounts: comptes(compte(), compte({ retail_portfolio_id: '00000000-0000-4000-8000-0000000000aa' })),
     });
-    await expect(openCoinbase(transport).balances()).rejects.toThrow(/sort du portefeuille dedie/);
+    await expect(ouvrir(transport).balances()).rejects.toThrow(/sort du portefeuille dedie/);
   });
 
   it('additionne disponible et bloque sans passer par un flottant', async () => {
@@ -266,7 +459,7 @@ describe('portee du portefeuille — une reduction de surface, pas une barriere'
       key_permissions: await reelle('coinbase-key-permissions'),
       accounts: comptes(compte({ available_balance: { value: '0.1', currency: 'BTC' }, hold: { value: '0.2', currency: 'BTC' } })),
     });
-    const { balances } = await openCoinbase(transport).balances();
+    const { balances } = await ouvrir(transport).balances();
     // 0.1 + 0.2 vaut 0.30000000000000004 en IEEE-754, et 0.3 ici.
     expect(balances[0]?.total.toString()).toBe('0.3');
   });
@@ -276,7 +469,7 @@ describe('portee du portefeuille — une reduction de surface, pas une barriere'
       key_permissions: await reelle('coinbase-key-permissions'),
       accounts: comptes(compte({ available_balance: { value: 0.03313174, currency: 'BTC' } })),
     });
-    await expect(openCoinbase(transport).balances()).rejects.toThrow(/a perdu sa precision/);
+    await expect(ouvrir(transport).balances()).rejects.toThrow(/a perdu sa precision/);
   });
 
   it('suit la pagination jusqu’au bout', async () => {
@@ -287,7 +480,7 @@ describe('portee du portefeuille — une reduction de surface, pas une barriere'
         { accounts: [compte({ currency: 'ETH' })], has_next: false, cursor: '', size: 1 },
       ],
     });
-    const { balances } = await openCoinbase(transport).balances();
+    const { balances } = await ouvrir(transport).balances();
     expect(balances.map((b) => b.currency)).toEqual(['BTC', 'ETH']);
     expect(routes.filter((r) => r.kind === 'accounts').map((r) => r.cursor)).toEqual([
       undefined,
@@ -311,14 +504,14 @@ describe('paires — USDC et rien d’autre (spec §11)', () => {
 
   it('refuse un ordre ouvert sur une paire en EUR au lieu de le filtrer', async () => {
     const { transport } = transportDe({ open_orders: ordres(ordre({ product_id: 'ETH-EUR' })) });
-    await expect(openCoinbase(transport).openOrders()).rejects.toThrow(/ETH-EUR refusee/);
+    await expect(ouvrir(transport).openOrders()).rejects.toThrow(/ETH-EUR refusee/);
   });
 });
 
 describe('ordres ouverts', () => {
   it('lit un ordre limit avec ses grandeurs en Decimal', async () => {
     const { transport } = transportDe({ open_orders: ordres(ordre()) });
-    const [lu] = await openCoinbase(transport).openOrders();
+    const [lu] = await ouvrir(transport).openOrders();
     expect(lu).toMatchObject({
       exchangeId: 'ab12cd34-0000-4000-8000-0000000000ff',
       clientOrderId: '3f2a1b',
@@ -341,7 +534,7 @@ describe('ordres ouverts', () => {
         }),
       ),
     });
-    const [lu] = await openCoinbase(transport).openOrders();
+    const [lu] = await ouvrir(transport).openOrders();
     expect(lu?.quantity.toString()).toBe('1.5');
   });
 
@@ -349,12 +542,12 @@ describe('ordres ouverts', () => {
     const { transport } = transportDe({
       open_orders: ordres(ordre({ order_configuration: { market_market_ioc: { quote_size: '6.36' } } })),
     });
-    await expect(openCoinbase(transport).openOrders()).rejects.toThrow(/aucune configuration limite/);
+    await expect(ouvrir(transport).openOrders()).rejects.toThrow(/aucune configuration limite/);
   });
 
   it('refuse un sens inconnu', async () => {
     const { transport } = transportDe({ open_orders: ordres(ordre({ side: 'LONG' })) });
-    await expect(openCoinbase(transport).openOrders()).rejects.toThrow(/BUY ou SELL/);
+    await expect(ouvrir(transport).openOrders()).rejects.toThrow(/BUY ou SELL/);
   });
 });
 
@@ -411,29 +604,29 @@ describe('formes de reponse inattendues', () => {
     ['nulle', null],
   ])('refuse une enveloppe qui est %s', async (_nom, enveloppe) => {
     const { transport } = transportDe({ open_orders: enveloppe });
-    await expect(openCoinbase(transport).openOrders()).rejects.toThrow(/objet attendu/);
+    await expect(ouvrir(transport).openOrders()).rejects.toThrow(/objet attendu/);
   });
 
   it('refuse un champ de liste qui n’en est pas une', async () => {
     const { transport } = transportDe({ open_orders: { orders: 'aucun', has_next: false } });
-    await expect(openCoinbase(transport).openOrders()).rejects.toThrow(/liste attendue/);
+    await expect(ouvrir(transport).openOrders()).rejects.toThrow(/liste attendue/);
   });
 
   it.each([undefined, '', 7])('refuse un identifiant de produit %p', async (valeur) => {
     const { transport } = transportDe({ open_orders: ordres(ordre({ product_id: valeur })) });
-    await expect(openCoinbase(transport).openOrders()).rejects.toThrow(/chaine non vide attendue/);
+    await expect(ouvrir(transport).openOrders()).rejects.toThrow(/chaine non vide attendue/);
   });
 
   it('refuse un horodatage de creation illisible', async () => {
     const { transport } = transportDe({ open_orders: ordres(ordre({ created_time: 'hier' })) });
-    await expect(openCoinbase(transport).openOrders()).rejects.toThrow(/horodatage illisible/);
+    await expect(ouvrir(transport).openOrders()).rejects.toThrow(/horodatage illisible/);
   });
 
   it('ignore une configuration nulle sans planter', async () => {
     const { transport } = transportDe({
       open_orders: ordres(ordre({ order_configuration: { twap_limit_gtd: null } })),
     });
-    await expect(openCoinbase(transport).openOrders()).rejects.toThrow(/aucune configuration limite/);
+    await expect(ouvrir(transport).openOrders()).rejects.toThrow(/aucune configuration limite/);
   });
 
   it.each(['NaN', 'Infinity', '1e-8', '0x10', '', '1,5'])(
@@ -443,15 +636,15 @@ describe('formes de reponse inattendues', () => {
         key_permissions: await reelle('coinbase-key-permissions'),
         accounts: comptes(compte({ available_balance: { value: valeur, currency: 'BTC' } })),
       });
-      await expect(openCoinbase(transport).balances()).rejects.toThrow(/decimale litterale attendue/);
+      await expect(ouvrir(transport).balances()).rejects.toThrow(/decimale litterale attendue/);
     },
   );
 
   it('arrete une pagination dont le curseur ne progresse pas', async () => {
     const boucle = { orders: [], has_next: true, cursor: 'toujours-la' };
     const { transport, routes } = transportDe({ open_orders: boucle });
-    await expect(openCoinbase(transport).openOrders()).rejects.toThrow(/ne progresse probablement pas/);
-    expect(routes).toHaveLength(20);
+    await expect(ouvrir(transport).openOrders()).rejects.toThrow(/ne progresse probablement pas/);
+    expect(routes.filter((route) => route.kind === 'open_orders')).toHaveLength(20);
   });
 });
 

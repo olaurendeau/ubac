@@ -91,14 +91,16 @@ sortie, parce que son absence est déjà ce qui fait sonner la surveillance.
 
 ## 2. La configuration entre par `src/config/env.ts`, et par lui seul
 
-Dix variables sont requises et sans défaut : les six du §10 — `DATABASE_URL`,
+Onze variables sont requises et sans défaut : les six du §10 — `DATABASE_URL`,
 `COINBASE_API_KEY`, `COINBASE_API_SECRET`, `BREVO_API_KEY`, `NTFY_TOKEN`,
 `HEALTHCHECK_URL` — plus `NTFY_URL` et `NTFY_TOPIC`, sans lesquelles un ntfy
 auto-hébergé n'est joignable nulle part, et `BREVO_SENDER` et `BREVO_RECIPIENT`,
 qu'une clé d'API ne remplace pas : elle n'indique ni de qui part le courrier ni à
 qui il va. Les deux écarts avec le §10 sont assumés et motivés dans
 [alertes.md](alertes.md) section 1 et
-[rapport-quotidien.md](rapport-quotidien.md) section 8.
+[rapport-quotidien.md](rapport-quotidien.md) section 8. La onzième,
+`COINBASE_PORTFOLIO_UUID`, est le portefeuille que la clé doit servir (E6 de la
+phase 3, [cle-coinbase.md](cle-coinbase.md)).
 
 Une absente arrête le démarrage, et le message **nomme la variable sans jamais
 citer sa valeur** — `DATABASE_URL` porte un mot de passe, et un message d'erreur

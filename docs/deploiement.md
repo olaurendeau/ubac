@@ -23,18 +23,20 @@ et une application IAM dédiée dont la policy se limite à
 **Ailleurs** : un projet Neon en **AWS eu-central-1**, chaîne *pooled* ; un check
 updown.io ; un topic ntfy.
 
-### Les dix variables secrètes du job
+### Les onze variables secrètes du job
 
 `src/config/env.ts` fait foi, pas le §10 : la spec en fige six, le dépôt en
-requiert **dix**, et les quatre écarts sont motivés dans
+requiert **onze**. Quatre écarts sont motivés dans
 [alertes.md](alertes.md) section 1 et
-[rapport-quotidien.md](rapport-quotidien.md) section 8.
+[rapport-quotidien.md](rapport-quotidien.md) section 8 ; la onzième,
+`COINBASE_PORTFOLIO_UUID`, est exigée par E6 de la phase 3.
 
 | Variable | Forme exigée au démarrage |
 |---|---|
 | `DATABASE_URL` | URL `postgres://` ou `postgresql://` |
 | `COINBASE_API_KEY` | non vide |
 | `COINBASE_API_SECRET` | non vide |
+| `COINBASE_PORTFOLIO_UUID` | l'UUID du portefeuille dédié, en minuscules, tel que `key_permissions` le rend |
 | `BREVO_API_KEY` | non vide |
 | `BREVO_SENDER` | une adresse, sur le domaine authentifié SPF et DKIM |
 | `BREVO_RECIPIENT` | une adresse, sans nom d'affichage ni virgule |
@@ -44,8 +46,30 @@ requiert **dix**, et les quatre écarts sont motivés dans
 | `HEALTHCHECK_URL` | URL `https://` |
 
 Une manquante arrête le démarrage, et le message **nomme la variable sans jamais
-citer sa valeur**. Elles sortent toutes du même appel : dix variables fautives
-donnent dix lignes, pas dix redémarrages.
+citer sa valeur**. Elles sortent toutes du même appel : onze variables fautives
+donnent onze lignes, pas onze redémarrages.
+
+### `COINBASE_PORTFOLIO_UUID` : à poser **avant** de déployer
+
+**C'est ce qui casse un matin.** L'image qui l'exige refuse de démarrer sans
+elle, et le run du lendemain ne part plus — d'une façon qui ressemble à une panne
+de la clé. Ordre à tenir : poser la variable chez Scaleway, **puis** pousser
+l'image.
+
+La valeur est l'UUID que `GET /api/v3/brokerage/key_permissions` rend pour la
+clé **et** que l'opérateur a reconnu comme celui du portefeuille dédié
+([cle-coinbase.md](cle-coinbase.md), étape 4). Ce n'est pas un secret — il
+n'ouvre rien —, mais il identifie le portefeuille : il vit chez Scaleway et se
+rapporte dans Orca, **jamais dans un fichier versionné**.
+
+Chaque run journalise la clé telle qu'elle est, avant tout le reste :
+
+```
+cle coinbase — portefeuille=<uuid> attendu=oui can_view=true can_trade=false can_transfer=false
+```
+
+Une clé scopée sur un autre portefeuille donne `attendu=NON`, puis le refus à
+l'étape 1 : alerte `JOB_FAILED`, sortie en 1, **rien d'autre lu, rien décidé ni écrit**.
 
 ### `NTFY_TOKEN` : le canal ouvert se déclare
 
@@ -208,7 +232,7 @@ Valeurs du §10, sans marge de manœuvre.
 | Timeout | 5 min | |
 | **Tentatives max** | **0** | un retry après un timeout partiel pourrait doubler une jambe ; `client_order_id` protège, mais on ne dépend pas d'une seule ligne de défense |
 | Cron | `0 7 * * *`, **UTC** | les bougies daily closent à 00:00 UTC : pas de changement d'heure |
-| Variables **secrètes** | les dix de la section 1 | secrètes, pas ordinaires : la console masque alors leur valeur |
+| Variables **secrètes** | les onze de la section 1 | secrètes, pas ordinaires : la console masque alors leur valeur |
 
 **Aucun argument n'est à ajouter à la commande du job** : le point d'entrée de
 l'image fabrique `--run-date`, `--at` et `--git-sha` lui-même, ce dernier depuis
