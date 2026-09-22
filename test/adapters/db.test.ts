@@ -143,6 +143,36 @@ describe.skipIf(URL_DE_TEST === undefined)('adapter de base, contre un Postgres 
   });
 
   /**
+   * E32, relu dans la colonne elle-meme : `risk_verdict` ne porte que le code,
+   * et avant ce lot `reason` ne portait que le motif de l'intention. Le texte
+   * quantifie du refus n'existait que dans l'alerte, qui ne se relit pas.
+   */
+  describe('le motif d’un refus dans decisions.reason (E32)', () => {
+    it('garde le motif de l’intention et y ajoute le refus quantifie', async () => {
+      const refus =
+        'somme des |jambes| 9000 USDC soit 9.0000 % de 100000, au-dela de 8 %';
+      await db.recordDecision({
+        intent: intention(),
+        isShadow: false,
+        verdict: {
+          status: 'REJECTED',
+          rejections: [{ code: 'REBALANCE_TOO_LARGE', reason: refus }],
+        },
+        gitSha: 'abc1234',
+        createdAt: CREE_LE,
+      });
+
+      const ligne = await brut.query('SELECT reason, risk_verdict FROM decisions');
+      expect(ligne.rows).toEqual([
+        {
+          reason: `cash a 23.4 %, sous le bord bas 24 %\nrefus REBALANCE_TOO_LARGE : ${refus}`,
+          risk_verdict: 'REJECTED:REBALANCE_TOO_LARGE',
+        },
+      ]);
+    });
+  });
+
+  /**
    * Le coeur du lot : ce qui entre en `Decimal` ressort en `Decimal`, a l'unite
    * de la huitieme decimale. Les valeurs choisies ne sont pas representables en
    * double — `12345678901.12345678` vaut `12345678901.123457` en IEEE-754 — donc

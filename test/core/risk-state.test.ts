@@ -42,6 +42,15 @@ function holdingsAt(usdcShare: string): Holdings {
   };
 }
 const BASE_HOLDINGS = holdingsAt('0.3');
+/** Valeur totale de BASE_HOLDINGS : les montants du plafond s'en deduisent. */
+const TOTAL = new Decimal(100_000);
+/** Deux jambes a ce montant pesent exactement le plafond, quelle que soit sa valeur. */
+const DEMI_PLAFOND = TOTAL.times(REBALANCE_TOO_LARGE_PCT).div(2);
+/**
+ * Cash a 23,2 % en quantites exactes : MIN_CASH se franchit par une jambe de
+ * 2 % environ, sous le plafond, qui ne doit pas masquer la regle testee.
+ */
+const PRES_DU_MIN_CASH: Holdings = { BTC: qty('0.73'), ETH: qty('11'), USDC: qty('23200') };
 function context(overrides: Partial<RiskContext> = {}): RiskContext {
   return {
     makeClientOrderId: ({ runDate, asset, side, legIndex }) =>
@@ -102,7 +111,8 @@ describe('MIN_CASH (C16, C17)', () => {
   });
   it('rejette un etat projete a 21 % (C16)', () => {
     expect(MIN_CASH_PCT.toString()).toBe('0.22');
-    expect(codes(intent([leg({ amount: usdc('9000') })]))).toEqual(['MIN_CASH']);
+    const ctx = context({ holdings: PRES_DU_MIN_CASH });
+    expect(codes(intent([leg({ amount: usdc('2200') })]), ctx)).toEqual(['MIN_CASH']);
   });
   it('laisse passer un retour a 24 % en band_edge (C17)', () => {
     const ctx = context({ holdings: holdingsAt('0.2') });
@@ -110,7 +120,8 @@ describe('MIN_CASH (C16, C17)', () => {
     expect(verdict.orders).toHaveLength(1);
   });
   it('accepte un cash projete exactement a 22 %', () => {
-    expect(validate(intent([leg({ amount: usdc('8000') })]), context()).status).toBe('ACCEPTED');
+    const ctx = context({ holdings: PRES_DU_MIN_CASH });
+    expect(validate(intent([leg({ amount: usdc('1200') })]), ctx).status).toBe('ACCEPTED');
   });
   it('projette une vente ETH (branche miroir de BTC)', () => {
     expect(
@@ -120,75 +131,97 @@ describe('MIN_CASH (C16, C17)', () => {
 });
 
 describe('MAX_EXPOSURE', () => {
-  /** 45 / 15 / 40 : assez de cash pour monter BTC sans mordre MIN_CASH. */
+  /**
+   * 48 / 12 / 40 : assez de cash pour monter BTC sans mordre MIN_CASH, et BTC
+   * assez pres du plafond d'exposition pour le franchir sous REBALANCE_TOO_LARGE.
+   */
   const highBtc: Holdings = {
-    BTC: qty(new Decimal('45000').div('60000').toString()),
-    ETH: qty(new Decimal('15000').div('3000').toString()),
+    BTC: qty(new Decimal('48000').div('60000').toString()),
+    ETH: qty(new Decimal('12000').div('3000').toString()),
     USDC: qty('40000'),
   };
   it('rejette une exposition projetee BTC au-dela de 50 %', () => {
     expect(MAX_EXPOSURE_PCT.toString()).toBe('0.5');
-    const verdict = rejections(intent([leg({ amount: usdc('10000') })]), context({ holdings: highBtc }));
+    const verdict = rejections(intent([leg({ amount: usdc('3000') })]), context({ holdings: highBtc }));
     expect(verdict).toEqual([expect.objectContaining({ code: 'MAX_EXPOSURE' })]);
     expect(verdict[0]?.reason).toContain('BTC');
   });
   it('accepte une exposition projetee exactement a 50 %', () => {
     expect(
-      validate(intent([leg({ amount: usdc('5000') })]), context({ holdings: highBtc })).status,
+      validate(intent([leg({ amount: usdc('2000') })]), context({ holdings: highBtc })).status,
     ).toBe('ACCEPTED');
   });
 });
 
+/** Deux jambes qui se compensent en cash : seule l'ampleur du run peut mordre. */
+function arbitrage(each: Decimal): readonly IntentLeg[] {
+  return [
+    leg({ asset: 'BTC', side: 'SELL', amount: each as UsdcAmount }),
+    leg({ asset: 'ETH', side: 'BUY', amount: each as UsdcAmount }),
+  ];
+}
+
+/*
+ * Exprimes relativement au plafond, pas en montants recopies : ces cas eprouvent
+ * la regle a toute valeur de REBALANCE_TOO_LARGE_PCT, et restent le cas qu'ils
+ * testaient quand la phase 3 l'abaisse ou quand sa levee le remonte.
+ */
 describe('REBALANCE_TOO_LARGE (C20)', () => {
-  it('rejette quand la somme des jambes depasse 25 % de la valeur totale', () => {
-    expect(REBALANCE_TOO_LARGE_PCT.toString()).toBe('0.25');
-    expect(
-      codes(
-        intent([
-          leg({ asset: 'BTC', side: 'SELL', amount: usdc('13000') }),
-          leg({ asset: 'ETH', side: 'BUY', amount: usdc('13000') }),
-        ]),
-      ),
-    ).toEqual(['REBALANCE_TOO_LARGE']);
+  it('rejette quand la somme des jambes depasse le plafond de la valeur totale', () => {
+    expect(codes(intent(arbitrage(DEMI_PLAFOND.add(500))))).toEqual(['REBALANCE_TOO_LARGE']);
   });
-  it('accepte une somme exactement a 25 %', () => {
-    expect(
-      validate(
-        intent([
-          leg({ asset: 'BTC', side: 'SELL', amount: usdc('12500') }),
-          leg({ asset: 'ETH', side: 'BUY', amount: usdc('12500') }),
-        ]),
-        context(),
-      ).status,
-    ).toBe('ACCEPTED');
+  it('accepte une somme exactement au plafond', () => {
+    expect(validate(intent(arbitrage(DEMI_PLAFOND)), context()).status).toBe('ACCEPTED');
   });
+  /* Au plafond pile, la jambe de 12 USDC le ferait franchir si elle etait comptee. */
   it('ignore les jambes LEG_TOO_SMALL dans la somme', () => {
-    expect(
-      validate(
-        intent([
-          leg({ asset: 'BTC', side: 'SELL', amount: usdc('12450') }),
-          leg({ asset: 'ETH', side: 'BUY', amount: usdc('12450') }),
-          leg({ amount: usdc('12') }),
-        ]),
-        context(),
-      ).status,
-    ).toBe('ACCEPTED');
+    const verdict = accepted(intent([...arbitrage(DEMI_PLAFOND), leg({ amount: usdc('12') })]));
+    expect(verdict.ignored.map((r) => r.code)).toEqual(['LEG_TOO_SMALL']);
   });
   /**
-   * C20 exige la somme des |jambes|. Sans `.abs()`, +13000 et -13000 se
-   * compensent (somme signee 0) et le run passe a tort alors que 26 % > 25 %.
-   * Les deux jambes sont en BUY pour garder un cash projete neutre : seule
-   * l'ampleur notional doit declencher le rejet.
+   * C20 exige la somme des |jambes|. Sans `.abs()`, les deux jambes opposees se
+   * compensent (somme signee 0) et le run passe a tort alors qu'il depasse le
+   * plafond d'un point. Les deux jambes sont en BUY pour garder un cash projete
+   * neutre : seule l'ampleur notional doit declencher le rejet.
    */
-  it('rejette quand la somme des |jambes| depasse 25 % meme si la somme signee reste sous le seuil', () => {
+  it('rejette quand la somme des |jambes| depasse le plafond meme si la somme signee reste sous le seuil', () => {
+    const each = DEMI_PLAFOND.add(500);
     expect(
       codes(
         intent([
-          leg({ asset: 'ETH', side: 'BUY', amount: usdc('13000') }),
-          leg({ asset: 'BTC', side: 'BUY', amount: usdc('-13000') }),
+          leg({ asset: 'ETH', side: 'BUY', amount: each as UsdcAmount }),
+          leg({ asset: 'BTC', side: 'BUY', amount: each.neg() as UsdcAmount }),
         ]),
       ),
     ).toEqual(['REBALANCE_TOO_LARGE']);
+  });
+});
+
+/*
+ * Le plafond reduit de la phase 3 (B2, O1 = 3) : la valeur elle-meme. Ces
+ * sondes-ci rougissent si la constante remonte ; les cas relatifs ci-dessus,
+ * non. Lever le plafond (O3 = 3, E34) est un commit relu qui les change.
+ */
+describe('plafond reduit de la phase 3 (E29, E30, E32)', () => {
+  it('vaut 8 %, strictement plus contraignant que les 25 % de la phase 0 (E29)', () => {
+    expect(REBALANCE_TOO_LARGE_PCT.toString()).toBe('0.08');
+    expect(REBALANCE_TOO_LARGE_PCT.lt('0.25')).toBe(true);
+  });
+  it('refuse un run a 9 % du portefeuille, que les 25 % laissaient passer', () => {
+    expect(codes(intent(arbitrage(new Decimal('4500'))))).toEqual(['REBALANCE_TOO_LARGE']);
+  });
+  it('laisse passer un run a 7 % du portefeuille', () => {
+    expect(validate(intent(arbitrage(new Decimal('3500'))), context()).status).toBe('ACCEPTED');
+  });
+  it('refuse le run entier, sans raboter ses jambes (O2 = 3)', () => {
+    const verdict = validate(intent(arbitrage(new Decimal('4500'))), context());
+    expect(verdict).toEqual({ status: 'REJECTED', rejections: [expect.anything()] });
+  });
+  it('le motif cite l\'ampleur du run et la valeur du plafond (E32)', () => {
+    const [rejet] = rejections(intent(arbitrage(new Decimal('4500'))));
+    expect(rejet?.reason).toBe(
+      'somme des |jambes| 9000 USDC soit 9.0000 % de 100000, au-dela de 8 %',
+    );
   });
 });
 

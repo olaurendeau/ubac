@@ -165,10 +165,13 @@ précédents, avec l'échéance « avant la phase 3 ».
 presque gratuit.** `REBALANCE_TOO_LARGE` refuse déjà le run entier : c'est une
 `Rejection` du verdict, pas un écrêtage de jambe. La forme retenue en O1 est
 donc **exactement** celle que O2 demande, et le plafond réduit se ramène à une
-constante abaissée dans `core/risk.ts`. Le motif écrit dans `decisions.reason`
-et l'alerte `REBALANCE_TOO_LARGE` qu'E32 exige **existent depuis la phase 0** :
-il n'y a rien à écrire pour eux, seulement à constater qu'ils mordent sur la
-nouvelle valeur. Le plan ne replanifie pas ce qui existe.
+constante abaissée dans `core/risk.ts`. Le cadrage tenait aussi pour acquis,
+depuis la phase 0, le motif écrit dans `decisions.reason` et l'alerte
+`REBALANCE_TOO_LARGE` qu'E32 exige, sans l'avoir vérifié. La revue du lot du
+plafond l'a infirmé pour le motif : `decisions.reason` ne portait que le motif
+de l'intention, le code du rejet vivant seul dans `risk_verdict`. Le lot du
+plafond satisfait E32 en composant le motif de l'intention et celui du rejet ;
+l'alerte, elle, existait bien.
 
 **O2 = 3 rend E33 sans objet**, et c'est la conséquence la plus utile des
 sept : aucun run raboté n'existe, donc `armsCooldown` n'a pas à distinguer un
@@ -449,8 +452,11 @@ PR et dans une tâche Orca.
 
 Les trois décisions se referment l'une sur l'autre : le plafond **est**
 `REBALANCE_TOO_LARGE_PCT` abaissé, il refuse le run entier au lieu de raboter,
-et il se lève par un commit. Le mécanisme de rejet, le motif journalisé et
-l'alerte existent depuis la phase 0 ; ce qui est neuf est la valeur.
+et il se lève par un commit. Le mécanisme de rejet et l'alerte existent depuis
+la phase 0 ; **le motif journalisé, lui, n'existait pas** — le cadrage l'avait
+supposé sans le vérifier, la revue du lot l'a infirmé, et E32 le décrit tel
+qu'il est désormais. Sont donc neufs : la valeur, et le motif lisible écrit
+dans `decisions.reason`.
 
 29. Un plafond réduit est **armé dès le premier run qui exécute**, et il est
     strictement plus contraignant que `REBALANCE_TOO_LARGE_PCT` à 25 %.
@@ -487,10 +493,15 @@ l'alerte existent depuis la phase 0 ; ce qui est neuf est la valeur.
     journalisé dans `decisions` en texte lisible, et une alerte part. **O2 = 3** :
     le comportement est le **refus du run entier**, jamais le rabotage — le
     portefeuille reste hors bande jusqu'à la levée du plafond, et l'alerte part
-    chaque jour où il le reste. Ce critère est **acquis** : le rejet
-    `REBALANCE_TOO_LARGE`, son `reason` écrit dans `decisions.reason` et
-    l'alerte du même nom existent depuis la phase 0 et Q6a2. Le lot du plafond
-    les constate sur la nouvelle valeur, il ne les réécrit pas.
+    chaque jour où il le reste. Le cadrage avait tenu ce critère pour
+    **acquis** depuis la phase 0 et Q6a2, sans le vérifier. La revue du lot du
+    plafond l'a infirmé : le rejet `REBALANCE_TOO_LARGE` et l'alerte du même
+    nom existaient, mais `decisions.reason` ne recevait que le motif de
+    l'intention — le texte du rejet n'atteignait que l'alerte, et
+    `risk_verdict` n'en porte que le code. Le lot du plafond l'a satisfait :
+    la colonne garde le motif de l'intention en tête et y ajoute une ligne par
+    rejet, son code et son motif quantifié. Cela vaut pour toute décision
+    refusée, des quatre stratégies et quel que soit le code.
 33. **Sans objet, clos par O2 = 3.** Ce critère exigeait qu'un run raboté
     n'arme pas le cooldown. Le rabotage ayant été écarté, aucun run
     volontairement incomplet n'existe, `armsCooldown` n'a rien à distinguer, et

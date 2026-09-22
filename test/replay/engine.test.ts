@@ -14,7 +14,12 @@ import { loadReplayInput } from '../../src/replay/report.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
-/** Valeurs figees pour cette fixture ; ce ne sont pas des jugements de performance (C31). */
+/**
+ * Valeurs figees pour cette fixture ; ce ne sont pas des jugements de performance (C31).
+ * `rebalance*` passent par `validate()`, donc par le plafond reduit de la phase 3
+ * (8 %) : une partie de leurs retours a la cible y sont refuses et chaque jour
+ * hors bande recompte un declenchement. Lever le plafond (E34) refige ces deux-la.
+ */
 const ORACLES: Record<
   SeriesName,
   {
@@ -26,18 +31,18 @@ const ORACLES: Record<
   }
 > = {
   rebalance: {
-    finalValue: '23368.544266268632033',
-    twr: '0.4462025103433672621',
-    sharpe90: '2.1818200100164471748',
-    maxDrawdown: '-0.45704704034794534468',
-    triggerCount: 12,
+    finalValue: '21163.004751774530728',
+    twr: '0.2742821886308717625',
+    sharpe90: '1.9973294554458287241',
+    maxDrawdown: '-0.44296931338421931158',
+    triggerCount: 176,
   },
   rebalance_ab: {
-    finalValue: '23430.449591168219447',
-    twr: '0.4499095282038598232',
-    sharpe90: '2.1817515967209726402',
-    maxDrawdown: '-0.45114446897190742638',
-    triggerCount: 14,
+    finalValue: '21308.399366828224302',
+    twr: '0.2863160301302045295',
+    sharpe90: '1.9995101730999044903',
+    maxDrawdown: '-0.44386906385658183351',
+    triggerCount: 247,
   },
   ladder: {
     finalValue: '20984.999026077450747',

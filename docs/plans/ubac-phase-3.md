@@ -28,7 +28,7 @@ Ce que le dépôt porte déjà, et qu'aucun lot ne refait :
 | Plan de sortie complet | `src/jobs/liquidate.ts` | les quatre étapes du §14 en intentions, verrouillées par le type |
 | Table `orders` | `src/adapters/schema.ts` | `client_order_id` en clé primaire, `decision_id`, `filled_qty`, `filled_price`, `fees`, `settled_at` |
 | Alerte `REBALANCE_EXECUTED` | `src/jobs/alerts.ts` | au catalogue en `HIGH` ; **jamais émise** |
-| Rejet `REBALANCE_TOO_LARGE` + alerte | `risk.ts`, `alerts.ts` | motif lisible, écriture dans `decisions.reason`, alerte — **tout le chemin d'E32 existe** |
+| Rejet `REBALANCE_TOO_LARGE` + alerte | `risk.ts`, `alerts.ts` | motif lisible et alerte ; le motif **n'atteint pas** `decisions.reason`, qui ne porte que celui de l'intention, le code du rejet vivant seul dans `risk_verdict` — supposé acquis au cadrage sans vérification, infirmé par la revue de S3, qui compose les deux |
 | Image, job Scaleway, cron, Neon, updown | phase 1, lot Q9 | la production tourne, **déployée à la main** |
 
 Ce que le dépôt **n'a pas** : aucun `.github/`, `test/ci/` ni
@@ -312,7 +312,8 @@ frais. La coupure sépare deux routes et deux jeux de fixtures.
 ### S3 — Le plafond réduit
 
 **Dépend de** : **rien**. Parallélisable dès la vague 1. · **Décisions** :
-O1 = 3, O2 = 3, O3 = 3. · **Critères** : E29, E30, E31, E32 (constaté), E33
+O1 = 3, O2 = 3, O3 = 3. · **Critères** : E29, E30, E31, E32 (satisfait par le lot, et non constaté
+comme le cadrage le supposait), E33
 (acté sans objet), E34. · **Audit** : argent + garde-fou → mutation **+** audit
 complet ; **`make coverage` obligatoire**. · **Diff estimé compté** : **~500
 lignes**.
@@ -347,11 +348,13 @@ refusés — sans neutraliser la phase qu'il est censé protéger.
 
 **C'est le lot le plus court et le plus facile à sous-estimer.** Les trois
 décisions se referment l'une sur l'autre : `REBALANCE_TOO_LARGE` **refuse déjà le
-run entier** — c'est une `Rejection` du verdict, pas un écrêtage de jambe —, son
-motif s'écrit déjà dans `decisions.reason`, et son alerte existe depuis Q6a2.
-**Tout le chemin d'E32 est acquis**, et le lot ne le replanifie pas : il change
-une valeur et constate que le chemin mord dessus. Ce qui coûte, c'est ce que la
-valeur touche ailleurs.
+run entier** — c'est une `Rejection` du verdict, pas un écrêtage de jambe —, et
+son alerte existe depuis Q6a2. Le cadrage tenait aussi son motif pour déjà écrit
+dans `decisions.reason`, et **tout le chemin d'E32 pour acquis**, sans l'avoir
+vérifié. La revue de ce lot l'a infirmé : `decisions.reason` ne portait que le
+motif de l'intention, le code du rejet vivant seul dans `risk_verdict`. Le lot
+satisfait E32 en composant le motif de l'intention et celui du rejet. Ce qui
+coûte, c'est ce que la valeur touche ailleurs.
 
 **Validation** : un run dont les jambes pèsent 9 % du portefeuille est refusé et
 ne l'était pas ; un run à 7 % passe ; le motif cite la nouvelle valeur ; l'alerte
@@ -934,7 +937,7 @@ phase.
 | E27, E28 | **S7** (ou S7b) | E28 part du rapport de #47 et #49, fusionnées |
 | E29, E30 | **S3** | |
 | E31 | **S3** | porte sur l'effet, pas sur les verdicts |
-| E32 | **S3** | **acquis** depuis la phase 0 et Q6a2 : constaté sur la nouvelle valeur |
+| E32 | **S3** | supposé acquis au cadrage sans vérification, infirmé par la revue de S3 (`decisions.reason` sans le motif du rejet) : **satisfait par S3**, qui compose le motif de l'intention et celui du rejet |
 | E33 | **sans objet** | clos par O2 = 3 ; numéro conservé |
 | E34 | **S3**, et le commit de levée — **hors plan** | O3 = 3 |
 | E35, E36 | **S8** | T4 |

@@ -744,6 +744,12 @@ describe('§8 etape 5 — une decision par strategie, trigger NONE compris', () 
     }
   });
 
+  /*
+   * Le plafond reduit de la phase 3, constate sur le run (E32) : le retour a la
+   * cible deplace 20 % du portefeuille, au-dela de `REBALANCE_TOO_LARGE_PCT`. Le
+   * run entier est refuse, sans rabotage (O2 = 3), et le refus n'est pas
+   * silencieux : la ligne porte le verdict, l'alerte porte l'ampleur et le plafond.
+   */
   it('persiste aussi un run qui declenche, avec ses jambes et son verdict', async () => {
     const h = harnais({ balances: HORS_BANDE });
     const result = complete(await lance(h));
@@ -757,12 +763,12 @@ describe('§8 etape 5 — une decision par strategie, trigger NONE compris', () 
       'SELL BTC 10000',
       'SELL ETH 10000',
     ]);
-    expect(production?.verdict.status).toBe('ACCEPTED');
-    // La couche risque a produit des ordres ; rien dans ce lot ne les place.
-    if (production?.verdict.status === 'ACCEPTED') {
-      expect(production.verdict.orders).toHaveLength(2);
-    }
+    const refus = { status: 'REJECTED', rejections: [expect.objectContaining({ code: 'REBALANCE_TOO_LARGE' })] };
+    expect(production?.verdict).toEqual(refus);
+    expect(h.table.get(`${RUN_DATE}|rebalance|false`)?.verdict).toEqual(refus);
     expect(h.table.size).toBe(4);
+    const alerte = h.pushes.find((p) => p.payload.title.endsWith('reequilibrage trop gros, rebalance'));
+    expect(alerte?.payload.message).toMatch(/20\.0000 % de 100000, au-dela de \d+(\.\d+)? %/);
   });
 
   it('le ladder journalise NONE : sans ancre persistee, rien ne se franchit', async () => {
@@ -1333,7 +1339,7 @@ describe('§9 — les alertes push', () => {
    * La phase 1 ne place rien : `executed` est toujours vide, donc le run ne peut
    * pas produire `REBALANCE_EXECUTED`. Le chemin existe et `alerts.test.ts`
    * l'eprouve directement ; ici on constate qu'aucun run ne l'atteint, y compris
-   * celui qui declenche un reequilibrage complet et le fait accepter.
+   * celui qui declenche un reequilibrage complet.
    */
   it('ne pousse jamais REBALANCE_EXECUTED, meme sur un reequilibrage declenche', async () => {
     const h = harnais({ balances: HORS_BANDE });
@@ -1388,7 +1394,13 @@ describe('§9 — les alertes push', () => {
     const result = complete(await lance(h));
 
     expect(result.suspension.status).toBe('ACTIVE');
-    expect(evenements(h)).toEqual(['DRAWDOWN']);
+    /*
+     * La production est suspendue ; l'ombre `rebalance_ab` ne l'est pas, declenche
+     * sur le meme portefeuille hors bande et bute sur le plafond (E31) : elle ne
+     * place rien, mais son refus n'est pas silencieux.
+     */
+    expect(evenements(h)).toEqual(['DRAWDOWN', 'REBALANCE_TOO_LARGE']);
+    expect(h.pushes[1]?.payload.title).toContain('rebalance_ab (ombre)');
     // Le meme texte que la ligne de `decisions` : une seule source, un seul chiffre.
     expect(h.pushes[0]?.payload.message).toBe(h.table.get(`${RUN_DATE}|rebalance|false`)?.intent.reason);
   });
@@ -1440,8 +1452,10 @@ describe('§9 — les alertes push', () => {
 
     expect(h.table.size).toBe(4);
     expect(h.photos.has(RUN_DATE)).toBe(true);
+    // Le refus de l'ombre par le plafond (E31) echoue de la meme facon, et le dit aussi.
     expect(result.report.alerts).toEqual([
       { status: 'FAILED', event: 'DRAWDOWN', key: CLE, reason: 'refus du serveur, HTTP 401' },
+      { status: 'FAILED', event: 'REBALANCE_TOO_LARGE', key: CLE, reason: 'refus du serveur, HTTP 401' },
     ]);
     expect(h.lignes.some((l) => l.includes('NON PARTIE') && l.includes('DRAWDOWN'))).toBe(true);
   });
@@ -1513,6 +1527,7 @@ describe('§9 — les alertes push', () => {
     expect(h.table.size).toBe(4);
     expect(result.report.alerts).toEqual([
       { status: 'FAILED', event: 'DRAWDOWN', key: CLE, reason: 'transport en echec' },
+      { status: 'FAILED', event: 'REBALANCE_TOO_LARGE', key: CLE, reason: 'transport en echec' },
     ]);
   });
 

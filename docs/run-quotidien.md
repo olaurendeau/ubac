@@ -166,6 +166,46 @@ clé primaire **remplace** la ligne du jour au lieu de la refuser. C'est la règ
 d'antériorité de la section 4 qui la tient. Relancer le même `--run-date` reste
 sans danger.
 
+### Le plafond réduit de la phase 3
+
+`REBALANCE_TOO_LARGE_PCT` vaut **8 %** au lieu de 25 % (B2, O1 = 3) : un run dont
+la somme des |jambes| dépasse 8 % de la valeur du portefeuille est **refusé en
+entier**, jamais raboté (O2 = 3). Aucune règle n'est ajoutée : c'est la valeur
+d'une constante de `src/core/risk.ts`, armée dès le premier run qui exécute (E29).
+
+**Le refus n'est pas silencieux (E32).** La ligne de `decisions` porte
+`REJECTED:REBALANCE_TOO_LARGE` dans `risk_verdict`. Sa colonne `reason` garde le
+motif de la stratégie en première ligne, puis celui du refus :
+`refus REBALANCE_TOO_LARGE : somme des |jambes| … au-dela de 8 %`, l'ampleur du
+run et le plafond. L'alerte urgente `REBALANCE_TOO_LARGE` porte le même texte.
+Le portefeuille reste hors bande, et l'alerte repart chaque jour où il le reste.
+Tout refus s'écrit ainsi dans `reason`, quels que soient le code et la stratégie.
+
+**Ce que 8 % veut dire pour la production.** La bande de cash va de 24 à 36 %
+autour d'une cible de 30 %, en mode `target` : un retour à la cible déplace déjà
+de l'ordre de 6 % du portefeuille. Sur le rejeu (974 jours), les 12
+rééquilibrages de production pesaient de 5,0 à 10,7 % ; à 8 %, 10 passent et 166
+jours de déclenchement sont refusés. La valeur est mesurée, pas estimée : la
+table et la décision sont dans le [plan de la phase 3](plans/ubac-phase-3.md)
+(S3). Attendre, pour les
+rééquilibrages les plus amples, une alerte par jour hors bande et aucun ordre
+avant la levée.
+
+**Le bruit des ombres (E31).** `validate()` est appelée pour les quatre
+stratégies : `rebalance_ab`, `ladder` et `dca` verront aussi plus de
+`REBALANCE_TOO_LARGE` dans `decisions`, dans le rapport et dans les alertes.
+Elles ne placent rien : ce n'est pas une panne, et ce bruit éprouve le chemin
+d'E32 avant qu'un ordre soit en jeu. La sortie propre n'appelle pas `validate()`
+([sortie-propre.md](sortie-propre.md)) : le plafond ne la touche pas.
+
+**La levée (E34, O3 = 3)** est un commit qui change la constante, en PR relue,
+puis déployé — jamais par l'environnement (`UBAC_RISK_REBALANCE_TOO_LARGE_PCT`
+fait échouer le démarrage, comme tout le préfixe), jamais automatiquement. La
+trace est l'historique de `main` : le premier run à pleine taille est le premier
+dont le `git_sha` dans `decisions` porte ce commit. Ce commit refige aussi les
+sondes de la valeur (`test/core/risk-state.test.ts`) et les oracles `rebalance*`
+du rejeu (`test/replay/`), qui passent eux aussi par `validate()`.
+
 ### Ce qu'un abandon laisse, et ce qu'il ne laisse pas
 
 Un abandon — divergence de réconciliation, portefeuille non valorisable,

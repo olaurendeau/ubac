@@ -11,7 +11,7 @@ import type { AllowedAsset, Price, Quantity, UsdcAmount, Weight, Weights } from 
  * nues traversent le garde non fini ci-dessous et rendent NaN. Or `Decimal`
  * repond `false` a `gte`, `lte` et `gt` sur un NaN, donc un seuil compare a une
  * valeur totale NaN ne mord jamais. `MAX_EXPOSURE` (50 % de la valeur totale) et
- * `REBALANCE_TOO_LARGE` (25 % de la valeur totale) passeraient silencieusement,
+ * `REBALANCE_TOO_LARGE` (son plafond de la valeur totale) passeraient silencieusement,
  * sur un chemin qu'aucun test de couverture ne signale puisque la ligne de
  * comparaison, elle, est bien executee. La seule protection qui tienne est de ne
  * pas laisser sortir la grandeur non gardee.
