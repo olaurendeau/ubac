@@ -462,13 +462,34 @@ aucun autre lot entre les deux.
 
 **Dépend de** : **S4** fusionné. *Indépendant de la phase 2* (voir T1). ·
 **Décisions** : B3, D9, D10, D11 — les trois reportées par le plan de phase 2. ·
-**Critères** : E12, E14, E15, E16, E17 (constaté). · **Audit** : argent +
+**Critères** : E12, E14, E15, E16, E17 (constaté), **et la naissance du filtre de
+stratégie d'E18** (voir l'ajustement ci-dessous). · **Audit** : argent +
 garde-fou → mutation **+** audit complet. · **Diff estimé compté** : **~850
 lignes**.
 **Fichiers prévus** : `src/jobs/daily-main.ts`, `src/adapters/execution.ts`,
 `src/adapters/inertes.ts` (neuf), `src/jobs/daily.ts`,
 `test/jobs/daily-main.test.ts`, `test/jobs/daily.test.ts`,
 `test/jobs/purete.test.ts`, `docs/run-quotidien.md`.
+
+**Ajustement décidé le 2026-09-22, à la demande de S5.** Le plan donnait l'étape 6
+entière à S7. S5 a constaté que `daily.ts` n'en a **aucune** sur `main` — S4 a
+livré `execute.ts` sans appelant —, donc qu'un port d'exécution composé en
+`DRY_RUN` ne serait jamais appelé : « le journal porte les six champs de chaque
+jambe qui serait partie » ne serait prouvable qu'en test unitaire.
+
+**S5 livre donc une étape 6 minimale**, filtrée sur la seule stratégie de
+production et sur un verdict `ACCEPTED`, et `daily-main.ts` compose le port
+**journalisant dans les deux modes** jusqu'à S7. Ce que cela achète : dès la
+fusion de S5, **chaque run de production journalise ce qu'il aurait placé**, sur
+les vraies données, tous les jours, sans qu'un euro bouge. C'est l'essai à blanc
+continu que l'option « tout dans S7 » aurait repoussé au moment où il ne sert
+plus.
+
+**Ce que S5 doit livrer en contrepartie** : S4 avait la propriété « aucun appel à
+`execute.ts` hors de lui-même », vérifiée en revue. S5 la fait tomber, et la
+remplace par une sonde qui constate que **le port réel d'exécution n'est composé
+dans aucun des deux modes** dans `daily-main.ts`. E12 et B3 restent ainsi
+mécaniquement vérifiables plutôt que confiés à une lecture attentive.
 
 **Résultat** : la même image, lancée avec `DRY_RUN=true`, fait **tout** le run
 sauf écrire et sauf envoyer, et journalise ce qu'elle aurait placé —
@@ -559,6 +580,11 @@ réserve.
 `test/jobs/execute.test.ts`, `test/jobs/daily.test.ts`,
 `test/jobs/alerts.test.ts`, `test/report/daily-report.test.ts`,
 `test/adapters/db.test.ts`, `docs/run-quotidien.md`.
+
+**Ce que S7 garde après l'ajustement de S5** : le port **réel** composé en mode
+normal, `recordOrder` en `PENDING` avant placement, le rejet post-only, l'alerte
+`REBALANCE_EXECUTED` et le prix mid ± 0,1 %. Le squelette de l'étape 6 et le
+filtre de stratégie, eux, arrivent avec S5.
 
 **Résultat** : l'étape 6 du §8 place les jambes de la **stratégie active
 uniquement**, en limit post-only, à mid ± 0,1 % du côté qui ne croise pas le
@@ -933,7 +959,8 @@ phase.
 | E13 | **S6** | seul critère qui exige la phase 2 |
 | E14, E15, E16 | **S5** | |
 | E17 | **S5** | **constaté** : le test de contrat de `risk.ts` reste vert |
-| E18 à E24, E26 | **S7** (ou S7a) | E24 exige `make test-db` |
+| E18 | **S5** puis **S7** | le filtre de stratégie naît avec l'étape 6 minimale de S5 ; S7 le reprend avec le port réel |
+| E19 à E24, E26 | **S7** (ou S7a) | E24 exige `make test-db` |
 | E25 | **acquis** (Q9), protégé par R3 — **revérifié en S7** | |
 | E27, E28 | **S7** (ou S7b) | E28 part du rapport de #47 et #49, fusionnées |
 | E29, E30 | **S3** | |
