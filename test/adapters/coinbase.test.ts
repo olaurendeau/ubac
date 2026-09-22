@@ -240,9 +240,9 @@ describe('permissions — la cle ne doit rien pouvoir de plus que lire', () => {
     /*
      * `can_transfer` s'ecrit ici et pas dans `src/adapters/` : `eslint.config.js`
      * y interdit le mot meme en lecture, et `noInlineConfig` empeche de
-     * desarmer la regle. L'adapter refuse donc **toute** permission a vrai qu'il
-     * ne connait pas, sans la nommer ; ce test verifie que ce detour attrape
-     * bien celle qui compte.
+     * desarmer la regle. L'adapter refuse donc **toute** permission qu'il ne
+     * connait pas et qui n'est pas franchement refusee, sans la nommer ; ce test
+     * verifie que ce detour attrape bien celle qui compte.
      */
     const { transport } = transportDe({
       key_permissions: { can_view: true, can_trade: false, can_transfer: true, portfolio_uuid: PORTEFEUILLE },
@@ -257,12 +257,57 @@ describe('permissions — la cle ne doit rien pouvoir de plus que lire', () => {
     await expect(ouvrir(transport).keyPermissions()).rejects.toThrow(/can_stake/);
   });
 
+  /*
+   * Le bloquant de la revue de S1 : le filtre s'ecrivait `valeur === true`, et
+   * `can_transfer: "true"` passait. Seul le booleen `false` vaut refus ; toute
+   * autre valeur est lue comme accordee, `"false"` compris — le contrat de
+   * l'API est un booleen, une chaine en sort deja, et rien ne dit alors si elle
+   * se lit par son texte ou, comme en JavaScript, comme une valeur vraie.
+   */
+  it.each([['true'], ['false'], [1], [0], [null], [{ value: false }]])(
+    'refuse la permission de sortie rendue %j, faute d’un refus franc',
+    async (valeur) => {
+      const { transport } = transportDe({
+        key_permissions: { ...PERMISSIONS_REELLES, can_transfer: valeur },
+      });
+      await expect(ouvrir(transport).keyPermissions()).rejects.toThrow(
+        /permission inattendue.*\(can_transfer\)/,
+      );
+    },
+  );
+
+  it.each([
+    ['nommee comme les autres, en chaine', { can_stake: 'true' }, /\(can_stake\)/],
+    ['sous un nom sans prefixe', { withdrawal_enabled: 'yes' }, /\(withdrawal_enabled\)/],
+  ])('refuse une permission inconnue %s', async (_cas, ecart, nom) => {
+    const { transport } = transportDe({ key_permissions: { ...PERMISSIONS_REELLES, ...ecart } });
+    await expect(ouvrir(transport).keyPermissions()).rejects.toThrow(nom);
+  });
+
   it('refuse une cle qui ne peut meme pas lire', async () => {
     const { transport } = transportDe({
       key_permissions: { can_view: false, can_trade: false, portfolio_uuid: PORTEFEUILLE },
     });
     await expect(ouvrir(transport).keyPermissions()).rejects.toThrow(CoinbaseFrontierError);
   });
+
+  it.each([['true'], [1], [null]])('refuse une lecture rendue %j, pas le booleen true', async (valeur) => {
+    const { transport } = transportDe({ key_permissions: { ...PERMISSIONS_REELLES, can_view: valeur } });
+    await expect(ouvrir(transport).keyPermissions()).rejects.toThrow(/can_view vaut/);
+  });
+
+  /*
+   * Le trade est admis dans les deux sens, mais `canTrade` ne se devine pas :
+   * une valeur qui n'est ni `true` ni `false` arrete la lecture plutot que de
+   * se lire « refuse », le meme trou que la permission de sortie, a l'envers.
+   */
+  it.each([['true'], ['false'], [1], [null], [undefined]])(
+    'refuse un trade rendu %j, ni vrai ni faux',
+    async (valeur) => {
+      const { transport } = transportDe({ key_permissions: { ...PERMISSIONS_REELLES, can_trade: valeur } });
+      await expect(ouvrir(transport).keyPermissions()).rejects.toThrow(/can_trade vaut/);
+    },
+  );
 });
 
 /** Le portefeuille de la fixture, faux d'un seul caractere : le dernier. */

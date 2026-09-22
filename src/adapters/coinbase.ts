@@ -215,10 +215,11 @@ export function ccxtTransport(
 
 /**
  * Les permissions effectives de la cle. `can_view` et `can_trade` sont lues
- * nommement ; **toute autre permission a vrai fait echouer la lecture**, ce qui
- * couvre la permission de sortie sans la nommer — `eslint.config.js` en interdit
- * ici le mot meme en lecture — et attrape en prime une permission que Coinbase
- * ajouterait demain. Le test, lui, la nomme : la regle ne vaut pas dans `test/`.
+ * nommement ; **tout autre champ qui n'est pas le booleen `false` fait echouer
+ * la lecture**, ce qui couvre la permission de sortie sans la nommer —
+ * `eslint.config.js` en interdit ici le mot meme en lecture — et attrape en
+ * prime une permission que Coinbase ajouterait demain. Le test, lui, la nomme :
+ * la regle ne vaut pas dans `test/`.
  */
 export interface KeyPermissions {
   readonly canView: boolean;
@@ -331,6 +332,18 @@ function instant(raw: unknown, contexte: string): Date {
 }
 
 /**
+ * Les champs de `key_permissions` que ce module connait. `portfolio_type` n'est
+ * pas une permission ; il est admis sans etre lu. Tout autre champ est une
+ * permission a refuser franchement — voir `permissionsFrom`.
+ */
+const KEY_FIELDS: ReadonlySet<string> = new Set([
+  'can_view',
+  'can_trade',
+  'portfolio_uuid',
+  'portfolio_type',
+]);
+
+/**
  * La ligne d'E8 : les permissions **telles que la reponse les porte**, pas telles
  * que ce module les a comprises. Tous les champs `can_*`, dans l'ordre de la
  * reponse et avec leur forme JSON — une permission rendue `"true"` en chaine ne
@@ -356,21 +369,33 @@ function permissionsFrom(raw: unknown, attendue: ExpectedKey): KeyPermissions {
   const attendu = portfolioUuid === attendue.portfolioUuid;
   attendue.log(keyLine(record, portfolioUuid, attendu));
   /*
-   * Toute permission a vrai autre que les deux attendues arrete la lecture. Le
-   * nom est repris tel quel dans le message : il vient de la reponse, pas d'un
-   * litteral de ce fichier, donc le garde-fou de lint reste satisfait.
+   * Sur une permission, la lecture la plus defavorable (`docs/cle-coinbase.md`).
+   * Hors des champs que ce module connait, **seul le booleen `false` vaut
+   * refus** : une chaine — `"false"` comprise —, un nombre, `null` ou un objet
+   * est lu comme accorde, pas comme absent, parce que c'est le seul sens qui
+   * echoue du bon cote. Un champ de nom inconnu est traite de meme, qu'il
+   * commence par `can_` ou non. Le nom est repris tel quel dans le message : il
+   * vient de la reponse, pas d'un litteral de ce fichier, donc le garde-fou de
+   * lint reste satisfait.
    */
   const inattendues = Object.entries(record)
-    .filter(([nom, valeur]) => valeur === true && nom !== 'can_view' && nom !== 'can_trade')
+    .filter(([nom, valeur]) => !KEY_FIELDS.has(nom) && valeur !== false)
     .map(([nom]) => nom);
   if (inattendues.length > 0) {
     throw new CoinbaseFrontierError(
-      `key_permissions : permission inattendue accordee a la cle (${inattendues.join(', ')}). La spec §7 n'en admet que la lecture, et le trade a partir de la phase 3.`,
+      `key_permissions : permission inattendue, accordee ou pas franchement refusee (${inattendues.join(', ')}). Seul le booleen false vaut refus ; la spec §7 n'admet que la lecture, et le trade a partir de la phase 3.`,
     );
   }
+  // Deja du bon cote avant le correctif : `"true"` n'y vaut pas lecture. Seul le message change.
   if (record['can_view'] !== true) {
     throw new CoinbaseFrontierError(
-      'key_permissions : can_view est faux, la cle ne peut rien lire du portefeuille.',
+      `key_permissions : can_view vaut ${JSON.stringify(record['can_view'])}, et seul le booleen true vaut lecture. La cle ne lit rien du portefeuille.`,
+    );
+  }
+  const canTrade = record['can_trade'];
+  if (typeof canTrade !== 'boolean') {
+    throw new CoinbaseFrontierError(
+      `key_permissions : can_trade vaut ${JSON.stringify(canTrade)}, ni true ni false. Ce que la cle peut faire ne se devine pas.`,
     );
   }
   /*
@@ -392,7 +417,7 @@ function permissionsFrom(raw: unknown, attendue: ExpectedKey): KeyPermissions {
   }
   return {
     canView: true,
-    canTrade: record['can_trade'] === true,
+    canTrade,
     portfolioUuid,
   };
 }
