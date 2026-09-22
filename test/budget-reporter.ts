@@ -13,7 +13,7 @@
  *
  * Ce que ce reporter mesure. Pour chaque test, la part de son propre delai
  * qu'il consomme. Le delai lu est le delai *effectif* (`options.timeout`) :
- * 5 000 ms par defaut, 30 000 ms dans un bloc qui a recu un delai cible. La
+ * 5 000 ms par defaut, 30 000 ou 60 000 ms dans un bloc a delai cible. La
  * mesure est donc juste pour les deux regimes, sans liste de fichiers a tenir.
  *
  * Deux seuils, et deux comportements distincts, parce que le reporter ne doit

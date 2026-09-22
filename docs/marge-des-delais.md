@@ -35,8 +35,8 @@ spec, pas une variable d'ajustement.
 ## Le garde-fou
 
 `test/budget-reporter.ts` mesure, pour chaque test, la part de son **propre**
-delai qu'il consomme — 5 000 ms par defaut, 30 000 ms dans un bloc a delai
-cible. Il est branche a cote du reporter `default` dans `vitest.config.ts`.
+delai qu'il consomme — 5 000 ms par defaut, 30 000 ou 60 000 ms dans un bloc a
+delai cible. Il est branche a cote du reporter `default` dans `vitest.config.ts`.
 
 | Part du delai consommee | Comportement |
 | --- | --- |
@@ -57,7 +57,7 @@ Pire test de chaque fichier, maximum sur 3 executions de `make coverage`
 
 | Fichier (`test/`) | Pire test (ms) | Delai (ms) | Marge |
 | --- | ---: | ---: | ---: |
-| `replay/report.test.ts` | 8490 | 30000 | 72 % |
+| `replay/report.test.ts` | 8490 | 60000 | 86 % |
 | `replay/engine.test.ts` | 4705 | 30000 | 84 % |
 | `jobs/daily-main.test.ts` | 1729 | 30000 | 94 % |
 | `jobs/purete.test.ts` | 1608 | 30000 | 95 % |
@@ -98,6 +98,16 @@ Le total affiche par vitest pour `report.test.ts` (~20 s) est la somme de ses si
 tests ; son pire test unitaire est a 8,5 s. Comparer un total de fichier a une
 limite par test conduit a soupconner un fichier sain et a manquer le vrai cas
 limite — c'est exactement ce qui rendait `engine.test.ts` invisible.
+
+## Sur le runner de la porte
+
+Le tableau ci-dessus est celui du poste. La porte tourne aussi sur le runner
+`ubuntu-24.04` de GitHub Actions (lot R1 de la phase 2), et le pire test n'y est
+pas le meme : A3 de `jobs/purete.test.ts`, qui linte `src/jobs/` sept fois, y a
+atteint 73 % de ses 5 s, et le premier test de `replay/report.test.ts` 50 % de
+ses 30 s. Les deux ont recu un delai cible, A3 30 s sur ce seul test, le bloc
+`renderReplay` 60 s. Mesures et motif : `docs/integration-continue.md` §4. La
+regle n'a pas change avec la machine : aucun `testTimeout` global n'a bouge.
 
 ## Refaire la mesure
 
