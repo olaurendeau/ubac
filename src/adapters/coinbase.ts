@@ -2,15 +2,22 @@ import { Decimal } from 'decimal.js';
 import ccxt from 'ccxt';
 
 import type { Secrets } from '../config/env.js';
-import type { Price, Quantity, Side, UsdcAmount } from '../core/types.js';
+import type { Order, Price, Quantity, Side, UsdcAmount } from '../core/types.js';
 
 /**
- * La lecture du compte Coinbase. **Lecture, et rien d'autre.**
+ * Le compte Coinbase : sa lecture, et depuis le lot S4 de la phase 3 le port qui
+ * y ecrit.
  *
- * La surface est close par le type et pas par la discipline : `CoinbaseTransport`
- * n'a qu'un verbe, `read`, qui ne prend qu'une valeur de `CoinbaseRoute`. Aucune
- * ecriture n'est **exprimable**, pas meme en composant ce que ce module exporte,
- * la ou le lint d'`eslint.config.js` interdit seulement d'en ecrire le nom.
+ * Les deux surfaces sont closes par le type et **enumerees**, pas filtrees par
+ * nom. Le lecteur recoit un `CoinbaseTransport`, dont le seul verbe est `read` et
+ * qui ne prend qu'une `CoinbaseRoute` : il ne sait toujours rien ecrire, pas meme
+ * en composant ce que ce module exporte. L'ecriture passe par un second
+ * transport, `CoinbaseWriteTransport`, que seul `openCoinbaseExecution` recoit,
+ * et par deux routes, `WRITE_ROUTES`. `test/adapters/coinbase.test.ts` enumere
+ * les routes et les methodes du port (E10), `test/jobs/purete.test.ts` en
+ * reserve l'appel a `src/jobs/execute.ts` (E11) ; la regle de noms qui
+ * interdisait de les ecrire est retiree le meme jour (B4,
+ * `docs/phase-1-frontieres.md` §1).
  *
  * Trois constats mesures contre la vraie cle le 2026-09-11 gouvernent ce
  * fichier ; `docs/coinbase-lecture.md` les argumente.
@@ -119,7 +126,7 @@ export function requireUsdcQuote(productId: string, contexte: string): ProductPa
 // --- Les six requetes -------------------------------------------------------
 
 /**
- * Les seules requetes que ce module sait formuler. Aucune ne place, n'annule ni
+ * Les seules lectures que ce module sait formuler. Aucune ne place, n'annule ni
  * ne retire, et il n'existe pas de route generique par laquelle en fabriquer
  * une : ajouter un chemin est une modification visible de ce type.
  */
@@ -155,6 +162,53 @@ export interface CoinbaseTransport {
   close(): Promise<void>;
 }
 
+// --- Les deux ecritures -----------------------------------------------------
+
+/**
+ * Le corps de `POST /api/v3/brokerage/orders`, grandeurs en chaines. Une seule
+ * configuration, `limit_limit_gtc`, et `post_only` du type `true` : le §7
+ * n'admet ni ordre au marche ni ordre qui croise le carnet, et `false` ne
+ * compile pas.
+ */
+export interface CreateOrderBody {
+  readonly client_order_id: string;
+  readonly product_id: string;
+  readonly side: Side;
+  readonly order_configuration: {
+    readonly limit_limit_gtc: {
+      readonly base_size: string;
+      readonly limit_price: string;
+      readonly post_only: true;
+    };
+  };
+}
+
+/**
+ * Les seules ecritures que ce module sait formuler : placer un ordre limite, et
+ * annuler des ordres par l'identifiant que l'exchange leur a donne. Aucune ne
+ * retire ni ne transfere, et pas plus qu'en lecture il n'existe de route
+ * generique : ajouter une ecriture modifie ce type **et** `WRITE_ROUTES`, et
+ * l'enumeration d'E10 rougit.
+ */
+export type CoinbaseWriteRoute =
+  | { readonly kind: 'create_order'; readonly body: CreateOrderBody }
+  | { readonly kind: 'cancel_orders'; readonly exchangeIds: readonly string[] };
+
+/** Les deux `kind` ci-dessus, enumerables a l'execution pour E10, comme `READ_ROUTES`. */
+export const WRITE_ROUTES = [
+  'create_order',
+  'cancel_orders',
+] as const satisfies readonly CoinbaseWriteRoute['kind'][];
+
+/**
+ * Le verbe d'ecriture, sur une interface **distincte** de `CoinbaseTransport` :
+ * `ccxtTransport` rend les deux, mais le lecteur ne recoit que la premiere et
+ * l'executeur que la seconde.
+ */
+export interface CoinbaseWriteTransport {
+  write(route: CoinbaseWriteRoute): Promise<unknown>;
+}
+
 /** Nombre maximal de bougies daily par appel, impose par l'API Coinbase. */
 export const MAX_CANDLES_PER_CALL = 350;
 
@@ -175,7 +229,7 @@ const MAX_PAGES = 20;
  */
 export function ccxtTransport(
   secrets: Pick<Secrets, 'coinbaseApiKey' | 'coinbaseApiSecret'>,
-): CoinbaseTransport {
+): CoinbaseTransport & CoinbaseWriteTransport {
   const exchange = new ccxt.coinbase({
     apiKey: secrets.coinbaseApiKey,
     secret: secrets.coinbaseApiSecret,
@@ -234,6 +288,22 @@ export function ccxtTransport(
           });
       }
     },
+    async write(route: CoinbaseWriteRoute): Promise<unknown> {
+      switch (route.kind) {
+        case 'create_order':
+          /*
+           * Un refus ne revient pas en `success: false` : ccxt leve des
+           * qu'`error_response` est present (4.5.78, `coinbase.js:5435`), rejet
+           * post-only compris. Le classer — journalise sans faire echouer le
+           * run, dit le §7 — revient a l'appelant, en S7.
+           */
+          return exchange.v3PrivatePostBrokerageOrders(route.body);
+        case 'cancel_orders':
+          return exchange.v3PrivatePostBrokerageOrdersBatchCancel({
+            order_ids: [...route.exchangeIds],
+          });
+      }
+    },
     async close(): Promise<void> {
       await exchange.close();
     },
@@ -245,10 +315,11 @@ export function ccxtTransport(
 /**
  * Les permissions effectives de la cle. `can_view` et `can_trade` sont lues
  * nommement ; **tout autre champ qui n'est pas le booleen `false` fait echouer
- * la lecture**, ce qui couvre la permission de sortie sans la nommer —
- * `eslint.config.js` en interdit ici le mot meme en lecture — et attrape en
- * prime une permission que Coinbase ajouterait demain. Le test, lui, la nomme :
- * la regle ne vaut pas dans `test/`.
+ * la lecture**, ce qui couvre la permission de sortie sans la nommer et attrape
+ * en prime une permission que Coinbase ajouterait demain. Le mot etait
+ * inecrivable ici tant que la regle de noms d'`eslint.config.js` valait ; elle
+ * est retiree (B4), et **ce refus est desormais le seul controle sur ce
+ * point** — l'absence du champ passe encore, et S7 doit l'exiger.
  */
 export interface KeyPermissions {
   readonly canView: boolean;
@@ -352,8 +423,8 @@ export interface OrderFill {
 }
 
 /**
- * La surface entiere de Coinbase pour le reste du programme. Cinq lectures et
- * une fermeture. Ce qui n'est pas dans cette liste ne se fait pas.
+ * La surface de lecture de Coinbase pour le reste du programme : cinq lectures
+ * et une fermeture. L'ecriture a la sienne, `ExecutionPort`, en fin de module.
  */
 export interface CoinbaseReader {
   keyPermissions(): Promise<KeyPermissions>;
@@ -449,9 +520,7 @@ function permissionsFrom(raw: unknown, attendue: ExpectedKey): KeyPermissions {
    * refus** : une chaine — `"false"` comprise —, un nombre, `null` ou un objet
    * est lu comme accorde, pas comme absent, parce que c'est le seul sens qui
    * echoue du bon cote. Un champ de nom inconnu est traite de meme, qu'il
-   * commence par `can_` ou non. Le nom est repris tel quel dans le message : il
-   * vient de la reponse, pas d'un litteral de ce fichier, donc le garde-fou de
-   * lint reste satisfait.
+   * commence par `can_` ou non. Le nom est repris tel quel dans le message.
    */
   const inattendues = Object.entries(record)
     .filter(([nom, valeur]) => !KEY_FIELDS.has(nom) && valeur !== false)
@@ -803,5 +872,159 @@ export function openCoinbase(transport: CoinbaseTransport, attendue: ExpectedKey
     },
 
     close: () => transport.close(),
+  };
+}
+
+// --- L'execution : le port, et la cle qui le conditionne --------------------
+
+/** Un ordre que l'exchange a accepte, sous l'identifiant qu'il lui a donne. */
+export interface PlacedOrder {
+  readonly exchangeId: string;
+  readonly clientOrderId: string;
+}
+
+/**
+ * L'issue d'une annulation, **ordre par ordre** : un lot ne se replie pas sur un
+ * booleen, sinon un refus pour une vraie raison passerait pour un ordre deja
+ * denoue. `reason` est le `failure_reason` de l'API tel quel ; distinguer
+ * « deja denoue » d'une vraie panne revient a S8.
+ */
+export type CancelOutcome =
+  | { readonly kind: 'CANCELLED'; readonly exchangeId: string }
+  | { readonly kind: 'REFUSED'; readonly exchangeId: string; readonly reason: string };
+
+/**
+ * Le port d'execution : deux methodes, et rien d'autre — ni mode, ni drapeau,
+ * ni `dryRun`, `force` ou `bypass`. Le `DRY_RUN` (S5) n'en est pas un parametre :
+ * c'est une autre implementation de ce type, composee a la place de celle-ci au
+ * point d'entree. Seul `src/jobs/execute.ts` appelle ces methodes (E11).
+ */
+export interface ExecutionPort {
+  placeOrder(order: Order): Promise<PlacedOrder>;
+  cancelOrders(exchangeIds: readonly string[]): Promise<readonly CancelOutcome[]>;
+}
+
+/** Les deux methodes ci-dessus, enumerables a l'execution pour E10 et A23. */
+export const EXECUTION_METHODS = [
+  'placeOrder',
+  'cancelOrders',
+] as const satisfies readonly (keyof ExecutionPort)[];
+
+/**
+ * La seule sortie des grandeurs vers l'API : `toFixed()` n'ecrit jamais
+ * d'exposant, et une grandeur nulle, negative ou non finie ne part pas — `NaN`
+ * ecrirait `"NaN"` dans un ordre. L'arrondi aux pas du produit n'est pas fait
+ * ici : arrondir en silence changerait l'ordre que le noyau a valide.
+ */
+function textFromDecimal(value: Decimal, contexte: string): string {
+  if (!value.isFinite() || !value.gt(0)) {
+    throw new CoinbaseFrontierError(
+      `${contexte} : grandeur positive et finie attendue, recu ${value.toString()}.`,
+    );
+  }
+  return value.toFixed();
+}
+
+function createOrderBody(order: Order): CreateOrderBody {
+  const contexte = `create_order[${order.clientOrderId}]`;
+  return {
+    client_order_id: order.clientOrderId,
+    product_id: `${order.asset}-${order.quote}`,
+    side: order.side,
+    order_configuration: {
+      limit_limit_gtc: {
+        base_size: textFromDecimal(order.quantity, `${contexte}.base_size`),
+        limit_price: textFromDecimal(order.limitPrice, `${contexte}.limit_price`),
+        post_only: true,
+      },
+    },
+  };
+}
+
+/**
+ * Seul le booleen `success: true` vaut placement. L'exchange qui repond pour un
+ * autre `client_order_id` arrete tout : l'identifiant deterministe est ce qui
+ * rend le placement idempotent — un second envoi du meme identifiant rend
+ * l'ordre existant au lieu d'en creer un, dit la documentation de l'API, que
+ * rien n'a encore mesure —, et c'est donc lui qui se verifie.
+ */
+function placedFrom(raw: unknown, clientOrderId: string): PlacedOrder {
+  const contexte = `create_order[${clientOrderId}]`;
+  const reponse = asRecord(raw, contexte);
+  if (reponse['success'] !== true) {
+    throw new CoinbaseFrontierError(
+      `${contexte} : ordre non accepte, success=${JSON.stringify(reponse['success'])} (${JSON.stringify(reponse['error_response'])}).`,
+    );
+  }
+  const accepte = asRecord(reponse['success_response'], `${contexte}.success_response`);
+  const rendu = asText(accepte['client_order_id'], `${contexte}.client_order_id`);
+  if (rendu !== clientOrderId) {
+    throw new CoinbaseFrontierError(`${contexte} : l'exchange repond pour ${rendu}.`);
+  }
+  return { exchangeId: asText(accepte['order_id'], `${contexte}.order_id`), clientOrderId };
+}
+
+/**
+ * Une issue par ordre demande, et aucune autre : une issue qui manque ne se
+ * devine pas, et une issue en trop dit que la reponse ne porte pas sur ce lot.
+ */
+function cancelledFrom(raw: unknown, exchangeIds: readonly string[]): readonly CancelOutcome[] {
+  const resultats = asList(asRecord(raw, 'cancel_orders')['results'], 'cancel_orders.results');
+  const issues = resultats.map((brut): CancelOutcome => {
+    const record = asRecord(brut, 'cancel_orders.results[]');
+    const exchangeId = asText(record['order_id'], 'cancel_orders.results[].order_id');
+    const contexte = `cancel_orders[${exchangeId}]`;
+    if (record['success'] === true) return { kind: 'CANCELLED', exchangeId };
+    if (record['success'] === false) {
+      const reason = asText(record['failure_reason'], `${contexte}.failure_reason`);
+      return { kind: 'REFUSED', exchangeId, reason };
+    }
+    throw new CoinbaseFrontierError(
+      `${contexte}.success : booleen attendu, recu ${JSON.stringify(record['success'])}.`,
+    );
+  });
+  const demandes = [...exchangeIds].sort().join(',');
+  const rendus = issues.map((issue) => issue.exchangeId).sort().join(',');
+  if (rendus !== demandes) {
+    throw new CoinbaseFrontierError(
+      `cancel_orders : issues pour [${rendus}], alors que [${demandes}] etaient demandes.`,
+    );
+  }
+  return issues;
+}
+
+/**
+ * L'executeur. **`can_trade` est une condition de construction, pas un
+ * drapeau** (E7) : avec une cle qui ne peut pas trader, il n'y a pas de port,
+ * donc rien a appeler, et aucun parametre ne le fait exister autrement. Le run
+ * qui le composera (S7) refusera donc de demarrer arme.
+ *
+ * La permission vient du lecteur, qui a deja verifie la cle contre le
+ * portefeuille attendu (E6) et l'a journalisee (E8) : un seul controle de la cle
+ * par run, le meme pour lire et pour ecrire, et une seule ligne au journal.
+ */
+export async function openCoinbaseExecution(
+  transport: CoinbaseWriteTransport,
+  reader: Pick<CoinbaseReader, 'keyPermissions'>,
+): Promise<ExecutionPort> {
+  const { canTrade, portfolioUuid } = await reader.keyPermissions();
+  if (!canTrade) {
+    throw new CoinbaseFrontierError(
+      `key_permissions : can_trade vaut false sur le portefeuille ${portfolioUuid}. L'execution ne se construit pas avec une cle qui ne peut pas trader.`,
+    );
+  }
+  return {
+    async placeOrder(order: Order): Promise<PlacedOrder> {
+      const body = createOrderBody(order);
+      const reponse = await transport.write({ kind: 'create_order', body });
+      return placedFrom(reponse, order.clientOrderId);
+    },
+
+    // Une liste vide n'appelle pas l'exchange : `order_ids: []` est une requete invalide.
+    async cancelOrders(exchangeIds: readonly string[]): Promise<readonly CancelOutcome[]> {
+      if (exchangeIds.length === 0) return [];
+      const reponse = await transport.write({ kind: 'cancel_orders', exchangeIds });
+      return cancelledFrom(reponse, exchangeIds);
+    },
   };
 }

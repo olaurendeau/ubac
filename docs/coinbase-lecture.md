@@ -10,9 +10,10 @@ le code, pas répété ici. Chaque morceau apporte sa section avec son code.
 | **Q3b** | les lecteurs : soldes, ordres ouverts, périmètre | on lit le bon portefeuille, aucune écriture n'est atteignable |
 | **Q3c** | le marché : bougies journalières | une série complète, ou un refus |
 | **S2** (phase 3) | le statut d'un ordre donné et ses exécutions | un ordre dénoué se lit exécuté, annulé, expiré ou rejeté — ou se dit indéterminable |
+| **S4** (phase 3) | le port d'exécution et ses deux routes d'écriture | la surface d'écriture est énumérée, et le lecteur ne sait toujours rien écrire |
 
 Chaque section arrive avec le code qu'elle explique : §1 à §3 avec Q3a,
-§4 à §7 avec Q3b, §8 avec Q3c, §10 avec S2.
+§4 à §7 avec Q3b, §8 avec Q3c, §10 avec S2 ; S4 réécrit le §2.
 
 Références : `docs/specs/ubac-rebalance.md` §3, §7 et §11 ;
 `docs/plans/ubac-phase-1.md`, lot Q3 ; décision préalable **D4**, close ;
@@ -21,10 +22,11 @@ en direct contre la vraie clé, en lecture seule, le **2026-09-11**.
 
 ---
 
-## 1. Le transport : six requêtes, un seul verbe
+## 1. Le transport : six lectures, un seul verbe
 
 `CoinbaseTransport` n'expose que `read(route)` et `close()`. `CoinbaseRoute` est
-un type somme **fermé à six requêtes**, toutes en lecture :
+un type somme **fermé à six requêtes**, toutes en lecture — les deux écritures
+de la phase 3 vivent sur un autre transport, §2 :
 
 | Route | Endpoint | Pour |
 |---|---|---|
@@ -60,26 +62,33 @@ qui rend une série daily complète en `Decimal`, ou un refus.
 
 ---
 
-## 2. Aucune écriture, et pourquoi ce n'est pas qu'une promesse
+## 2. Une écriture énumérée, et un lecteur qui n'écrit toujours pas
 
-Trois garanties indépendantes, de la plus faible à la plus forte :
+Jusqu'à la phase 3, ce paragraphe disait « aucune écriture » et l'appuyait sur
+trois garanties : la règle de noms d'`eslint.config.js`, le type, et un test qui
+recopiait la regexp de la règle. Le lot S4 retire la règle (B4) et la recopie
+avec elle ; `docs/phase-1-frontieres.md` §1 dit ce que le dépôt y perd.
 
-1. **le lint** (`eslint.config.js`, lot Q1) interdit dans `src/adapters/` et
-   `src/jobs/` tout nom qui dénote un placement, une annulation ou un retrait, et
-   `noInlineConfig` empêche de le désarmer depuis le fichier surveillé. Il garde
-   le **source** ;
-2. **le type** : un seul verbe, `read`, sur le type somme ci-dessus. Aucune
-   écriture n'est **exprimable**, pas même en composant ce que le module
-   exporte — pas de client brut, pas de route générique, pas de méthode `post`.
-   Ajouter un chemin est une modification visible de ce type ;
-3. **le test** vérifie les deux à l'exécution : il recopie la regexp de noms
-   d'`eslint.config.js` et l'applique aux exports réels du module et aux clés des
-   objets rendus par `ccxtTransport()` et `openCoinbase()`, fait tourner un run
-   de lecture complet en contrôlant les routes émises, puis intercepte la couche
-   HTTP de ccxt pour vérifier les URL effectivement construites.
+Ce qui tient désormais :
+
+1. **le lecteur ne sait rien écrire** : il reçoit un `CoinbaseTransport`, dont
+   le seul verbe est `read`. L'écriture passe par `CoinbaseWriteTransport` et
+   son verbe `write`, que seul `openCoinbaseExecution` reçoit — `ccxtTransport`
+   rend les deux, le point de composition les distribue ;
+2. **l'écriture est un type somme fermé à deux routes**, `WRITE_ROUTES` :
+   `create_order` (`POST /api/v3/brokerage/orders`, limite `post_only`, le seul
+   ordre du §7) et `cancel_orders` (`POST /api/v3/brokerage/orders/batch_cancel`).
+   Aucune ne retire ni ne transfère ;
+3. **le test énumère** les deux listes de routes, les clés des objets rendus par
+   `ccxtTransport()`, `openCoinbase()` et l'exécuteur, et intercepte la couche
+   HTTP de ccxt pour vérifier les URL et les méthodes effectivement construites
+   (E10). `tsc` refuse qu'un type et sa liste divergent ;
+4. **l'exécuteur ne se construit qu'avec `can_trade`** (E7), lu par le lecteur
+   sur une clé déjà confrontée au portefeuille attendu (E6).
 
 La garantie qui compte reste **hors du code** : la clé n'a pas la permission de
-trader. Voir `docs/cle-coinbase.md`.
+retrait, et elle est scopée sur le portefeuille dédié. Voir
+`docs/cle-coinbase.md`.
 
 ---
 

@@ -6,21 +6,27 @@ import ccxt from 'ccxt';
 import { Decimal } from 'decimal.js';
 import { describe, expect, it } from 'vitest';
 
-import * as coinbase from '../../src/adapters/coinbase.js';
 import {
   CoinbaseFrontierError,
   ccxtTransport,
+  EXECUTION_METHODS,
   openCoinbase,
+  openCoinbaseExecution,
   READ_ROUTES,
   requireUsdcQuote,
+  WRITE_ROUTES,
 } from '../../src/adapters/coinbase.js';
 import type {
   CoinbaseReader,
   CoinbaseRoute,
   CoinbaseTransport,
+  CoinbaseWriteRoute,
+  CoinbaseWriteTransport,
+  ExecutionPort,
   KnownOrderStatus,
   OrderStatus,
 } from '../../src/adapters/coinbase.js';
+import type { Order, Price, Quantity } from '../../src/core/types.js';
 
 /**
  * Aucun de ces tests ne touche au reseau. Deux regimes cohabitent :
@@ -180,38 +186,99 @@ function ordres(...liste: Record<string, unknown>[]): Record<string, unknown> {
 }
 
 /**
- * La meme regexp de noms d'ecriture qu'`eslint.config.js` applique a
- * `src/adapters/`. Recopiee ici a dessein : le lint garde le **source**, ce test
- * garde la **surface exportee a l'execution**, y compris ce qu'une refonte
- * future y ajouterait par un chemin que le lint ne regarde pas.
+ * Le transport d'ecriture : il journalise chaque route et rend la reponse prevue
+ * pour son `kind`. Les reponses sont **fabriquees** — aucun ordre n'a jamais ete
+ * place depuis ce depot — et calquees sur les echantillons que ccxt garde dans
+ * son source (`coinbase.js`, `createOrder` et `cancelOrders`).
  */
-const VERBES = ['create', 'place', 'submit', 'send', 'post', 'edit', 'amend', 'modify', 'replace', 'cancel', 'close'];
-const ECRITURE = new RegExp(
-  `^(?:(?:${VERBES.join('|')})[A-Za-z_]*[Oo]rders?|[A-Za-z_]*(?:[Ww]ithdraw|[Tt]ransfer)[A-Za-z_]*)$`,
-);
+function ecrivainDe(
+  reponses: Partial<Record<CoinbaseWriteRoute['kind'], unknown>> = {},
+): { transport: CoinbaseWriteTransport; ecritures: CoinbaseWriteRoute[] } {
+  const ecritures: CoinbaseWriteRoute[] = [];
+  return {
+    ecritures,
+    transport: {
+      async write(route: CoinbaseWriteRoute): Promise<unknown> {
+        ecritures.push(route);
+        if (!(route.kind in reponses)) throw new Error(`aucune reponse prevue pour la route ${route.kind}`);
+        return reponses[route.kind];
+      },
+    },
+  };
+}
 
-describe('surface du module — aucune ecriture, ni exportee ni atteignable', () => {
-  it('n’exporte aucun nom de placement, d’annulation ou de retrait', () => {
-    expect(Object.keys(coinbase).filter((nom) => ECRITURE.test(nom))).toEqual([]);
-  });
+/** L'executeur d'une cle de phase 3 — lecture et trade, sur le bon portefeuille. */
+async function executeurDe(
+  reponses: Partial<Record<CoinbaseWriteRoute['kind'], unknown>> = {},
+): Promise<{ port: ExecutionPort; ecritures: CoinbaseWriteRoute[] }> {
+  const { transport } = transportDe({ key_permissions: { ...PERMISSIONS_REELLES, can_trade: true } });
+  const { transport: ecrivain, ecritures } = ecrivainDe(reponses);
+  return { ecritures, port: await openCoinbaseExecution(ecrivain, ouvrir(transport)) };
+}
 
-  it('n’expose sur le transport qu’un verbe de lecture et une fermeture', () => {
-    expect(Object.keys(ccxtTransport({ coinbaseApiKey: CLE, coinbaseApiSecret: SECRET })).sort()).toEqual([
-      'close',
-      'read',
-    ]);
-  });
+/** Un satoshi : `toString()` l'ecrirait `1e-8`, que l'API ne lit pas. */
+const ORDRE: Order = {
+  clientOrderId: '9c3e1f0a',
+  asset: 'BTC',
+  quote: 'USDC',
+  side: 'BUY',
+  quantity: new Decimal('0.00000001') as Quantity,
+  limitPrice: new Decimal('64321.09') as Price,
+};
+const PLACE_ID = 'ab12cd34-0000-4000-8000-0000000000a1';
 
-  it('n’expose sur le lecteur que cinq lectures et une fermeture', () => {
-    const { transport } = transportDe({});
-    // `close` ferme le transport HTTP ; il ne denote pas une fermeture d'ordre,
-    // et la regexp ci-dessus ne le confond pas (`close` seul n'y correspond pas).
-    const noms = Object.keys(ouvrir(transport)).sort();
-    expect(noms).toEqual(['balances', 'close', 'keyPermissions', 'openOrders', 'orderFills', 'orderStatus']);
-    expect(noms.filter((nom) => ECRITURE.test(nom))).toEqual([]);
-  });
+/** Le corps attendu pour `ORDRE` : limite, post-only, et le satoshi ecrit en toutes lettres. */
+const CORPS = {
+  client_order_id: ORDRE.clientOrderId,
+  product_id: 'BTC-USDC',
+  side: 'BUY',
+  order_configuration: {
+    limit_limit_gtc: { base_size: '0.00000001', limit_price: '64321.09', post_only: true },
+  },
+};
 
-  it('n’a que six routes, toutes en lecture', () => {
+/** Reponse de `POST orders` a un placement accepte. **Fabriquee.** */
+function place(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    success: true,
+    failure_reason: 'UNKNOWN_FAILURE_REASON',
+    order_id: PLACE_ID,
+    success_response: {
+      order_id: PLACE_ID,
+      product_id: 'BTC-USDC',
+      side: 'BUY',
+      client_order_id: ORDRE.clientOrderId,
+    },
+    order_configuration: null,
+    ...overrides,
+  };
+}
+
+/** Reponse de `POST orders/batch_cancel`, une issue par ordre. **Fabriquee.** */
+function annules(...issues: readonly (readonly [id: string, succes: unknown, raison?: string])[]) {
+  return {
+    results: issues.map(([order_id, success, raison]) => ({
+      success,
+      failure_reason: raison ?? 'UNKNOWN_CANCEL_FAILURE_REASON',
+      order_id,
+    })),
+  };
+}
+
+/** Egalite d'ensembles, verifiee par `tsc` : une `kind` ou une methode oubliee ne compile pas. */
+type MemeEnsemble<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
+const routesEnumerees: MemeEnsemble<CoinbaseWriteRoute['kind'], (typeof WRITE_ROUTES)[number]> = true;
+const methodesEnumerees: MemeEnsemble<keyof ExecutionPort, (typeof EXECUTION_METHODS)[number]> = true;
+
+/**
+ * E10 de la phase 3 : les deux surfaces sont **enumerees**. Les listes sont
+ * ecrites ici en toutes lettres, pas relues dans le module : ajouter une route
+ * ou une methode fait rougir ce bloc tant qu'il n'est pas mis a jour, et `tsc`
+ * rougit si le type et sa liste divergent. Ce bloc recopiait la regexp de la
+ * regle de noms d'`eslint.config.js` ; elle est retiree (B4), la recopie aussi.
+ */
+describe('E10 — la surface du module, lecture et ecriture, enumeree', () => {
+  it('a six routes de lecture et deux d’ecriture, disjointes', () => {
     expect([...READ_ROUTES]).toEqual([
       'key_permissions',
       'accounts',
@@ -220,10 +287,38 @@ describe('surface du module — aucune ecriture, ni exportee ni atteignable', ()
       'order',
       'fills',
     ]);
-    expect([...READ_ROUTES].filter((route) => ECRITURE.test(route))).toEqual([]);
+    expect([...WRITE_ROUTES]).toEqual(['create_order', 'cancel_orders']);
+    expect(READ_ROUTES.filter((route) => (WRITE_ROUTES as readonly string[]).includes(route))).toEqual([]);
+    expect([routesEnumerees, methodesEnumerees]).toEqual([true, true]);
   });
 
-  it('n’emet que des routes de cette liste, sur un run de lecture complet', async () => {
+  it('expose sur le transport ccxt un verbe de lecture, un d’ecriture et une fermeture', () => {
+    expect(Object.keys(ccxtTransport({ coinbaseApiKey: CLE, coinbaseApiSecret: SECRET })).sort()).toEqual([
+      'close',
+      'read',
+      'write',
+    ]);
+  });
+
+  it('n’expose sur le lecteur que cinq lectures et une fermeture', () => {
+    const { transport } = transportDe({});
+    expect(Object.keys(ouvrir(transport)).sort()).toEqual([
+      'balances',
+      'close',
+      'keyPermissions',
+      'openOrders',
+      'orderFills',
+      'orderStatus',
+    ]);
+  });
+
+  it('n’expose sur le port d’execution que deux methodes', async () => {
+    const { port } = await executeurDe();
+    expect(Object.keys(port).sort()).toEqual(['cancelOrders', 'placeOrder']);
+    expect([...EXECUTION_METHODS].sort()).toEqual(['cancelOrders', 'placeOrder']);
+  });
+
+  it('n’emet que des routes de lecture, sur un run de lecture complet', async () => {
     const { transport, routes } = transportDe({
       key_permissions: await reelle('coinbase-key-permissions'),
       accounts: await reelle('coinbase-accounts'),
@@ -245,6 +340,16 @@ describe('surface du module — aucune ecriture, ni exportee ni atteignable', ()
       'order',
       'fills',
     ]);
+  });
+
+  it('emet, par ses deux methodes, exactement les deux routes d’ecriture', async () => {
+    const { port, ecritures } = await executeurDe({
+      create_order: place(),
+      cancel_orders: annules([PLACE_ID, true]),
+    });
+    await port.placeOrder(ORDRE);
+    await port.cancelOrders([PLACE_ID]);
+    expect(ecritures.map((route) => route.kind)).toEqual([...WRITE_ROUTES]);
   });
 });
 
@@ -286,11 +391,11 @@ describe('reponses reelles capturees le 2026-09-11', () => {
 describe('permissions — la cle ne doit rien pouvoir de plus que lire', () => {
   it('refuse une permission accordee au-dela de la lecture et du trade', async () => {
     /*
-     * `can_transfer` s'ecrit ici et pas dans `src/adapters/` : `eslint.config.js`
-     * y interdit le mot meme en lecture, et `noInlineConfig` empeche de
-     * desarmer la regle. L'adapter refuse donc **toute** permission qu'il ne
-     * connait pas et qui n'est pas franchement refusee, sans la nommer ; ce test
-     * verifie que ce detour attrape bien celle qui compte.
+     * L'adapter refuse **toute** permission qu'il ne connait pas et qui n'est
+     * pas franchement refusee, sans nommer `can_transfer` — le mot y etait
+     * inecrivable jusqu'au retrait de la regle de noms (B4). Ce refus est
+     * desormais le seul controle sur ce point ; ce test verifie qu'il attrape
+     * bien la permission qui compte.
      */
     const { transport } = transportDe({
       key_permissions: { can_view: true, can_trade: false, can_transfer: true, portfolio_uuid: PORTEFEUILLE },
@@ -432,6 +537,107 @@ describe('E6 — la cle est celle du portefeuille que l’operateur attend', () 
       canTrade: true,
       portfolioUuid: PORTEFEUILLE,
     });
+  });
+});
+
+/**
+ * La moitie neuve d'E7 : `can_trade` est une **condition de construction** de
+ * l'executeur, pas un drapeau. Sans elle, il n'y a pas de port, donc rien a
+ * appeler, et aucune route d'ecriture ne part.
+ */
+describe('E7 — l’executeur ne se construit qu’avec une cle qui peut trader', () => {
+  it('leve a la construction avec la cle reelle de phase 1, can_trade faux', async () => {
+    const { transport } = transportDe({});
+    const { transport: ecrivain, ecritures } = ecrivainDe();
+    await expect(openCoinbaseExecution(ecrivain, ouvrir(transport))).rejects.toThrow(
+      /can_trade vaut false.*ne se construit pas/,
+    );
+    expect(ecritures).toEqual([]);
+  });
+
+  it('leve aussi sur une cle qui peut trader, mais sur un autre portefeuille (E6)', async () => {
+    const { transport } = transportDe({
+      key_permissions: { ...PERMISSIONS_REELLES, can_trade: true, portfolio_uuid: VOISIN },
+    });
+    await expect(openCoinbaseExecution(ecrivainDe().transport, ouvrir(transport))).rejects.toThrow(
+      /COINBASE_PORTFOLIO_UUID/,
+    );
+  });
+
+  it('lit la cle une seule fois pour le lecteur et l’executeur : une ligne au journal', async () => {
+    const { transport, routes } = transportDe({
+      key_permissions: { ...PERMISSIONS_REELLES, can_trade: true },
+    });
+    const { lecteur, journal } = lecteurDe(transport);
+    await lecteur.keyPermissions();
+    await openCoinbaseExecution(ecrivainDe().transport, lecteur);
+    expect(routes.map((route) => route.kind)).toEqual(['key_permissions']);
+    expect(journal).toHaveLength(1);
+  });
+});
+
+describe('placement — un ordre limite post-only, et rien d’autre', () => {
+  it('ecrit le corps de l’API, grandeurs en chaines sans exposant', async () => {
+    const { port, ecritures } = await executeurDe({ create_order: place() });
+    expect(await port.placeOrder(ORDRE)).toEqual({ exchangeId: PLACE_ID, clientOrderId: ORDRE.clientOrderId });
+    expect(ecritures).toEqual([{ kind: 'create_order', body: CORPS }]);
+  });
+
+  it.each([
+    ['une quantite nulle', { quantity: new Decimal(0) as Quantity }],
+    ['une quantite negative', { quantity: new Decimal('-0.1') as Quantity }],
+    ['un prix NaN', { limitPrice: new Decimal(NaN) as Price }],
+    ['un prix infini', { limitPrice: new Decimal(Infinity) as Price }],
+  ])('refuse %s sans rien envoyer', async (_nom, champ) => {
+    const { port, ecritures } = await executeurDe({ create_order: place() });
+    await expect(port.placeOrder({ ...ORDRE, ...champ })).rejects.toThrow(/positive et finie/);
+    expect(ecritures).toEqual([]);
+  });
+
+  it.each([
+    ['success faux', { success: false, error_response: { error: 'UNKNOWN_FAILURE_REASON' } }],
+    ['success en chaine', { success: 'true' }],
+  ])('ne lit pas un placement dans une reponse a %s', async (_nom, champs) => {
+    const { port } = await executeurDe({ create_order: place(champs) });
+    await expect(port.placeOrder(ORDRE)).rejects.toThrow(/ordre non accepte/);
+  });
+
+  it('refuse une reponse portant un autre client_order_id', async () => {
+    const autre = { ...(place()['success_response'] as object), client_order_id: 'autre' };
+    const { port } = await executeurDe({ create_order: place({ success_response: autre }) });
+    await expect(port.placeOrder(ORDRE)).rejects.toThrow(/repond pour autre/);
+  });
+});
+
+describe('annulation — une issue par ordre, jamais un booleen de lot', () => {
+  it('rend l’issue de chaque ordre, refus compris, avec sa raison', async () => {
+    const { port, ecritures } = await executeurDe({
+      cancel_orders: annules(['a', true], ['b', false, 'UNKNOWN_CANCEL_ORDER']),
+    });
+    expect(await port.cancelOrders(['a', 'b'])).toEqual([
+      { kind: 'CANCELLED', exchangeId: 'a' },
+      { kind: 'REFUSED', exchangeId: 'b', reason: 'UNKNOWN_CANCEL_ORDER' },
+    ]);
+    expect(ecritures).toEqual([{ kind: 'cancel_orders', exchangeIds: ['a', 'b'] }]);
+  });
+
+  it('n’appelle pas l’exchange pour une liste vide', async () => {
+    const { port, ecritures } = await executeurDe();
+    expect(await port.cancelOrders([])).toEqual([]);
+    expect(ecritures).toEqual([]);
+  });
+
+  it.each([
+    ['une issue manque', annules(['a', true])],
+    ['une issue en trop', annules(['a', true], ['b', true], ['c', true])],
+  ])('refuse une reponse dont %s', async (_nom, reponse) => {
+    const { port } = await executeurDe({ cancel_orders: reponse });
+    await expect(port.cancelOrders(['a', 'b'])).rejects.toThrow(/etaient demandes/);
+  });
+
+  it('refuse une issue dont success n’est pas un booleen', async () => {
+    const { port } = await executeurDe({ cancel_orders: annules(['a', 'false']) });
+    await expect(port.cancelOrders(['a'])).rejects.toThrow(/booleen attendu/);
   });
 });
 
@@ -918,6 +1124,34 @@ describe('mappage des routes vers les endpoints', () => {
     expect(urls[4]).toContain('/api/v3/brokerage/market/products/BTC-USDC/candles');
     expect(urls[4]).toContain('granularity=ONE_DAY');
     expect(urls.every((url) => url.includes('/api/v3/'))).toBe(true);
+  });
+
+  it('place et annule en POST sur les deux endpoints v3, corps en JSON', async () => {
+    const { port, ecritures } = await executeurDe({
+      create_order: place(),
+      cancel_orders: annules(['a', true], ['b', true]),
+    });
+    await port.placeOrder(ORDRE);
+    await port.cancelOrders(['a', 'b']);
+
+    const prototype = ccxt.coinbase.prototype as unknown as Record<string, unknown>;
+    const original = prototype['fetch'];
+    const vues: [string, string, unknown][] = [];
+    prototype['fetch'] = (url: string, methode: string, _entetes: unknown, corps: string) => {
+      vues.push([url, methode, JSON.parse(corps)]);
+      return Promise.resolve({});
+    };
+    try {
+      const transport = ccxtTransport({ coinbaseApiKey: CLE, coinbaseApiSecret: SECRET });
+      for (const route of ecritures) await transport.write(route);
+      await transport.close();
+    } finally {
+      prototype['fetch'] = original;
+    }
+    expect(vues).toEqual([
+      ['https://api.coinbase.com/api/v3/brokerage/orders', 'POST', CORPS],
+      ['https://api.coinbase.com/api/v3/brokerage/orders/batch_cancel', 'POST', { order_ids: ['a', 'b'] }],
+    ]);
   });
 
   it('lit un ordre par la liste filtree, et ses executions par la leur', async () => {
