@@ -397,22 +397,34 @@ function dansLaPorte(depot: Depot, yaml: string): Depot {
   return muter(depot, PORTE, '    timeout-minutes: 15\n', `    timeout-minutes: 15\n${yaml}\n`);
 }
 
-/** La chaine complete du §10, telle que R2 et R3 la livreront. */
-const CHAINE = `
+/**
+ * La chaine complete du §10, telle que R2 et R3 la livreront. Un job que le
+ * workflow reel porte deja n'est pas rajoute : a partir de R2, les sondes de
+ * `needs` mordent sur le vrai `build`, pas sur une copie.
+ */
+const CHAINE = {
+  build: `
   build:
     needs: test
     runs-on: ubuntu-24.04
     steps:
       - run: ./scripts/build-image.sh
+`,
+  deploy: `
   deploy:
     needs: build
     runs-on: ubuntu-24.04
     environment: production
     steps:
       - run: ./scripts/verifier-image.sh
-`;
+`,
+};
 
-const avecChaine = (depot: Depot): Depot => ajouterJobs(depot, CHAINE);
+function avecChaine(depot: Depot): Depot {
+  const presents = jobs(porte(depot), PORTE);
+  const manquants = Object.entries(CHAINE).filter(([job]) => !(job in presents));
+  return ajouterJobs(depot, manquants.map(([, yaml]) => yaml).join(''));
+}
 
 interface Sonde {
   readonly regle: keyof typeof REGLES;
@@ -508,7 +520,7 @@ const SONDES: readonly Sonde[] = [
     regle: 'inconditionnelle',
     mutation: 'une couverture dont l echec est avale',
     appliquer: (d) => muter(d, PORTE, COUVRIR, `${COUVRIR}\n        continue-on-error: true`),
-    motif: 'step 5 : continue-on-error',
+    motif: 'continue-on-error avale',
   },
   {
     regle: 'latest',
