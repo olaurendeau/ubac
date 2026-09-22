@@ -36,7 +36,7 @@
 import type { Reporter, TestCase, TestModule } from 'vitest/node';
 
 /** Part du delai consommee a partir de laquelle le tableau s'affiche. */
-const WARN_RATIO = 0.5;
+const WARN_RATIO = 0.05;
 /** Part du delai consommee a partir de laquelle le run echoue. */
 const FAIL_RATIO = 0.8;
 
