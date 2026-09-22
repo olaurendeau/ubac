@@ -12,13 +12,16 @@ import { PORTFOLIO_KEYS, SUSPENSION_MARKER } from '../../src/jobs/snapshot.js';
 import type { DailyCandle, DailyWindow } from '../../src/adapters/market.js';
 import type { HttpOutcome, HttpRequest, HttpSend } from '../../src/adapters/http.js';
 import { RUN_MARKER, openHealthcheck } from '../../src/adapters/healthcheck.js';
+import type { Effets } from '../../src/adapters/inertes.js';
+import { DECISION_NON_ECRITE, portsInertes } from '../../src/adapters/inertes.js';
 import { openMailer } from '../../src/adapters/mailer.js';
 import type { AlertEvent } from '../../src/adapters/notifier.js';
 import { openNotifier } from '../../src/adapters/notifier.js';
 import type { UbacConfig } from '../../src/config/env.js';
 import { loadConfig, NTFY_CANAL_OUVERT } from '../../src/config/env.js';
 import { expectedCalendar } from '../../src/fixture/normalise.js';
-import type { Price, Quantity, UsdcAmount } from '../../src/core/types.js';
+import { clientOrderId } from '../../src/core/order-id.js';
+import type { Order, Price, Quantity, UsdcAmount } from '../../src/core/types.js';
 import type { DailyPorts, DailyRunResult, RunClock } from '../../src/jobs/daily.js';
 import { DailyRunError, NTFY_CANAL_OUVERT_LIGNE, reported, runDaily } from '../../src/jobs/daily.js';
 import { RESYNC_MARKER } from '../../src/jobs/reconcile.js';
@@ -142,6 +145,8 @@ interface Harnais {
   readonly courriers: { readonly url: string; readonly payload: BrevoPayload }[];
   /** Les pings reellement tentes, corps en clair compris. Au plus un par run. */
   readonly pings: { readonly url: string; readonly body: string }[];
+  /** Les ordres transmis au port d'execution, dans l'ordre de l'etape 6. */
+  readonly ordres: Order[];
 }
 
 /**
@@ -216,6 +221,7 @@ function harnais(scenario: Scenario = {}): Harnais {
   const pushes: { url: string; payload: NtfyPayload }[] = [];
   const courriers: { url: string; payload: BrevoPayload }[] = [];
   const pings: { url: string; body: string }[] = [];
+  const ordres: Order[] = [];
   if (scenario.snapshot !== undefined) photos.set(scenario.snapshot.runDate, scenario.snapshot);
   const runDate = scenario.runDate ?? RUN_DATE;
   const closes = scenario.closes ?? { BTC: BTC_CLOSE, ETH: ETH_CLOSE };
@@ -256,6 +262,7 @@ function harnais(scenario: Scenario = {}): Harnais {
     pushes,
     courriers,
     pings,
+    ordres,
     gitSha: GIT_SHA,
     clock: { today: () => runDate, instant: () => new Date(`${runDate}T07:00:00.000Z`) },
     config,
@@ -334,6 +341,18 @@ function harnais(scenario: Scenario = {}): Harnais {
       notifier: openNotifier(config.secrets, transport),
       mailer: openMailer(config.secrets, postier),
       healthcheck: openHealthcheck(config.secrets, pulse),
+      /* Un double du port reel : il compte, et rend ce que l'exchange rendrait. */
+      execution: {
+        placeOrder: (order) => {
+          appels.push('placeOrder');
+          ordres.push(order);
+          return Promise.resolve({ exchangeId: `ex-${order.clientOrderId}`, clientOrderId: order.clientOrderId });
+        },
+        cancelOrders: (ids) => {
+          appels.push('cancelOrders');
+          return Promise.resolve(ids.map((exchangeId) => ({ kind: 'CANCELLED' as const, exchangeId })));
+        },
+      },
     },
   };
 }
@@ -1966,5 +1985,145 @@ describe('la ligne du canal ouvert — §9, ecart assume', () => {
 
     expect(h.pushes).not.toHaveLength(0);
     expect(h.pushes[0]?.payload.topic).toBe(ENV.NTFY_TOPIC);
+  });
+});
+
+// --- §8 etape 6, et le DRY_RUN -----------------------------------------------
+
+/** Cash a 23 % : sous la borne de 24 %, et un retour a la cible de 7 %, sous le plafond de 8 %. */
+const JUSTE_HORS_BANDE: readonly AssetBalance[] = [
+  solde('BTC', '0.94'),
+  solde('ETH', '12'),
+  solde('USDC', '23000'),
+];
+
+function ordresDe(result: DailyRunResult, strategy: string): readonly Order[] {
+  const verdict = complete(result).outcomes.find((o) => o.strategy === strategy)?.verdict;
+  return verdict?.status === 'ACCEPTED' ? verdict.orders : [];
+}
+
+describe('§8 etape 6 — seule la production transmet ses ordres (E18)', () => {
+  /*
+   * Le ladder, sans ancre, ne peut rien franchir : il rend `ACCEPTED` sans ordre.
+   * Les deux autres ombres en ont, et ceux de `rebalance_ab` sont ceux de la
+   * production a l'identique, `client_order_id` compris — c'est pourquoi la
+   * sonde compte les ordres transmis au lieu de chercher un intrus.
+   */
+  it('quatre verdicts ACCEPTED, et seuls les ordres de rebalance atteignent le port', async () => {
+    const h = harnais({ balances: JUSTE_HORS_BANDE, runDate: '2026-10-01' });
+    const result = await lance(h);
+
+    expect(complete(result).outcomes.map((o) => o.verdict.status)).toEqual(['ACCEPTED', 'ACCEPTED', 'ACCEPTED', 'ACCEPTED']);
+    expect(ordresDe(result, 'rebalance_ab')).not.toHaveLength(0);
+    expect(ordresDe(result, 'dca')).not.toHaveLength(0);
+    expect(h.ordres).toEqual(ordresDe(result, 'rebalance'));
+    expect(h.ordres.map((o) => `${o.side} ${o.asset}`)).toEqual(['SELL BTC']);
+  });
+
+  it('un verdict REJECTED de la production ne transmet rien', async () => {
+    const h = harnais({ balances: HORS_BANDE });
+    await lance(h);
+
+    expect(h.appels).not.toContain('placeOrder');
+  });
+});
+
+/** Les six effets comptes : trois ecritures — decision, photo, ordre — et trois envois. */
+const EFFETS = ['recordDecision', 'recordSnapshot', 'placeOrder', 'notify', 'sendReport', 'ping'] as const;
+
+const compte = (h: Harnais): Record<string, number> =>
+  Object.fromEntries(EFFETS.map((effet) => [effet, h.appels.filter((a) => a === effet).length]));
+
+/**
+ * Le run du harnais, compose **comme `daily-main.ts` le compose** en `DRY_RUN` :
+ * les vrais ports du harnais passent par `portsInertes`, la meme fonction, et
+ * non par une recopie de la substitution.
+ */
+function enDryRun(h: Harnais): Promise<DailyRunResult> {
+  const { db, notifier, mailer, healthcheck, execution } = h.ports;
+  const reels: Effets = {
+    db: { ...db, close: () => Promise.resolve() },
+    notifier,
+    mailer,
+    healthcheck,
+    execution,
+  };
+  return runDaily({ ...h, ports: { ...h.ports, ...portsInertes(reels, h.log) } });
+}
+
+describe('DRY_RUN — des ports inertes a la place des vrais (E14, E15, E16)', () => {
+  /*
+   * Une journee qui atteint les six effets en mode normal : un ordre, et une
+   * resynchronisation qui fait partir une alerte. Sans elle, la sonde de
+   * comptage serait vraie par vacuite pour ntfy.
+   */
+  const JOURNEE: Scenario = {
+    balances: JUSTE_HORS_BANDE,
+    snapshot: cache({ BTC: qty('0.9'), ETH: qty('12'), USDC: qty('30000') }, '100000'),
+  };
+
+  it('n’appelle aucune des trois ecritures ni aucun des trois envois, que le mode normal atteint', async () => {
+    const normal = harnais(JOURNEE);
+    await lance(normal);
+    expect(compte(normal)).toEqual({ recordDecision: 4, recordSnapshot: 1, placeOrder: 1, notify: 1, sendReport: 1, ping: 1 });
+
+    const essai = harnais(JOURNEE);
+    const result = await enDryRun(essai);
+
+    expect(compte(essai)).toEqual({ recordDecision: 0, recordSnapshot: 0, placeOrder: 0, notify: 0, sendReport: 0, ping: 0 });
+    expect(essai.appels).not.toContain('cancelOrders');
+    expect(essai.table.size).toBe(0);
+    expect([...essai.photos.keys()]).toEqual([PRICED_ON]);
+    expect(essai.pushes).toEqual([]);
+    expect(essai.courriers).toEqual([]);
+    expect(essai.pings).toEqual([]);
+    // Des reponses nominales : le code de sortie est celui d'une journee sans panne.
+    expect(reported(result)).toBe(true);
+    expect(result.report.ping).toEqual({ status: 'PINGED', marked: true });
+  });
+
+  /*
+   * Le piege du lot : couper les lectures rendrait un run sur une journee vide.
+   * La photo de la veille, lue, est ce qui fait conclure a la resynchronisation.
+   */
+  it('lit la vraie base : photo de la veille, serie, flux et ordres en attente', async () => {
+    const essai = harnais(JOURNEE);
+    const result = complete(await enDryRun(essai));
+
+    for (const lecture of ['pendingOrders', 'latestSnapshot', 'snapshotSeries', 'recentCashFlows']) {
+      expect(essai.appels, lecture).toContain(lecture);
+    }
+    expect(result.previousSnapshot?.runDate).toBe(PRICED_ON);
+    expect(result.resync.status).toBe('RESYNCHRONIZED');
+    expect(result.outcomes.map((o) => o.recorded)).toEqual(
+      LES_QUATRE.map(() => ({ status: 'RECORDED', id: DECISION_NON_ECRITE })),
+    );
+  });
+
+  it('journalise les six champs de chaque jambe qui serait partie, client_order_id du noyau compris', async () => {
+    const essai = harnais(JOURNEE);
+    const result = await enDryRun(essai);
+    const ordres = ordresDe(result, 'rebalance');
+
+    expect(ordres.map((o) => o.clientOrderId)).toEqual([
+      clientOrderId({ runDate: RUN_DATE, asset: 'BTC', side: 'SELL', legIndex: 0 }),
+    ]);
+    expect(essai.lignes.filter((l) => l.startsWith('ordre non place'))).toEqual(
+      ordres.map(
+        (o) =>
+          `ordre non place (port journalisant) : client_order_id=${o.clientOrderId} paire=BTC-USDC cote=SELL quantite=0.14 prix_limite=50000 post_only=true`,
+      ),
+    );
+  });
+
+  /* L'identifiant du portefeuille n'est pas un secret : E8 le journalise a chaque run. */
+  it('ne cite aucun secret dans son journal', async () => {
+    const essai = harnais(JOURNEE);
+    await enDryRun(essai);
+    const journal = essai.lignes.join('\n');
+
+    for (const [nom, valeur] of Object.entries(ENV)) {
+      if (nom !== 'COINBASE_PORTFOLIO_UUID') expect(journal, nom).not.toContain(valeur);
+    }
   });
 });

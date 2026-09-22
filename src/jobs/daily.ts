@@ -1,6 +1,6 @@
 import type { Decimal } from 'decimal.js';
 
-import type { CoinbaseReader } from '../adapters/coinbase.js';
+import type { CoinbaseReader, ExecutionPort } from '../adapters/coinbase.js';
 import type {
   CashFlowRecord,
   RecordDecisionOutcome,
@@ -37,21 +37,28 @@ import type {
 import { renderDailyReport } from '../report/daily-report.js';
 import type { AlertInput } from './alerts.js';
 import { alertsFor } from './alerts.js';
+import { placer } from './execute.js';
 import type { ReconcileObservations, Resynchronization } from './reconcile.js';
 import { reconcile } from './reconcile.js';
 import type { BenchmarkGap, DrawdownState, SnapshotWrite, Suspension } from './snapshot.js';
 import { prepareSnapshot } from './snapshot.js';
 
 /**
- * Le run quotidien de la spec §8, **etapes 1 a 5 et 7 a 9**. Il lit, il decide,
- * il journalise, il photographie, il rend compte, et il ne place rien.
+ * Le run quotidien de la spec §8, **etapes 1 a 9**. Il lit, il decide, il
+ * journalise, il transmet les ordres de la production, il photographie, il rend
+ * compte.
  *
- * **L'etape 6, l'execution, n'existe pas.** Ce n'est pas une etape laissee vide :
- * aucun code de placement n'est ecrit ici, et le garde-fou de noms
- * d'`eslint.config.js` refuserait celui qui l'ecrirait. **Tout le §9 part
- * d'ici** : les alertes push (`alerts.ts`, `docs/alertes.md`), le rapport
- * quotidien (`src/report/daily-report.ts`, `docs/rapport-quotidien.md`) et le
- * ping du healthcheck (`healthcheck.ts`, `docs/healthcheck.md`).
+ * **L'etape 6 est minimale, et elle ne sait pas a qui elle parle.** Les ordres
+ * d'un verdict `ACCEPTED` de la seule production passent par `execute.ts` vers
+ * `ports.execution` ; ce port est compose par `daily-main.ts`, et c'est jusqu'a
+ * l'armement (S7) le port **journalisant** d'`inertes.ts`, dans les deux modes.
+ * Aucune condition de mode n'est ecrite ici (E15) : `DRY_RUN` ou non, ce module
+ * appelle les memes ports.
+ *
+ * **Tout le §9 part d'ici** : les alertes push (`alerts.ts`, `docs/alertes.md`),
+ * le rapport quotidien (`src/report/daily-report.ts`,
+ * `docs/rapport-quotidien.md`) et le ping du healthcheck (`healthcheck.ts`,
+ * `docs/healthcheck.md`).
  *
  * Cinq proprietes gouvernent ce fichier.
  *
@@ -171,7 +178,8 @@ function shiftDay(date: IsoDate, jours: number, champ: string): IsoDate {
 
 /**
  * Ce que le run consomme, en `Pick` plutot qu'en interfaces entieres : le type
- * dit exactement ce qu'il touche, et rien ici ne peut ecrire sur l'exchange.
+ * dit exactement ce qu'il touche. L'ecriture sur l'exchange n'y entre que par
+ * `execution`, et n'est appelee que par `execute.ts` (E11, A23).
  *
  * `balances` figure dans le `Pick` sans que ce module l'appelle : il passe
  * l'objet a `reconcile`, seul fichier de `src/jobs/` autorise a lire les soldes.
@@ -194,6 +202,8 @@ export interface DailyPorts {
   readonly mailer: Mailer;
   /** §9 : la surveillance d'absence. Elle ne rejette jamais non plus, meme motif. */
   readonly healthcheck: Healthcheck;
+  /** Etape 6 : le port d'execution, jamais appele d'ici mais par `execute.ts`. */
+  readonly execution: ExecutionPort;
 }
 
 export interface DailyRun {
@@ -574,7 +584,7 @@ function decideAll(
 // --- Le run -----------------------------------------------------------------
 
 /**
- * §8, etapes 1 a 5 et 7. Rend un resultat ; ne leve que sur une entree qui ne
+ * §8, etapes 1 a 7. Rend un resultat ; ne leve que sur une entree qui ne
  * ressemble pas a ce que le type promet — une serie de bougies qui ne finit pas
  * ou l'on a demande, par exemple. **N'alerte pas** : c'est `runDaily` qui le
  * fait, une fois que celui-ci a rendu ou leve.
@@ -715,6 +725,19 @@ async function executeRun(run: DailyRun): Promise<DailyOutcome> {
       `${strategy}${isShadow ? ' (shadow)' : ''} : ${intent.trigger}, ${intent.legs.length} jambe(s), risque ${verdict.status} — ${recorded.status}`,
     );
     outcomes.push({ strategy, isShadow, intent, verdict, recorded });
+  }
+
+  /*
+   * 6. L'execution, **de la production seule et d'un verdict `ACCEPTED`
+   * seulement** (E18) : une ombre ne place rien, par definition, et ses
+   * `client_order_id` — ceux de la production des que la jambe coincide — le
+   * rendraient dangereux. Minimale : ni ecriture dans `orders`, ni classement
+   * d'un rejet, ni alerte ; c'est l'armement (S7) qui les ajoute.
+   */
+  for (const { strategy, isShadow, verdict } of outcomes) {
+    if (isShadow || verdict.status !== 'ACCEPTED' || verdict.orders.length === 0) continue;
+    const transmis = await placer(ports.execution, verdict.orders);
+    log(`${strategy} : ${String(transmis.length)} ordre(s) transmis au port d'execution`);
   }
 
   /*

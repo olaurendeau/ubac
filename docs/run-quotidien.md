@@ -40,13 +40,19 @@ npm run daily -- --run-date=2026-09-01 --at=2026-09-01T06:00:00Z --git-sha=<sha>
 dernière occurrence d'une option gagne : c'est ce qui permet de remplacer un
 défaut sans avoir à deviner l'ordre.
 
-### Les trois arguments
+### Les quatre arguments
 
 | Argument | Requis | Rôle |
 |---|---|---|
 | `--run-date=YYYY-MM-DD` | oui | jour UTC du run. Clé de `decisions` avec la stratégie. |
 | `--git-sha=<sha>` | oui | code qui tourne, journalisé dans `decisions.git_sha`. |
 | `--at=<instant ISO>` | non | `decisions.created_at` ; par défaut `00:00:00Z` du jour de run. |
+| `--dry-run` | non | lit tout, n'écrit rien en base et n'envoie rien. Section 8. |
+
+**Tout autre argument arrête le programme**, avant la configuration :
+`--dryrun` ou `--dry-run=true`, ignorés en silence, feraient un run réel de ce
+qui devait être un essai à blanc. Le message cite le nom de l'argument, jamais
+ce qui suit son `=`.
 
 **Aucun n'a de valeur de repli dans le code.** `--run-date` et `--git-sha` absents
 arrêtent le programme avec le mode d'emploi, et une valeur vide vaut absente —
@@ -115,7 +121,7 @@ refus du préfixe `UBAC_RISK_` et le filtre des littéraux décimaux.
 Aucune variable `UBAC_RISK_*` n'est acceptée : les seuils de risque vivent dans
 `src/core/risk.ts`, couverts à 100 %, et n'ont pas de mode de contournement.
 
-## 3. Ce que le run fait : les étapes 1 à 5 et 7 à 9
+## 3. Ce que le run fait : les étapes 1 à 9
 
 1. **Healthcheck de démarrage.** La clé répond, et le run dit ce qu'il est.
 2. **Réconciliation**, avant toute décision. Un abandon arrête le run **avant la
@@ -129,6 +135,10 @@ Aucune variable `UBAC_RISK_*` n'est acceptée : les seuils de risque vivent dans
    décidées, validées par la couche risque, puis journalisées. Une ligne par
    stratégie et par run, `trigger NONE` comprise : un run sans action laisse une
    trace.
+6. **L'exécution, minimale.** Les ordres d'un verdict `ACCEPTED` de la **seule
+   production** passent par `src/jobs/execute.ts` vers le port d'exécution ; une
+   ombre n'y passe jamais (E18). Ce port est, dans les deux modes, le port
+   **journalisant** : rien n'est placé. Section 4.
 7. **Benchmarks et photo du jour** dans `snapshots` : valeur totale, poids,
    positions, benchmarks. Détail ci-dessous.
 8. **Le rapport quotidien Brevo.** Tout run conclu l'envoie, `trigger NONE`
@@ -291,11 +301,17 @@ condamné. Voir [reconciliation.md](reconciliation.md) section 1 bis.
 
 ## 4. Ce que le run ne fait pas
 
-**L'étape 6, l'exécution, n'existe pas.** Ce n'est pas une étape laissée vide ni
-désarmée par un drapeau : aucun code de placement n'est écrit, et le garde-fou de
-noms d'`eslint.config.js` refuse dans `src/adapters/` et `src/jobs/` tout nom qui
-dénote un placement, une annulation ou un retrait. La clé Coinbase est en lecture
-seule.
+**Il ne place aucun ordre.** L'étape 6 existe, mais le port qu'elle appelle est
+`executionJournalisee` d'`src/adapters/inertes.ts`, **dans les deux modes** : il
+journalise, pour chaque jambe qui serait partie, `client_order_id`, paire, côté,
+quantité, prix limite et `post_only`, lus sur le corps même que l'exécuteur réel
+enverrait. Le port réel, `openCoinbaseExecution`, n'est composé nulle part : A24
+de `test/jobs/purete.test.ts` le constate sur tout `src/`. C'est l'armement (S7)
+qui le composera, avec l'écriture `PENDING` dans `orders` avant le placement, le
+classement d'un rejet post-only, `REBALANCE_EXECUTED` et le prix mid ± 0,1 %.
+
+Conséquence voulue : **chaque run de production journalise déjà ce qu'il aurait
+placé**, sur les vraies données, sans qu'un ordre parte.
 
 **Les trois canaux du §9, eux, partent bien d'ici**, après la dernière écriture
 et dans cet ordre : les **alertes push** ([alertes.md](alertes.md)), puis le
@@ -312,7 +328,8 @@ L'étape 3 du §7 — « annuler tout ordre limit non exécuté datant de plus d
 
 - en phase 1 aucun ordre n'est jamais placé, donc aucun ordre ne peut avoir plus
   de 24 h ; la branche serait du code mort, non testable sur des données réelles ;
-- écrire un appel d'annulation contredirait le garde-fou de phase cité ci-dessus ;
+- écrire un appel d'annulation contredisait alors le garde-fou de phase, retiré
+  depuis (B4) ;
 - la clé est en lecture seule, donc le chemin ne serait de toute façon pas
   testable de bout en bout.
 
@@ -377,3 +394,71 @@ docker run --rm --network none -v "$PWD":/workspace \
   -v ubac-q4b1-run_ubac_node_modules:/workspace/node_modules \
   -w /workspace ubac-q4b1-run-dev npm test
 ```
+
+## 8. Le `DRY_RUN`
+
+```sh
+npm run daily -- --git-sha="$(git rev-parse --verify HEAD)" --dry-run
+```
+
+Sur l'image déployée, l'essai est le **même job** lancé à la main avec
+`--dry-run` pour commande : le point d'entrée de l'image ajoute ses arguments
+après les siens (`scripts/entrypoint-job.sh`). Même image, même environnement,
+mêmes secrets ; seul le drapeau diffère. La syntaxe `scw` qui passe une commande
+au job n'a pas été vérifiée contre un compte réel.
+
+**La première ligne du journal dit le mode**, `mode DRY_RUN : …` ou
+`mode normal : …`, avant toute autre ligne du run : un drapeau perdu en chemin
+est un run réel, et c'est là qu'on le voit.
+
+### Lire, oui ; écrire, non
+
+C'est la distinction qui décide si le mode vaut quelque chose. **Un `DRY_RUN`
+lit la vraie base et le vrai exchange** : clé, soldes, ordres ouverts, bougies,
+et en base `latestSnapshot`, `snapshotSeries`, `recentCashFlows` et
+`pendingOrders`. Couper ces lectures ferait tourner le run sur une journée vide
+— pas de photo de la veille, pas de flux, pas de réconciliation — qui ne
+rejouerait rien et ne prouverait rien.
+
+**Il n'écrit rien et n'envoie rien** (E16) : ni `decisions`, ni `snapshots`, ni
+ordre, ni alerte ntfy, ni rapport Brevo (D10), ni ping. La photo du jour porte un
+indice de croissance qui se rechaîne sur lui-même : une photo posée par un essai
+casserait la chaîne du run réel. Le ping dirait à updown.io qu'un run a conclu
+alors que celui du jour n'a pas eu lieu.
+
+### Des ports inertes, pas une condition
+
+`daily-main.ts` lit `--dry-run` **une fois** et compose, à la place des vrais,
+les ports d'`src/adapters/inertes.ts` : `portsInertes` garde la base pour ses
+lectures et remplace ses deux écritures, les trois envois et l'exécution. Ce
+sont des implémentations **des mêmes types** ; `daily.ts` reçoit un objet de la
+même forme et ne peut pas savoir lequel (E15). A25 de `test/jobs/purete.test.ts`
+refuse que le mode soit nommé ailleurs dans `src/` — ni condition, ni paramètre,
+ni variable d'environnement — et que `force` ou `bypass` le soient où que ce soit
+(E17).
+
+**Chaque port inerte rend la réponse nominale** du vrai, jamais une forme
+dégradée, et dit sur sa propre ligne ce qu'il a retenu :
+
+| Port | Réponse | Ce qu'il faut savoir en lisant le journal |
+|---|---|---|
+| `recordDecision` | `RECORDED`, id = UUID nul | jamais `ALREADY_RECORDED` : l'essai rejoue la journée comme si elle était la première |
+| `recordSnapshot` | rien | la photo de la veille reste la dernière en base |
+| `notify` | `SENT` | « alerte … : partie » suit la ligne `ntfy inerte : … retenue` |
+| `sendReport` | `SENT`, `HTTP 0` | zéro : aucun échange n'a eu lieu, et aucun code Brevo ne vaut zéro |
+| `ping` | `PINGED` | le marqueur est celui que le corps aurait porté |
+| `placeOrder` | identifiant `non-place-<client_order_id>` | les six champs, sur une ligne `ordre non place` |
+
+Un `FAILED` aurait fait sortir l'essai en 1 et changé le pulse pour une raison
+qui n'est pas la sienne. Le code de sortie d'un `DRY_RUN` est donc celui qu'aurait
+eu le run réel sur la même journée, pannes des canaux mises à part.
+
+### Ce que la sonde garantit, et sa limite
+
+`test/jobs/daily.test.ts` fait tourner la même journée deux fois : en mode
+normal, elle atteint les six effets — quatre décisions, une photo, un ordre, une
+alerte, un rapport, un ping ; sous `portsInertes`, **aucun**, et les quatre
+lectures de la base ont eu lieu. La sonde compte **ce que les ports reçoivent,
+pas ce que le processus fait** : un module qui ouvrirait sa propre connexion
+échapperait au comptage. C'est A20, qui réserve les adapters en valeur à
+`daily-main.ts`, qui ferme ce chemin dans `src/jobs/`.

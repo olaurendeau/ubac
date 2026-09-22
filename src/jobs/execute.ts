@@ -14,9 +14,11 @@ import type { Order } from '../core/types.js';
  * d'annulation (S8, T4) au lieu d'annuler elle-meme. `core/risk.ts` n'est pas
  * dans ce chemin, donc pas dans celui de la sortie (E48).
  *
- * **Rien ne l'appelle a la fin du lot S4**, et c'est voulu : le lot livre la
- * capacite, pas l'usage. Un garde-fou qui ne designe personne est vide ; ce
- * module existe d'abord pour que celui d'E11 designe quelqu'un.
+ * **Son premier appelant est l'etape 6 minimale de `daily.ts` (S5)**, qui ne
+ * lui transmet que les ordres de la production — et un port que `daily-main.ts`
+ * compose **journalisant** dans les deux modes. Que le port reel ne soit compose
+ * nulle part n'est plus lisible a l'absence d'appel : A24 de
+ * `test/jobs/purete.test.ts` le constate.
  */
 
 /** Un lot d'ordres que ce module refuse d'envoyer, avant tout envoi. */
