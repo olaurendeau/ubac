@@ -452,8 +452,11 @@ PR et dans une tâche Orca.
 
 Les trois décisions se referment l'une sur l'autre : le plafond **est**
 `REBALANCE_TOO_LARGE_PCT` abaissé, il refuse le run entier au lieu de raboter,
-et il se lève par un commit. Le mécanisme de rejet, le motif journalisé et
-l'alerte existent depuis la phase 0 ; ce qui est neuf est la valeur.
+et il se lève par un commit. Le mécanisme de rejet et l'alerte existent depuis
+la phase 0 ; **le motif journalisé, lui, n'existait pas** — le cadrage l'avait
+supposé sans le vérifier, la revue du lot l'a infirmé, et E32 le décrit tel
+qu'il est désormais. Sont donc neufs : la valeur, et le motif lisible écrit
+dans `decisions.reason`.
 
 29. Un plafond réduit est **armé dès le premier run qui exécute**, et il est
     strictement plus contraignant que `REBALANCE_TOO_LARGE_PCT` à 25 %.
