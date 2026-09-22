@@ -86,10 +86,10 @@ describe('formatReport', () => {
  * Lenteur assumee, pas negligee — ne pas la generaliser au reste de la suite.
  *
  * 60 s et non plus 30 depuis le lot R1 de la phase 2 : sur le runner de la porte
- * (`ubuntu-24.04`), le premier test de ce bloc a ete mesure jusqu'a 15 082 ms,
- * 50 % de 30 s, sur deux executions lentes de cinq — a un facteur 1,6 du seuil
- * ou le reporter de marge fait rougir la porte. Mesures :
- * `docs/integration-continue.md`.
+ * (`ubuntu-24.04`), le premier test de ce bloc a ete mesure jusqu'a 15 610 ms,
+ * 52 % de 30 s, et au-dela de 49 % sur chacune des trois executions lentes de
+ * six — a un facteur 1,5 du seuil ou le reporter de marge fait rougir la porte.
+ * Mesures : `docs/integration-continue.md`.
  */
 describe('renderReplay', { timeout: 60_000 }, () => {
   it('fige les six series C29 et reste identique octet pour octet', async () => {

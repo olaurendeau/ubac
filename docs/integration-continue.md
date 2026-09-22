@@ -99,8 +99,9 @@ en mémoire, qui doit la faire rougir. Vingt-sept sondes, dont les quatre
 mutations exigées par le plan — retirer `needs: test`, remplacer la couverture
 par `npm test`, écrire `drizzle-kit` dans un workflow, faire diverger la version
 de Node. `build` et `deploy` n'existant pas encore, les sondes de `needs`
-ajoutent la chaîne complète du §10 au workflow réel, puis la cassent ; un test
-constate que cette chaîne complète, intacte, passe toutes les règles.
+ajoutent au workflow réel ceux des jobs du §10 qu'il n'a pas, puis cassent la
+chaîne ; un test constate qu'intacte, elle passe toutes les règles. À partir de
+R2, elles mordent sur le vrai `build`.
 
 Le garde-fou lit **ce que les fichiers disent**, pas ce que GitHub exécute : voir
 les limites.
@@ -110,34 +111,48 @@ les limites.
 `test/budget-reporter.ts` fait rougir le run au-delà de 80 % du délai propre d'un
 test (`docs/marge-des-delais.md`). Le plan de la phase 2 attendait le pire cas
 sur le rejeu — 9 542 ms sur 30 000 au poste, 31,8 % — et demandait de **mesurer
-d'abord sur le runner**. Trois exécutions de la porte, sur `ubuntu-24.04`, le
-2026-09-22, tableau du reporter abaissé temporairement à 5 % pour tout voir :
+d'abord sur le runner**. Neuf exécutions de la porte sur `ubuntu-24.04`, le
+2026-09-22, tableau du reporter abaissé temporairement à 5 % pour tout voir
+(commit de mesure puis revert, tous deux dans la PR). Durées en ms :
 
-| Test (`test/`) | Délai | Run 1 | Run 2 | Run 3 | Pire |
-|---|---:|---:|---:|---:|---:|
-| `jobs/purete.test.ts` > A3 | 5 000 | 2 419 | 3 650 | 1 971 | **73 %** |
-| `replay/report.test.ts` > fige les six séries | 30 000 | 7 648 | 15 082 | 7 504 | 50 % |
-| `jobs/purete.test.ts` > A25 | 5 000 | 888 | 1 779 | 824 | 36 % |
-| `jobs/purete.test.ts` > A24 | 5 000 | 953 | 1 758 | 1 186 | 35 % |
-| `structure.test.ts` > C1, frontière de couche | 5 000 | 744 | 1 540 | — | 31 % |
-| `replay/engine.test.ts` > six séries C29 | 30 000 | 4 995 | 9 084 | 4 878 | 30 % |
-| Durée totale de vitest | | 30,2 s | 56,1 s | 29,6 s | |
+| Test (`test/`) | R1 | R2 | R3 | R4 | R5 | R6 | R7 | R8 | R9 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `jobs/purete.test.ts` > A3 | 2 419 | 3 650 | 1 971 | 2 916 | 3 852 | 4 153 | 2 826 | 3 940 | 4 636 |
+| `replay/report.test.ts` > fige les six séries | 7 648 | 15 082 | 7 504 | 12 378 | 14 738 | 15 610 | 11 634 | 15 504 | 14 631 |
+| `jobs/purete.test.ts` > A24 | 953 | 1 758 | 1 186 | 1 412 | 1 814 | 1 727 | 1 382 | 1 700 | 1 796 |
+| `jobs/purete.test.ts` > A25 | 888 | 1 779 | 824 | 1 285 | 1 788 | 1 721 | 1 194 | 1 701 | 1 743 |
+| `structure.test.ts` > C1, frontière de couche | 744 | 1 540 | 707 | 1 309 | 1 328 | 1 759 | 1 042 | 1 544 | 1 446 |
+| `replay/engine.test.ts` > six séries C29 | 4 995 | 9 084 | 4 878 | 7 171 | 8 399 | 8 980 | 6 119 | 8 682 | 8 491 |
+| Durée totale de vitest (s) | 30,2 | 56,1 | 29,6 | 45,3 | 55,1 | 56,5 | 41,5 | 56,0 | 55,4 |
 
-Deux constats.
+R1 à R3 tournent avec les délais d'origine ; A3 a son délai ciblé à partir de
+R4, le bloc `renderReplay` le sien à partir de R7.
 
-1. **Le pire test n'est pas celui qu'on attendait.** Sur le runner, le rejeu est
-   plus rapide qu'au poste ; c'est **A3**, qui linte `src/jobs/` sept fois sous
-   un délai de 5 s, qui s'effondre : 1,3 s au poste, jusqu'à 3,65 s sur le runner.
-   À 73 %, il est à un facteur 1,1 de faire rougir la porte.
-2. **Le runner est bruité** : le run 2 a duré 1,9 fois le run 1, sur le même
-   commit.
+Trois constats.
 
-Remède, selon la règle et sans la renégocier : un **délai ciblé de 30 s sur A3
-seul**, comme celui d'A22 dans le même fichier, avec son motif écrit dans le
-test. A4, dans le même bloc, reste à 5 s. Le `testTimeout` global n'est pas
-touché.
+1. **Le pire test n'est pas celui qu'on attendait.** Le rejeu ralentit au plus
+   de moitié par rapport au poste ; c'est **A3**, qui linte `src/jobs/` sept
+   fois sous un délai de 5 s, qui s'effondre : 1,3 s au poste, jusqu'à 4,6 s sur
+   le runner. Rapporté à 5 s, il dépasse 80 % en R6 (83 %) et en R9 (93 %) : **à
+   délai inchangé, la porte aurait rougi deux fois sur neuf**, sans qu'aucune
+   ligne de code ne soit en cause.
+2. **Le rejeu passe la moitié de son délai sur une exécution lente.** Rapporté à
+   30 s, le premier test de `renderReplay` atteint 50 %, 49 %, 52 %, 52 % et 49 %
+   sur les exécutions lentes — à un facteur 1,5 de l'échec.
+3. **Le runner est bruité** : de 30 à 56 s pour le même commit, et cinq
+   exécutions sur neuf au-delà de 55 s.
 
-MESURES_APRES
+Remède, selon la règle et sans la renégocier : des **délais ciblés, avec leur
+motif écrit dans le test**. A3 reçoit 30 s, sur ce test seul, comme A22 dans le
+même fichier ; A4, dans le même bloc, reste à 5 s. Le bloc `renderReplay` passe
+de 30 à 60 s. Le `testTimeout` global n'est pas touché, et aucun autre test ne
+change de délai.
+
+Après correctif (R7 à R9), le pire test du runner est **A24, à 36 % de ses 5 s**
+(1 796 ms), soit un facteur 2,2 avant l'échec sur l'exécution la plus lente
+mesurée. A3 tient à 15 % de 30 s, le rejeu à 26 % de 60 s. A24, A25 et C1 sont
+les suivants sur la liste : s'ils franchissent 50 %, le reporter l'affiche dans
+le journal de la porte.
 
 ## 5. D3 — ce que l'opérateur coche dans la console
 
@@ -188,14 +203,21 @@ merge.
   `actions/checkout@v7` et `actions/setup-node@v7` sont des étiquettes majeures,
   dont le contenu peut changer sous la chaîne. Risque accepté, pas ignoré — il
   pèsera davantage quand la chaîne détiendra une clé de déploiement (R2).
-- **Le cache npm** est restauré depuis le cache d'Actions. Pour un job qui ne
-  fait que lire le code et ne voit aucun secret, un cache empoisonné ne peut
-  rien voler. `actions/setup-node` recommande de s'en passer dans un job à
-  privilèges : R2 et R3 doivent reposer la question, pas hériter de la réponse.
+- **Le cache npm** est restauré depuis le cache d'Actions. Il ne contient que
+  `~/.npm`, dont `npm ci` vérifie chaque paquet contre l'empreinte de
+  `package-lock.json`, et une PR n'écrit que dans le cache de sa propre
+  référence, jamais dans celui de `main`. `actions/setup-node` recommande
+  pourtant de s'en passer dans un job à privilèges : R2 et R3 doivent reposer la
+  question, pas hériter de la réponse.
+- **Une PR venue d'un fork fait tourner son code** sur le runner : le dépôt est
+  public. Elle le fait avec le jeton en lecture et sans aucun secret, ce que
+  `pull_request` garantit et que `pull_request_target` ne garantirait pas — d'où
+  son refus par le garde-fou.
 - **Node est aligné au majeur, pas au correctif.** Le runner prend le dernier
   22.x de son cache (22.23.2 le 2026-09-22), le poste celui de son image
   `node:22-bookworm` au moment où elle a été construite.
 - **Une branche sans PR n'est pas testée** : voir §1, c'est voulu.
 - **Le runner est partagé et bruité** (§4). Le garde-fou de marge rend un
-  ralentissement visible, il ne le supprime pas : un run deux fois plus lent que
-  le pire mesuré ici ferait encore rougir un test à 5 s au-delà de 40 %.
+  ralentissement visible, il ne le supprime pas : une exécution 2,2 fois plus
+  lente que la plus lente mesurée ici ferait rougir A24. Et le tableau de marge
+  ne s'affiche que dans le journal d'une exécution verte, qu'on ne lit pas.
