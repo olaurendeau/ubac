@@ -1,13 +1,14 @@
 # Intégration continue
 
-La porte du dépôt, exécutée par GitHub Actions. Spec §10, sous-section GitHub
-Actions ; lot **R1** de la phase 2 (`docs/plans/ubac-phase-2.md`). Ce document
-dit ce que la porte fait, ce que l'opérateur doit cocher dans la console pour
-qu'elle bloque réellement, et ce qu'elle **ne** garantit **pas**.
+La porte du dépôt et l'image de production, exécutées par GitHub Actions.
+Spec §10, sous-section GitHub Actions ; lots **R1** et **R2** de la phase 2
+(`docs/plans/ubac-phase-2.md`). Ce document dit ce que la chaîne fait, ce que
+l'opérateur doit cocher dans la console pour qu'elle bloque réellement, et ce
+qu'elle **ne** garantit **pas**.
 
-À ce stade, la chaîne n'a qu'un job : `test`. `build` (R2) et `deploy` (R3)
-n'existent pas encore, et la production tourne toujours sur l'image déployée à
-la main (`docs/deploiement.md`).
+À ce stade, la chaîne a deux jobs : `test`, puis `build` qui pousse l'image
+(§7). `deploy` (R3) n'existe pas encore : **rien ne change en production**, qui
+tourne toujours sur l'image déployée à la main (`docs/deploiement.md`).
 
 ## 1. Ce que la porte exécute
 
@@ -41,7 +42,8 @@ Autour de ces trois commandes :
 
 ### Les déclencheurs : « chaque poussée qui peut atteindre `main` »
 
-La porte tourne sur `pull_request` vers `main` et sur `push` sur `main`. « Chaque
+La porte tourne sur `pull_request` vers `main`, sur `push` sur `main` et sur les
+tags `v*` — ces derniers pour `build` (§7), que `test` précède. « Chaque
 poussée » se lit **chaque poussée qui peut atteindre `main`** : une branche sans
 PR n'est pas testée, délibérément, parce qu'elle n'est pas fusionnable — un
 auteur découvre l'échec en ouvrant sa PR plutôt qu'en poussant, ce qui est une
@@ -76,7 +78,7 @@ divergence rougit **sur le poste**, pas six mois plus tard.
 ## 3. Le garde-fou : `test/ci/workflow.test.ts`
 
 Il fait partie de `make test`. Il lit les workflows, `package.json`, les deux
-`Dockerfile` et les seuils de `vitest.config.ts`, et tient treize règles :
+`Dockerfile` et les seuils de `vitest.config.ts`, et tient dix-sept règles :
 
 | Règle | Ce qu'elle refuse |
 |---|---|
@@ -90,18 +92,24 @@ Il fait partie de `make test`. Il lit les workflows, `package.json`, les deux
 | Aucun `latest` | la chaîne `latest` sur n'importe quelle ligne, commentaires compris |
 | Aucune migration | `drizzle-kit`, `db-push` ou `db:push` sur n'importe quelle ligne (`docs/base-de-donnees.md` §5) |
 | Secrets | une clé qui nomme un identifiant (`*SECRET*`, `*TOKEN*`, `*PASSWORD*`, `*_KEY`…) dont la valeur n'est pas exactement `${{ secrets.NOM }}` ; et tout `secrets.` dans le job `test` |
-| Déclencheurs | autre chose que `push` et `pull_request` vers `main` — `pull_request_target` compris |
-| Jeton | des permissions effectives du job `test` autres que `contents: read` |
+| Déclencheurs | autre chose que `push` sur `main` et les tags `v*`, et `pull_request` vers `main` — `pull_request_target` compris |
+| Jeton | des permissions effectives d'un job autres que `contents: read` |
+| Image par les scripts | un `build` sans `./scripts/build-image.sh`, puis `./scripts/verifier-image.sh`, puis `docker push`, dans cet ordre ; ou qui construit, inspecte ou retague lui-même (`docker buildx build`, `--push`, `docker image inspect`, `docker tag`, `UBAC_GIT_SHA`) |
+| Jamais une PR | un `build` dont le `if` n'est pas exactement `github.event_name == 'push'` (§7) |
+| Aucune réécriture | une construction, une vérification ou une poussée non conditionnée par l'absence constatée dans le registre ; une étape `registre` qui prendrait toute erreur pour une absence ; un `build` sans file par `github.sha` |
+| Connexion | un `secrets.` ailleurs que dans l'`env` d'une étape dont le script est exactement `printf '%s' "$…" \| docker login "$REGISTRE" --username nologin --password-stdin` ; un `set -x` ou `xtrace` sur n'importe quelle ligne |
 | Concurrence | un groupe sans `github.ref`, ou une annulation inconditionnelle qui interromprait `main` |
 
 Chaque règle a au moins une **sonde** : une mutation du dépôt réel, appliquée
-en mémoire, qui doit la faire rougir. Vingt-sept sondes, dont les quatre
+en mémoire, qui doit la faire rougir. Quarante-trois sondes, dont les quatre
 mutations exigées par le plan — retirer `needs: test`, remplacer la couverture
 par `npm test`, écrire `drizzle-kit` dans un workflow, faire diverger la version
 de Node. `build` et `deploy` n'existant pas encore, les sondes de `needs`
 ajoutent au workflow réel ceux des jobs du §10 qu'il n'a pas, puis cassent la
-chaîne ; un test constate qu'intacte, elle passe toutes les règles. À partir de
-R2, elles mordent sur le vrai `build`.
+chaîne ; un test constate qu'intacte, elle passe toutes les règles. Depuis R2,
+elles mordent sur le vrai `build`. Les seize sondes de R2 comprennent les trois
+mutations exigées par son plan : `pull_request` ajouté aux déclencheurs de
+`build`, `latest` écrit dans un tag, l'appel à `verifier-image.sh` retiré.
 
 Le garde-fou lit **ce que les fichiers disent**, pas ce que GitHub exécute : voir
 les limites.
@@ -201,14 +209,16 @@ merge.
   invérifiable par un test ; seule la commande du §5 le constate.
 - **Les actions tierces ne sont pas épinglées par SHA** (D6) :
   `actions/checkout@v7` et `actions/setup-node@v7` sont des étiquettes majeures,
-  dont le contenu peut changer sous la chaîne. Risque accepté, pas ignoré — il
-  pèsera davantage quand la chaîne détiendra une clé de déploiement (R2).
+  dont le contenu peut changer sous la chaîne. Risque accepté, pas ignoré — et
+  il pèse davantage depuis R2 : `actions/checkout` tourne dans le job qui
+  détient la clé du registre.
 - **Le cache npm** est restauré depuis le cache d'Actions. Il ne contient que
   `~/.npm`, dont `npm ci` vérifie chaque paquet contre l'empreinte de
   `package-lock.json`, et une PR n'écrit que dans le cache de sa propre
   référence, jamais dans celui de `main`. `actions/setup-node` recommande
-  pourtant de s'en passer dans un job à privilèges : R2 et R3 doivent reposer la
-  question, pas hériter de la réponse.
+  pourtant de s'en passer dans un job à privilèges : `build` (R2) ne l'utilise
+  pas — il n'exécute ni `setup-node` ni `npm` hors de la construction de
+  l'image, qui ne voit pas le cache. R3 devra reposer la question.
 - **Une PR venue d'un fork fait tourner son code** sur le runner : le dépôt est
   public. Elle le fait avec le jeton en lecture et sans aucun secret, ce que
   `pull_request` garantit et que `pull_request_target` ne garantirait pas — d'où
@@ -221,3 +231,63 @@ merge.
   ralentissement visible, il ne le supprime pas : une exécution 2,2 fois plus
   lente que la plus lente mesurée ici ferait rougir A24. Et le tableau de marge
   ne s'affiche que dans le journal d'une exécution verte, qu'on ne lit pas.
+
+## 7. L'image : le job `build`
+
+Lot **R2**, décisions **D4 = 2** (`push` sur `main` et tags `v*`), **D5 = 1**
+(deux secrets de dépôt, le reste en variables) et **D6 = 2**. Un commit de
+`main`, ou un tag `v*`, produit `rg.fr-par.scw.cloud/<namespace>/ubac:<sha>`,
+tagué par **son** SHA, vérifié par `scripts/verifier-image.sh` — et **rien
+d'autre ne change en production** : aucun job Scaleway n'est touché.
+
+| Étape | Ce qu'elle fait |
+|---|---|
+| Référence | `UBAC_REFERENCE=<image>:$(git rev-parse --verify HEAD)`, le même calcul que `build-image.sh` ; écrite dans `$GITHUB_ENV`, hors de l'arbre, qui reste propre |
+| Connexion | `nologin`, et la clé secrète par l'**entrée standard** : `printf '%s' "$SCW_SECRET_KEY" \| docker login … --password-stdin`. `printf` est un intégré du shell : la clé n'est l'argument d'aucun processus |
+| Registre | `docker buildx imagetools inspect` sur la référence. Présente : **rien n'est reconstruit ni réécrit**. `not found` : on construit. Toute autre erreur arrête le job |
+| Construction | `./scripts/build-image.sh`, avec son `--load` |
+| Vérification | `./scripts/verifier-image.sh` et ses dix contrôles, qui font **tourner** l'image locale |
+| Poussée | `docker push` de la référence |
+| Manifeste poussé | `imagetools inspect --format '{{json .Image}}'` sur le registre doit lire `linux/amd64` et rien d'autre |
+| Déconnexion | `docker logout`, même après un échec |
+
+**Le job ne refait ni le contrôle d'architecture ni celui du SHA embarqué** :
+ils vivent dans `verifier-image.sh`, sortent en erreur, et le garde-fou refuse
+qu'on les recopie dans le YAML. Le contrôle du manifeste poussé n'en est pas un
+doublon : il lit ce que Scaleway ira chercher, non l'image locale.
+
+**Pourquoi jamais une PR.** Sur `pull_request`, `actions/checkout` place HEAD sur
+le **commit de fusion**. `build-image.sh` le lirait : l'image serait taguée par
+un commit qui disparaît au merge, et `decisions.git_sha` désignerait
+l'introuvable. Le `if: github.event_name == 'push'` ferme la porte, et le
+garde-fou l'épingle mot pour mot.
+
+**Pourquoi le registre est lu d'abord.** Un tag `v*` est posé sur un commit que
+`main` a déjà construit. Le reconstruire **écraserait** sa référence par une
+image qui n'est pas bit à bit la même, et détruirait sans erreur ce que
+`docs/deploiement.md` §8 promet : l'image d'hier n'a jamais été écrasée. Pour la
+même raison, `build` a une file par `github.sha`, sans annulation : `main` et un
+tag poussés ensemble ne constatent pas l'absence en même temps.
+
+**Les attestations de buildx.** Constaté le 2026-09-26 sur l'image déjà en
+production (`2394a93`) : le registre porte un index avec `linux/amd64` **et** un
+manifeste d'attestation `unknown/unknown`. Ce n'est pas une seconde plateforme ;
+`.Image` l'ignore, et le contrôle lit bien `linux/amd64` seul. La construction
+ne pose donc pas `--provenance=false`, et `docs/deploiement.md` §5 est précisé.
+
+**Ce que l'opérateur a posé** (D5) : les secrets de dépôt `SCW_ACCESS_KEY` et
+`SCW_SECRET_KEY`, les variables `SCW_DEFAULT_ORGANIZATION_ID`,
+`SCW_DEFAULT_PROJECT_ID` et `SCW_REGISTRY_NAMESPACE` (`ubac`). Présence
+constatée par `gh secret list` et `gh variable list` ; aucune valeur n'est
+écrite ici. `build` n'utilise que `SCW_SECRET_KEY` et `SCW_REGISTRY_NAMESPACE` :
+la clé d'accès et les identifiants d'organisation et de projet servent à R3.
+
+**Ce que `build` ne garantit pas.**
+
+- **Il ne tourne que sur `main` et `v*`** : une PR ne prouve pas que son image se
+  construit. Le premier signal arrive après le merge, sur `main`.
+- **Le secret est masqué, pas inaccessible.** Toute étape du job pourrait lire
+  `~/.docker/config.json` une fois connecté ; les étapes qui suivent la
+  connexion sont les deux scripts du dépôt, `docker` et `jq`.
+- **Une image présente n'est pas revérifiée.** Elle l'a été au moment où elle a
+  été poussée ; seul son manifeste est relu.

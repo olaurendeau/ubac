@@ -217,7 +217,9 @@ docker buildx imagetools inspect rg.fr-par.scw.cloud/<namespace>/ubac:<sha>
 ```
 
 **Ce qu'il faut voir** : une ligne `Platform: linux/amd64`, et aucune autre
-plateforme. C'est la dernière occasion de voir le piège avant qu'il ne coûte une
+plateforme. Une entrée `Platform: unknown/unknown` annotée
+`vnd.docker.reference.type: attestation-manifest` n'en est pas une : c'est
+l'attestation que buildx joint à l'image. C'est la dernière occasion de voir le piège avant qu'il ne coûte une
 journée d'observation.
 
 ## 6. Créer le job
@@ -288,8 +290,12 @@ saurait plus nommer.
 
 ## 9. Ce que ce lot ne fait pas
 
-- **Aucune chaîne GitHub Actions** : `test` / `build` / `deploy` restent en
-  phase 2, `workflow_dispatch` et son `DRY_RUN` aussi.
+- **Aucun déploiement par la chaîne** : depuis le lot R2 de la phase 2, `build`
+  construit, vérifie et pousse l'image de chaque commit de `main` et de chaque
+  tag `v*` ([integration-continue.md](integration-continue.md) §7), sans jamais
+  réécrire une image déjà poussée ; les sections 3 à 5 restent le chemin
+  manuel. `deploy` viendra en R3, `workflow_dispatch` et son `DRY_RUN` en
+  phase 3.
 - **Aucun déploiement automatique** : pousser et déployer sont des gestes de
   l'opérateur.
 - **Aucune exécution d'ordre** ([phase-1-frontieres.md](phase-1-frontieres.md)),

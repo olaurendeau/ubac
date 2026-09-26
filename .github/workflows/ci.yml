@@ -1,4 +1,5 @@
-# La porte du depot : spec §10, lot R1 de la phase 2.
+# La porte du depot et l'image de production : spec §10, lots R1 et R2 de la
+# phase 2.
 #
 # Ce fichier est une seconde definition de « comment on teste », a cote du
 # Makefile et de Compose. test/ci/workflow.test.ts le tient aligne sur
@@ -9,10 +10,12 @@ name: ci
 
 # Chaque poussee qui peut atteindre main : une PR vers main, et main lui-meme,
 # ou arrive le commit de squash qu'aucune PR n'a teste tel quel. Une branche
-# sans PR n'est pas fusionnable, elle n'est donc pas testee.
+# sans PR n'est pas fusionnable, elle n'est donc pas testee. Les tags v* (D4)
+# ne servent qu'au job build, qui ne construit jamais une PR.
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
     branches: [main]
 
@@ -49,3 +52,86 @@ jobs:
       # respecter les 100 % de src/core/risk.ts. Les deux paieraient la suite
       # deux fois ; `npm test` seul ne garderait pas le seuil.
       - run: npm run test:coverage
+
+  # L'image de production, taguee par SON SHA (spec §10, D4 = 2). Le job
+  # reutilise les deux scripts du depot, et rien d'autre : il ne refait ni le
+  # controle d'architecture ni celui du SHA embarque, qui existent et sortent en
+  # erreur. Les recopier ici creerait une seconde definition libre de diverger.
+  build:
+    needs: test
+    # Jamais sur une PR : checkout y place HEAD sur le commit de FUSION, que
+    # build-image.sh lirait par git rev-parse. L'image serait taguee par un
+    # commit qui disparait au merge, et decisions.git_sha designerait
+    # l'introuvable. Les declencheurs push sont main et les tags v*.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    # main et un tag v* peuvent designer le meme commit. Deux executions
+    # simultanees constateraient toutes deux l'absence de l'image et la
+    # pousseraient deux fois : le groupe par SHA les met en file, et la seconde
+    # trouve l'image de la premiere.
+    concurrency:
+      group: build-${{ github.sha }}
+      cancel-in-progress: false
+    defaults:
+      run:
+        # bash explicite : -o pipefail, sans quoi un inspect en echec en tete
+        # de tube passerait pour une sortie vide, et non pour une erreur.
+        shell: bash
+    env:
+      REGISTRE: rg.fr-par.scw.cloud
+      UBAC_IMAGE: rg.fr-par.scw.cloud/${{ vars.SCW_REGISTRY_NAMESPACE }}/ubac
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # La reference que build-image.sh construira : le meme git rev-parse, sur
+      # le meme HEAD. GITHUB_ENV vit hors de l'arbre, qui reste propre.
+      - name: reference de l'image
+        run: echo "UBAC_REFERENCE=${UBAC_IMAGE}:$(git rev-parse --verify HEAD)" >> "$GITHUB_ENV"
+      # L'utilisateur nologin, et la cle secrete par l'ENTREE STANDARD : un
+      # argument de ligne de commande finit dans une trace, et le journal est
+      # public. Le secret n'existe que dans l'environnement de cette etape.
+      - name: connexion au registre
+        env:
+          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
+        run: printf '%s' "$SCW_SECRET_KEY" | docker login "$REGISTRE" --username nologin --password-stdin
+      # Un tag v* est pose sur un commit deja construit par main. Reconstruire
+      # ECRASERAIT sa reference par une image qui n'est pas bit a bit la meme,
+      # et le retour en arriere gratuit de docs/deploiement.md §8 tomberait sans
+      # qu'aucune etape n'echoue. Seul « not found » vaut absence : toute autre
+      # erreur arrete le job plutot que de risquer une reecriture.
+      - name: l'image de ce commit est-elle deja poussee
+        id: registre
+        run: |
+          if sortie=$(docker buildx imagetools inspect "$UBAC_REFERENCE" 2>&1); then
+            echo "deja dans le registre, rien n'est reconstruit ni reecrit : $UBAC_REFERENCE"
+            echo "existe=oui" >> "$GITHUB_OUTPUT"
+          elif [[ "$sortie" == *": not found" ]]; then
+            echo "existe=non" >> "$GITHUB_OUTPUT"
+          else
+            echo "$sortie" >&2
+            exit 1
+          fi
+      # --load, pas --push : verifier-image.sh fait TOURNER l'image, elle doit
+      # etre dans le demon local. Un --push direct sauterait ses dix controles.
+      - if: steps.registre.outputs.existe == 'non'
+        run: ./scripts/build-image.sh "$UBAC_IMAGE"
+      - if: steps.registre.outputs.existe == 'non'
+        run: ./scripts/verifier-image.sh "$UBAC_REFERENCE"
+      - if: steps.registre.outputs.existe == 'non'
+        run: docker push "$UBAC_REFERENCE"
+      # Le manifeste DU REGISTRE, ce que Scaleway ira chercher, et non l'image
+      # locale que verifier-image.sh a inspectee. Un manifeste d'attestation
+      # unknown/unknown n'est pas une plateforme : .Image l'ignore.
+      - name: plateformes de l'image poussee
+        run: |
+          lues=$(docker buildx imagetools inspect "$UBAC_REFERENCE" --format '{{json .Image}}' \
+            | jq -r 'if has("architecture") then "\(.os)/\(.architecture)" else keys | join(" ") end')
+          echo "plateformes poussees : $lues"
+          test "$lues" = linux/amd64
+      - name: deconnexion du registre
+        if: always()
+        run: docker logout "$REGISTRE"
