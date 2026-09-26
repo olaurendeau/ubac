@@ -403,6 +403,17 @@ describe('permissions — la cle ne doit rien pouvoir de plus que lire', () => {
     await expect(ouvrir(transport).keyPermissions()).rejects.toThrow(/can_transfer/);
   });
 
+  /*
+   * E7, exigence du 2026-09-22 (revue de S1) : la permission de sortie doit
+   * etre **presente**. Une reponse ou elle a disparu ne prouve pas qu'elle vaut
+   * `false`, et la spec §7 — jamais de retrait — cesserait d'etre constatable.
+   */
+  it('refuse une reponse ou la permission de sortie a disparu', async () => {
+    const { can_transfer: _retire, ...sansSortie } = PERMISSIONS_REELLES as Record<string, unknown>;
+    const { transport } = transportDe({ key_permissions: { ...sansSortie, can_trade: true } });
+    await expect(ouvrir(transport).keyPermissions()).rejects.toThrow(/can_transfer absent/);
+  });
+
   it('refuse une permission que Coinbase ajouterait demain', async () => {
     const { transport } = transportDe({
       key_permissions: { can_view: true, can_trade: false, can_stake: true, portfolio_uuid: PORTEFEUILLE },
@@ -579,7 +590,11 @@ describe('E7 — l’executeur ne se construit qu’avec une cle qui peut trader
 describe('placement — un ordre limite post-only, et rien d’autre', () => {
   it('ecrit le corps de l’API, grandeurs en chaines sans exposant', async () => {
     const { port, ecritures } = await executeurDe({ create_order: place() });
-    expect(await port.placeOrder(ORDRE)).toEqual({ exchangeId: PLACE_ID, clientOrderId: ORDRE.clientOrderId });
+    expect(await port.placeOrder(ORDRE)).toEqual({
+      kind: 'PLACED',
+      exchangeId: PLACE_ID,
+      clientOrderId: ORDRE.clientOrderId,
+    });
     expect(ecritures).toEqual([{ kind: 'create_order', body: CORPS }]);
   });
 
@@ -594,12 +609,31 @@ describe('placement — un ordre limite post-only, et rien d’autre', () => {
     expect(ecritures).toEqual([]);
   });
 
-  it.each([
-    ['success faux', { success: false, error_response: { error: 'UNKNOWN_FAILURE_REASON' } }],
-    ['success en chaine', { success: 'true' }],
-  ])('ne lit pas un placement dans une reponse a %s', async (_nom, champs) => {
-    const { port } = await executeurDe({ create_order: place(champs) });
-    await expect(port.placeOrder(ORDRE)).rejects.toThrow(/ordre non accepte/);
+  it.each([['success en chaine', { success: 'true' }], ['success absent', { success: undefined }]])(
+    'ne lit pas un placement dans une reponse a %s',
+    async (_nom, champs) => {
+      const { port } = await executeurDe({ create_order: place(champs) });
+      await expect(port.placeOrder(ORDRE)).rejects.toThrow(/ordre non accepte/);
+    },
+  );
+
+  /* §7 : le rejet post-only est une issue, rendue avec ses codes, pas une exception. */
+  it('rend REJECTED sur success faux, avec les codes de l’API', async () => {
+    const refus = {
+      error: 'INVALID_LIMIT_PRICE_POST_ONLY',
+      preview_failure_reason: 'PREVIEW_INVALID_LIMIT_PRICE_POST_ONLY',
+    };
+    const { port } = await executeurDe({ create_order: place({ success: false, error_response: refus }) });
+    expect(await port.placeOrder(ORDRE)).toEqual({
+      kind: 'REJECTED',
+      clientOrderId: ORDRE.clientOrderId,
+      reason: 'INVALID_LIMIT_PRICE_POST_ONLY / PREVIEW_INVALID_LIMIT_PRICE_POST_ONLY',
+    });
+  });
+
+  it('ne devine pas un rejet sans code', async () => {
+    const { port } = await executeurDe({ create_order: place({ success: false, error_response: {} }) });
+    await expect(port.placeOrder(ORDRE)).rejects.toThrow(/rejet sans code/);
   });
 
   it('refuse une reponse portant un autre client_order_id', async () => {
@@ -1152,6 +1186,31 @@ describe('mappage des routes vers les endpoints', () => {
       ['https://api.coinbase.com/api/v3/brokerage/orders', 'POST', CORPS],
       ['https://api.coinbase.com/api/v3/brokerage/orders/batch_cancel', 'POST', { order_ids: ['a', 'b'] }],
     ]);
+  });
+
+  /*
+   * ccxt 4.5.78 leve sur `success: false` (`coinbase.js:5435`) : le transport
+   * rend le corps du refus pour qu'il soit classe, et laisse passer tout le reste.
+   */
+  it('rend le corps d’un refus que ccxt leve, et releve toute autre erreur', async () => {
+    const prototype = ccxt.coinbase.prototype as unknown as Record<string, unknown>;
+    const original = prototype['fetch'];
+    const refus = { success: false, error_response: { error: 'INVALID_LIMIT_PRICE_POST_ONLY' } };
+    const reponses = [refus, { error: 'unauthorized', error_description: 'cle refusee' }];
+    prototype['fetch'] = function (this: { handleErrors: (...a: unknown[]) => void }) {
+      const reponse = reponses.shift();
+      this.handleErrors(200, '', '', 'POST', {}, JSON.stringify(reponse), reponse, {}, '');
+      return Promise.resolve(reponse);
+    };
+    try {
+      const transport = ccxtTransport({ coinbaseApiKey: CLE, coinbaseApiSecret: SECRET });
+      const route = { kind: 'create_order', body: CORPS } as CoinbaseWriteRoute;
+      expect(await transport.write(route)).toEqual(refus);
+      await expect(transport.write(route)).rejects.toThrow(/cle refusee|unauthorized/);
+      await transport.close();
+    } finally {
+      prototype['fetch'] = original;
+    }
   });
 
   it('lit un ordre par la liste filtree, et ses executions par la leur', async () => {

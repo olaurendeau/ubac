@@ -49,6 +49,8 @@ function baseComptee(): { readonly db: UbacDatabase; readonly appels: string[] }
     snapshotSeries: () => vu('snapshotSeries', []),
     recentCashFlows: () => vu('recentCashFlows', []),
     pendingOrders: () => vu('pendingOrders', []),
+    recordOrder: () => vu('recordOrder', { status: 'RECORDED' }),
+    recordPlacement: () => vu('recordPlacement', undefined),
     close: () => vu('close', undefined),
   };
   return { db, appels };
@@ -57,10 +59,10 @@ function baseComptee(): { readonly db: UbacDatabase; readonly appels: string[] }
 describe('la base inerte : les lectures passent, les ecritures se retiennent', () => {
   /*
    * L'enumeration est le garde-fou : une operation ajoutee a `UbacDatabase` —
-   * `recordOrder` en S7 — doit etre classee ici, lecture ou ecriture, et la
+   * `recordOrder` et `recordPlacement` en S7 — doit etre classee ici, lecture ou ecriture, et la
    * liste des ecritures retenues ne s'allonge pas sans que ce test le dise.
    */
-  it('chaque methode est appelee : seules les deux ecritures n’atteignent pas la vraie base', async () => {
+  it('chaque methode est appelee : seules les quatre ecritures n’atteignent pas la vraie base', async () => {
     const { db, appels } = baseComptee();
     const inerte = baseSansEcriture(db, () => undefined);
     const methodes = Object.keys(inerte).sort();
@@ -70,11 +72,19 @@ describe('la base inerte : les lectures passent, les ecritures se retiennent', (
         intent: { strategy: 'rebalance', runDate: '2026-09-12' },
         isShadow: false,
         runDate: '2026-09-12',
+        order: { clientOrderId: 'ubac-x' },
+        kind: 'PLACED',
+        clientOrderId: 'ubac-x',
       });
     }
 
     expect(methodes).toEqual(Object.keys(db).sort());
-    expect(methodes.filter((nom) => !appels.includes(nom))).toEqual(['recordDecision', 'recordSnapshot']);
+    expect(methodes.filter((nom) => !appels.includes(nom))).toEqual([
+      'recordDecision',
+      'recordOrder',
+      'recordPlacement',
+      'recordSnapshot',
+    ]);
   });
 
   it('rend RECORDED avec l’UUID nul, et dit ce qu’elle n’a pas ecrit', async () => {
@@ -125,7 +135,11 @@ describe('le port journalisant : ce qui serait parti, et rien d’autre (E14)', 
       `ordre non place (port journalisant) : client_order_id=${client_order_id} paire=${product_id} cote=${side} quantite=${base_size} prix_limite=${limit_price} post_only=${String(post_only)}`,
     ]);
     expect(lignes[0]).toContain('paire=BTC-USDC cote=SELL quantite=0.14 prix_limite=50000.5 post_only=true');
-    expect(place).toEqual({ exchangeId: `${ORDRE_NON_PLACE}${ORDRE.clientOrderId}`, clientOrderId: ORDRE.clientOrderId });
+    expect(place).toEqual({
+      kind: 'PLACED',
+      exchangeId: `${ORDRE_NON_PLACE}${ORDRE.clientOrderId}`,
+      clientOrderId: ORDRE.clientOrderId,
+    });
   });
 
   it('refuse l’ordre que l’executeur reel refuserait de formuler', async () => {

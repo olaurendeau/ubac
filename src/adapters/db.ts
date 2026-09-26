@@ -1,5 +1,5 @@
 import type { Decimal } from 'decimal.js';
-import { asc, desc, eq, gte } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, isNull } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import pg from 'pg';
 
@@ -9,6 +9,7 @@ import type {
   Intent,
   IntentLeg,
   IsoDate,
+  Order,
   Price,
   Quantity,
   RejectionCode,
@@ -24,6 +25,7 @@ import {
   DbFrontierError,
   DECISIONS_UNIQUE_INDEX,
   decimalFromText,
+  ORDERS_PRIMARY_KEY,
   decisions,
   orders,
   snapshots,
@@ -76,6 +78,35 @@ export interface DecisionToRecord {
 export type RecordDecisionOutcome =
   | { readonly status: 'RECORDED'; readonly id: string }
   | { readonly status: 'ALREADY_RECORDED' };
+
+/**
+ * Un ordre **avant** son placement (E23). `decisionId` est obligatoire : c'est
+ * le seul rattachement d'`orders` a son run, par `decisions.run_date`, et le
+ * cooldown (S9) groupe les ordres par run a travers lui.
+ */
+export interface OrderToRecord {
+  readonly order: Order;
+  readonly decisionId: string;
+  readonly createdAt: Date;
+}
+
+/**
+ * `ALREADY_RECORDED` est la seconde ligne de defense d'E24 : la cle primaire
+ * `client_order_id` refuse la ligne d'un ordre deja ecrit, et l'appelant ne le
+ * place pas une seconde fois.
+ */
+export type RecordOrderOutcome = { readonly status: 'RECORDED' } | { readonly status: 'ALREADY_RECORDED' };
+
+/**
+ * L'issue d'un placement, sur une ligne encore `PENDING` et sans `exchange_id`.
+ * Place, la ligne reste `PENDING` et gagne son identifiant d'exchange ; rejete
+ * par l'exchange — post-only compris —, elle passe `REJECTED`. Une ligne
+ * `PENDING` **sans** `exchange_id` est donc celle d'un ordre dont le placement
+ * n'a jamais ete confirme.
+ */
+export type PlacementToRecord =
+  | { readonly kind: 'PLACED'; readonly clientOrderId: string; readonly exchangeId: string }
+  | { readonly kind: 'REJECTED'; readonly clientOrderId: string };
 
 export interface SnapshotToRecord {
   readonly runDate: IsoDate;
@@ -153,6 +184,9 @@ export interface UbacDatabase {
   /** Flux dont `occurred_at >= since`, du plus ancien au plus recent. */
   recentCashFlows(since: Date): Promise<readonly CashFlowRecord[]>;
   pendingOrders(): Promise<readonly PendingOrderRecord[]>;
+  /** L'ordre en `PENDING`, **avant** son placement (E23). */
+  recordOrder(input: OrderToRecord): Promise<RecordOrderOutcome>;
+  recordPlacement(input: PlacementToRecord): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -435,6 +469,49 @@ export function openDatabase(secrets: Pick<Secrets, 'databaseUrl'>): UbacDatabas
         limitPrice: ligne.limitPrice as Price,
         createdAt: ligne.createdAt,
       }));
+    },
+
+    async recordOrder(input: OrderToRecord): Promise<RecordOrderOutcome> {
+      const { order } = input;
+      try {
+        await db.insert(orders).values({
+          clientOrderId: order.clientOrderId,
+          decisionId: input.decisionId,
+          side: order.side,
+          asset: order.asset,
+          requestedQty: order.quantity,
+          limitPrice: order.limitPrice,
+          status: 'PENDING',
+          createdAt: input.createdAt,
+        });
+        return { status: 'RECORDED' };
+      } catch (error) {
+        // Meme traduction que `recordDecision`, sur la seule cle primaire d'`orders`.
+        if (isUniqueViolation(error, ORDERS_PRIMARY_KEY)) return { status: 'ALREADY_RECORDED' };
+        throw error;
+      }
+    },
+
+    async recordPlacement(input: PlacementToRecord): Promise<void> {
+      const issue =
+        input.kind === 'PLACED' ? { exchangeId: input.exchangeId } : { status: 'REJECTED' };
+      const lignes = await db
+        .update(orders)
+        .set(issue)
+        .where(
+          and(
+            eq(orders.clientOrderId, input.clientOrderId),
+            eq(orders.status, 'PENDING'),
+            isNull(orders.exchangeId),
+          ),
+        )
+        .returning({ clientOrderId: orders.clientOrderId });
+      // Une issue sans sa ligne ne se pose pas en silence : l'ordre ne serait plus reclame par rien.
+      if (lignes.length !== 1) {
+        throw new DbFrontierError(
+          `orders : aucune ligne PENDING sans exchange_id pour ${input.clientOrderId}, issue ${input.kind} non ecrite.`,
+        );
+      }
     },
 
     async close(): Promise<void> {

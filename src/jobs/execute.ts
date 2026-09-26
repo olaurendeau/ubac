@@ -1,4 +1,4 @@
-import type { CancelOutcome, ExecutionPort, PlacedOrder } from '../adapters/coinbase.js';
+import type { CancelOutcome, ExecutionPort, PlacementOutcome } from '../adapters/coinbase.js';
 import type { Order } from '../core/types.js';
 
 /**
@@ -39,7 +39,7 @@ export class ExecutionError extends Error {
 export async function placer(
   port: ExecutionPort,
   ordres: readonly Order[],
-): Promise<readonly PlacedOrder[]> {
+): Promise<readonly PlacementOutcome[]> {
   const vus = new Set<string>();
   for (const { clientOrderId } of ordres) {
     if (vus.has(clientOrderId)) {
@@ -49,7 +49,7 @@ export async function placer(
     }
     vus.add(clientOrderId);
   }
-  const places: PlacedOrder[] = [];
+  const places: PlacementOutcome[] = [];
   for (const ordre of ordres) places.push(await port.placeOrder(ordre));
   return places;
 }

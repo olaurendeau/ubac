@@ -143,6 +143,77 @@ describe.skipIf(URL_DE_TEST === undefined)('adapter de base, contre un Postgres 
   });
 
   /**
+   * E23 et la seconde ligne de defense d'E24, contre la vraie cle primaire :
+   * l'ordre est ecrit PENDING, rattache a sa decision, donc a son `run_date`.
+   */
+  describe('les ordres du run (E23, E24)', () => {
+    const ORDRE = {
+      clientOrderId: 'ubac-0123456789abcdef0123456789a',
+      asset: 'BTC',
+      quote: 'USDC',
+      side: 'SELL',
+      quantity: new Decimal('0.01234567') as Quantity,
+      limitPrice: new Decimal('64385.42') as Price,
+    } as const;
+
+    async function decision(): Promise<string> {
+      const ecrite = await db.recordDecision({
+        intent: intention(),
+        isShadow: false,
+        verdict: { status: 'ACCEPTED', orders: [ORDRE], ignored: [] },
+        gitSha: 'abc1234',
+        createdAt: CREE_LE,
+      });
+      if (ecrite.status !== 'RECORDED') throw new Error('decision non ecrite');
+      return ecrite.id;
+    }
+
+    it('ecrit PENDING, rattache au run, et refuse le meme client_order_id en ALREADY_RECORDED', async () => {
+      const decisionId = await decision();
+      const entree = { order: ORDRE, decisionId, createdAt: CREE_LE };
+
+      expect(await db.recordOrder(entree)).toEqual({ status: 'RECORDED' });
+      expect(await db.recordOrder(entree)).toEqual({ status: 'ALREADY_RECORDED' });
+
+      const lignes = await brut.query(`
+        SELECT o.status, o.exchange_id, o.requested_qty, o.limit_price, d.run_date::text AS run_date
+        FROM orders o JOIN decisions d ON d.id = o.decision_id`);
+      expect(lignes.rows).toEqual([
+        {
+          status: 'PENDING',
+          exchange_id: null,
+          requested_qty: '0.01234567',
+          limit_price: '64385.42000000',
+          run_date: '2026-09-10',
+        },
+      ]);
+    });
+
+    it('pose l’exchange_id d’un ordre place, et REJECTED sur un rejet', async () => {
+      const decisionId = await decision();
+      const autre = { ...ORDRE, clientOrderId: 'ubac-autre' };
+      await db.recordOrder({ order: ORDRE, decisionId, createdAt: CREE_LE });
+      await db.recordOrder({ order: autre, decisionId, createdAt: CREE_LE });
+
+      await db.recordPlacement({ kind: 'PLACED', clientOrderId: ORDRE.clientOrderId, exchangeId: 'ex-1' });
+      await db.recordPlacement({ kind: 'REJECTED', clientOrderId: autre.clientOrderId });
+
+      const lignes = await brut.query('SELECT client_order_id, status, exchange_id FROM orders ORDER BY client_order_id');
+      expect(lignes.rows).toEqual([
+        { client_order_id: ORDRE.clientOrderId, status: 'PENDING', exchange_id: 'ex-1' },
+        { client_order_id: 'ubac-autre', status: 'REJECTED', exchange_id: null },
+      ]);
+      // Une issue ne s'ecrit qu'une fois, et jamais sans sa ligne.
+      await expect(
+        db.recordPlacement({ kind: 'PLACED', clientOrderId: ORDRE.clientOrderId, exchangeId: 'ex-2' }),
+      ).rejects.toThrow(DbFrontierError);
+      await expect(db.recordPlacement({ kind: 'REJECTED', clientOrderId: 'inconnu' })).rejects.toThrow(
+        DbFrontierError,
+      );
+    });
+  });
+
+  /**
    * E32, relu dans la colonne elle-meme : `risk_verdict` ne porte que le code,
    * et avant ce lot `reason` ne portait que le motif de l'intention. Le texte
    * quantifie du refus n'existait que dans l'alerte, qui ne se relit pas.
