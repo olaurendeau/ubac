@@ -51,7 +51,8 @@ export interface Effets {
   readonly notifier: Notifier;
   readonly mailer: Mailer;
   readonly healthcheck: Healthcheck;
-  readonly execution: ExecutionPort;
+  /** Ouvert a l'etape 1 du run : le port reel y verifie `can_trade` (E7). */
+  readonly execution: () => Promise<ExecutionPort>;
 }
 
 /**
@@ -184,12 +185,16 @@ export function executionJournalisee(log: Journal): ExecutionPort {
  * sont recus pour etre **ecartes** : le resultat ne garde aucune reference vers
  * eux, et c'est ce que la sonde de comptage constate.
  */
-export function portsInertes(reels: Effets, log: Journal): Effets {
+export function portsInertes(vrais: Effets, log: Journal): Effets {
   return {
-    db: baseSansEcriture(reels.db, log),
+    db: baseSansEcriture(vrais.db, log),
     notifier: notifierInerte(log),
     mailer: mailerInerte(log),
     healthcheck: healthcheckInerte(log),
-    execution: executionJournalisee(log),
+    /*
+     * `vrais.execution` n'est jamais appele : en `DRY_RUN`, le port reel n'est
+     * pas ouvert, donc `can_trade` n'y est pas exige. A24 le sonde.
+     */
+    execution: () => Promise.resolve(executionJournalisee(log)),
   };
 }

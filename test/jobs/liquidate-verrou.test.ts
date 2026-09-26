@@ -390,6 +390,7 @@ describe('V8, V9 — la surface publique n’a pas de porte', () => {
       'SortieError',
       'appliquerSortie',
       'planifierSortie',
+      'prixLimite',
     ]);
   });
 
