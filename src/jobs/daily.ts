@@ -765,13 +765,24 @@ async function executeRun(run: DailyRun, parti: ExecutionDeStrategie[]): Promise
       continue;
     }
     const ordres = verdict.orders.map((ordre) => auCarnet(ordre, prices));
-    const issues = await placer(execution, { decisionId: recorded.id, createdAt, ordres });
-    for (const issue of issues) {
-      const detail = issue.kind === 'REJECTED' ? ` (${issue.reason})` : '';
-      log(`${strategy} : ${issue.clientOrderId} ${issue.kind}${detail}`);
+    /*
+     * Le tampon est ici, et le `finally` le lit **meme si `placer` leve** : une
+     * issue non ecrite a la deuxieme jambe ne doit pas taire la premiere, deja
+     * partie. L'exception n'est pas avalee — elle remonte vers `runDaily`, qui
+     * pousse `JOB_FAILED` avec ce que `parti` a recu. `suivre` ne leve pas.
+     */
+    const issues: IssueDeJambe[] = [];
+    try {
+      await placer(execution, { decisionId: recorded.id, createdAt, ordres }, issues);
+    } finally {
+      for (const issue of issues) {
+        const detail = issue.kind === 'REJECTED' ? ` (${issue.reason})` : '';
+        log(`${strategy} : ${issue.clientOrderId} ${issue.kind}${detail}`);
+      }
+      placements.push(...issues);
+      // Rien de parti — un lot refuse avant toute ecriture — ne fait pas une execution.
+      if (issues.length > 0) parti.push(await suivre(ports.exchange, strategy, ordres, issues, log));
     }
-    placements.push(...issues);
-    parti.push(await suivre(ports.exchange, strategy, ordres, issues, log));
   }
 
   /*

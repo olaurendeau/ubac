@@ -118,9 +118,10 @@ interface Scenario {
   /**
    * Le port qui leve, pour eprouver les chemins d'exception. Trois profondeurs
    * de l'enchainement : avant la premiere lecture, au milieu des lectures, apres
-   * la derniere ecriture.
+   * la derniere ecriture. `recordPlacement` leve a la **deuxieme** issue
+   * seulement : la premiere jambe est placee et ecrite, la seconde placee et non ecrite.
    */
-  readonly panne?: 'keyPermissions' | 'dailyCandles' | 'recordSnapshot';
+  readonly panne?: 'keyPermissions' | 'dailyCandles' | 'recordSnapshot' | 'recordPlacement';
   /** La cle de phase 1, qui ne peut pas trader. Par defaut : celle de phase 3. */
   readonly sansTrade?: true;
   /** Les `client_order_id` que l'exchange rejette, comme un post-only qui croiserait. */
@@ -383,6 +384,9 @@ function harnais(scenario: Scenario = {}): Harnais {
         },
         recordPlacement: (issue) => {
           appels.push('recordPlacement');
+          if (scenario.panne === 'recordPlacement' && appels.filter((a) => a === 'recordPlacement').length === 2) {
+            throw new Error(PANNE);
+          }
           lignesOrdres.set(issue.clientOrderId, issue.kind === 'PLACED' ? `PLACED ${issue.exchangeId}` : 'REJECTED');
           return Promise.resolve();
         },
@@ -2060,6 +2064,13 @@ const JUSTE_HORS_BANDE: readonly AssetBalance[] = [
   solde('USDC', '23000'),
 ];
 
+/** Cash a 23,75 % : deux ventes, BTC puis ETH, 6,25 % a elles deux, sous le plafond de 8 %. */
+const DEUX_JAMBES: readonly AssetBalance[] = [
+  solde('BTC', '0.9'),
+  solde('ETH', '12.5'),
+  solde('USDC', '23750'),
+];
+
 function ordresDe(result: DailyRunResult, strategy: string): readonly Order[] {
   const verdict = complete(result).outcomes.find((o) => o.strategy === strategy)?.verdict;
   return verdict?.status === 'ACCEPTED' ? verdict.orders : [];
@@ -2232,6 +2243,23 @@ describe('E27 et E28 — ce qui est parti se dit, sur l’alerte et dans le rapp
     await expect(lance(h)).rejects.toThrow(PANNE);
 
     expect(evenements(h)).toEqual(['REBALANCE_EXECUTED', 'JOB_FAILED']);
+  });
+
+  /*
+   * Une panne **pendant** le placement, pas apres : l'issue de la deuxieme jambe
+   * ne s'ecrit pas. Les deux jambes sont pourtant parties ; aucune ne doit
+   * disparaitre de l'alerte du jour — la premiere surtout, placee et ecrite
+   * avant que la seconde ne leve.
+   */
+  it('une issue non ecrite a la deuxieme jambe : les jambes deja parties atteignent l’alerte', async () => {
+    const h = harnais({ balances: DEUX_JAMBES, runDate: '2026-10-01', panne: 'recordPlacement' });
+    await expect(lance(h)).rejects.toThrow(PANNE);
+
+    expect(h.appels.filter((a) => a === 'placeOrder')).toHaveLength(2);
+    expect(evenements(h)).toEqual(['REBALANCE_EXECUTED', 'JOB_FAILED']);
+    expect(pousse(h, 'REBALANCE_EXECUTED')).toContain('2 ordre(s) place(s), 0 execute(s)');
+    // Le suivi a lu les deux ordres : l'exchange a ete interroge sur chacun.
+    expect(h.appels.filter((a) => a === 'orderStatus')).toHaveLength(2);
   });
 
   it('un run sans ordre n’emet pas REBALANCE_EXECUTED, et son rapport dit que rien n’est parti', async () => {

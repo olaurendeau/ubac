@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { CancelOutcome, CreateOrderBody, ExecutionPort } from '../../src/adapters/coinbase.js';
 import type { OrderToRecord, PlacementToRecord, RecordOrderOutcome } from '../../src/adapters/db.js';
 import type { Order, Price, Quantity } from '../../src/core/types.js';
-import type { Execution } from '../../src/jobs/execute.js';
+import type { Execution, IssueDeJambe } from '../../src/jobs/execute.js';
 import { annuler, auCarnet, ExecutionError, placer } from '../../src/jobs/execute.js';
 
 /**
@@ -67,7 +67,7 @@ const LOT = { decisionId: 'decision-1', createdAt: new Date('2026-10-01T07:00:00
 describe('execute — ecrire avant de placer (E23)', () => {
   it('ecrit chaque ordre en PENDING, puis le place, puis son issue, un par un', async () => {
     const { execution, journal, lignes } = executionDe();
-    const issues = await placer(execution, { ...LOT, ordres: [ordre('a'), ordre('b')] });
+    const issues = await placer(execution, { ...LOT, ordres: [ordre('a'), ordre('b')] }, []);
     expect(journal).toEqual([
       'ecrit a', 'debut a', 'fin a', 'issue a PLACED',
       'ecrit b', 'debut b', 'fin b', 'issue b PLACED',
@@ -84,22 +84,44 @@ describe('execute — ecrire avant de placer (E23)', () => {
   it('un job interrompu a l’ecriture ne place rien', async () => {
     const { execution, journal } = executionDe();
     const mort = { ...execution, db: { ...execution.db, recordOrder: () => Promise.reject(new Error('job tue')) } };
-    await expect(placer(mort, { ...LOT, ordres: [ordre('a')] })).rejects.toThrow('job tue');
+    await expect(placer(mort, { ...LOT, ordres: [ordre('a')] }, [])).rejects.toThrow('job tue');
     expect(journal).toEqual([]);
   });
 
   it('un job interrompu au placement laisse la ligne PENDING de sa decision', async () => {
     const { execution, lignes } = executionDe();
     const mort = { ...execution, port: { ...execution.port, placeOrder: () => Promise.reject(new Error('job tue')) } };
-    await expect(placer(mort, { ...LOT, ordres: [ordre('a')] })).rejects.toThrow('job tue');
+    await expect(placer(mort, { ...LOT, ordres: [ordre('a')] }, [])).rejects.toThrow('job tue');
     expect(lignes.get('a')).toBe('PENDING decision-1');
+  });
+
+  /*
+   * L'exception remonte, mais ce qui est parti reste connu de l'appelant : la
+   * premiere jambe, placee et ecrite, et la seconde, placee et non ecrite.
+   */
+  it('une issue non ecrite a la deuxieme jambe laisse les deux issues a l’appelant', async () => {
+    const { execution } = executionDe();
+    const mort = {
+      ...execution,
+      db: {
+        ...execution.db,
+        recordPlacement: (input: PlacementToRecord) =>
+          input.clientOrderId === 'b' ? Promise.reject(new Error('job tue')) : execution.db.recordPlacement(input),
+      },
+    };
+    const issues: IssueDeJambe[] = [];
+    await expect(placer(mort, { ...LOT, ordres: [ordre('a'), ordre('b')] }, issues)).rejects.toThrow('job tue');
+    expect(issues).toEqual([
+      { kind: 'PLACED', exchangeId: 'x-a', clientOrderId: 'a' },
+      { kind: 'PLACED', exchangeId: 'x-b', clientOrderId: 'b' },
+    ]);
   });
 });
 
 describe('execute — un rejet est une issue, et rien n’est replace (§7, E26)', () => {
   it('ecrit le rejet post-only et passe a la jambe suivante, sans rien replacer', async () => {
     const { execution, journal, lignes } = executionDe({ rejete: ['a'] });
-    const issues = await placer(execution, { ...LOT, ordres: [ordre('a'), ordre('b')] });
+    const issues = await placer(execution, { ...LOT, ordres: [ordre('a'), ordre('b')] }, []);
     expect(issues).toEqual([
       { kind: 'REJECTED', clientOrderId: 'a', reason: 'INVALID_LIMIT_PRICE_POST_ONLY' },
       { kind: 'PLACED', exchangeId: 'x-b', clientOrderId: 'b' },
@@ -112,14 +134,14 @@ describe('execute — un rejet est une issue, et rien n’est replace (§7, E26)
 describe('execute — la cle primaire d’orders, seconde ligne de defense d’E24', () => {
   it('ne place pas un ordre dont la ligne existe deja', async () => {
     const { execution, journal } = executionDe({ dejaEcrits: ['a'] });
-    const issues = await placer(execution, { ...LOT, ordres: [ordre('a'), ordre('b')] });
+    const issues = await placer(execution, { ...LOT, ordres: [ordre('a'), ordre('b')] }, []);
     expect(issues[0]).toEqual({ kind: 'ALREADY_RECORDED', clientOrderId: 'a' });
     expect(journal.filter((l) => l.startsWith('debut'))).toEqual(['debut b']);
   });
 
   it('refuse un lot ou un client_order_id revient, avant toute ecriture', async () => {
     const { execution, journal } = executionDe();
-    await expect(placer(execution, { ...LOT, ordres: [ordre('a'), ordre('b'), ordre('a')] })).rejects.toThrow(
+    await expect(placer(execution, { ...LOT, ordres: [ordre('a'), ordre('b'), ordre('a')] }, [])).rejects.toThrow(
       ExecutionError,
     );
     expect(journal).toEqual([]);
