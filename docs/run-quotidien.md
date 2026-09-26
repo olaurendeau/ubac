@@ -310,9 +310,12 @@ Pour chaque jambe, dans l'ordre :
 
 1. **Prix au carnet** : mid ± 0,1 % du côté qui ne croise pas — sous le mid à
    l'achat, au-dessus à la vente —, arrondi au pas de 0,01 USDC en s'éloignant
-   du mid ; quantité arrondie à 1e-8 vers le bas. Le mid est la clôture du
-   dernier jour clos, celle que la couche risque a validée. La marge est celle
-   de la sortie (`prixLimite`, `src/jobs/liquidate.ts`), pas une copie.
+   du mid ; quantité arrondie à 1e-8 vers le bas. **Ce sens n'est pas un biais
+   à corriger** : arrondir le prix vers le mid pourrait le faire croiser le
+   carnet, et l'exchange rejetterait l'ordre post-only ; arrondir la quantité
+   vers le haut engagerait plus que ce que la couche risque a validé. Le mid
+   est la clôture du dernier jour clos, celle que la couche risque a validée.
+   La marge est celle de la sortie (`prixLimite`, `src/jobs/liquidate.ts`), pas une copie.
 2. **Écriture `PENDING`** dans `orders`, `decision_id` posé : c'est le seul lien
    de l'ordre à son `run_date` (E23).
 3. **Placement** en limit post-only. Accepté, la ligne reçoit son

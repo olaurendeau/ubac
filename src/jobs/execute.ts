@@ -45,6 +45,10 @@ const PAS_DE_QUANTITE = 8;
  * qui ne croise pas, par `prixLimite` — la seule definition, partagee avec la
  * sortie (T3) —, arrondi au pas **en s'eloignant du mid** ; la quantite validee
  * par le risque, arrondie **vers le bas**, pour ne jamais engager plus.
+ *
+ * Le sens de l'arrondi n'est pas un biais a corriger : arrondir le prix vers le
+ * mid pourrait le faire croiser le carnet, et l'exchange rejetterait l'ordre
+ * post-only. Ne pas l'inverser.
  */
 export function auCarnet(ordre: Order, mids: MidPrices): Order {
   const mid = mids[ordre.asset];
