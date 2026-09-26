@@ -88,11 +88,11 @@ Le §9 en nomme six. Un ajout est assumé, et un nom est élargi.
 
 | Événement | Priorité | Se déclenche quand |
 |---|---|---|
-| `REBALANCE_EXECUTED` | high | un rééquilibrage a été passé |
+| `REBALANCE_EXECUTED` | high | au moins un ordre a été placé ; porte le compte placé et le compte exécuté |
 | `DRAWDOWN` | urgent | la suspension du §6 est active |
 | `REBALANCE_TOO_LARGE` | urgent | un rejet porte ce code |
 | `RECONCILIATION_DRIFT` | urgent | l'état interne s'est resynchronisé sur l'exchange |
-| `RISK_REJECTED` | high | un verdict est rejeté pour tout autre code |
+| `RISK_REJECTED` | high | un verdict est rejeté pour tout autre code, ou l'exchange refuse une jambe pour un autre motif que le post-only |
 | `RUN_ABORTED` | urgent | le run abandonne, à quelque étape que ce soit |
 | `JOB_FAILED` | urgent | une exception a échappé au run |
 
@@ -127,12 +127,25 @@ fois, aucun perdu**. Les neuf codes de `RejectionCode` sont sondés un par un, e
 leur complétude est tenue à la compilation : un dixième code ajouté au noyau sans
 être repris dans la sonde ne compile plus.
 
-**`REBALANCE_EXECUTED` est inatteignable en phase 1.** Rien ne s'exécute, donc la
-liste d'exécutions que lit `alertsFor` est toujours vide, et `daily.ts` le dit à
-l'endroit où il la passe. Le chemin existe et est éprouvé directement ; il
-s'alimentera de la table `orders` en phase 3. Une sonde du run le constate dans
-l'autre sens : même un rééquilibrage complet déclenché et accepté ne pousse pas
-cet événement.
+**`REBALANCE_EXECUTED` part quand un ordre part (E27, S7b).** Après l'étape 6,
+`src/jobs/suivi.ts` relit le statut de chaque ordre accepté ; l'alerte porte le
+compte **placé** et le compte **exécuté**, qui diffèrent le plus souvent — un
+limit post-only au repos n'est pas encore rempli quand le run le relit —, les
+partiels, le montant engagé et les frais réels. Un run sans ordre placé ne la
+pousse pas. Un abandon non plus : il précède l'étape 6, et la branche `ABORTED`
+d'`alertInputOf` reste vide. Une exception **après** le placement pousse
+`REBALANCE_EXECUTED` à côté de `JOB_FAILED` : un échec ne doit pas taire un ordre
+parti. Une lecture de statut qui échoue ne fait pas échouer le run ; l'ordre est
+dit « statut non lu ».
+
+**Le refus de l'exchange, tranché en S7b.** Un refus **post-only** est le §7 qui
+marche : il est compté dans le corps de `REBALANCE_EXECUTED` et dans le rapport,
+sans alerte à lui. Tout **autre** motif — fonds insuffisants, produit suspendu,
+taille refusée — part en `RISK_REJECTED`, le « jambe rejetée » du §9. Le
+classement se fait par égalité exacte sur les codes
+`INVALID_LIMIT_PRICE_POST_ONLY` et `PREVIEW_INVALID_LIMIT_PRICE_POST_ONLY`,
+`UNKNOWN_FAILURE_REASON` toléré à côté : un code inconnu alerte plutôt que d'être
+tu.
 
 **Le drawdown ne définit pas son propre seuil.** L'alerte part exactement quand
 la suspension du §6 est active, et son corps est le texte que porte la ligne de

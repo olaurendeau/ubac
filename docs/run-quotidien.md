@@ -330,7 +330,12 @@ déjà écrite arrête l'étape 6, et à défaut la clé primaire d'`orders` arr
 l'ordre. Les deux lignes ont chacune leur test, et celles de la base ne tournent
 qu'avec `make test-db`.
 
-L'alerte `REBALANCE_EXECUTED` et le rapport des ordres restent à S7b.
+4. **Suivi** (S7b) : le statut de chaque ordre accepté est relu aussitôt
+   (`src/jobs/suivi.ts`) et classé exécuté, partiel, non exécuté ou statut non
+   lu, frais réels compris. Cette lecture ne fait jamais échouer le run : les
+   ordres sont déjà partis. Elle alimente l'alerte `REBALANCE_EXECUTED`
+   ([alertes.md](alertes.md)) et la section « Ordres du jour » du rapport
+   ([rapport-quotidien.md](rapport-quotidien.md)).
 
 **Les trois canaux du §9, eux, partent bien d'ici**, après la dernière écriture
 et dans cet ordre : les **alertes push** ([alertes.md](alertes.md)), puis le

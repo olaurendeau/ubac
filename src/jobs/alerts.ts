@@ -42,6 +42,8 @@ import type { Suspension } from './snapshot.js';
  *   ses propres limites. S'en tenir litteralement a la jambe aurait rendu ces
  *   deux-la silencieux. L'evenement couvre donc **tout code de rejet** autre que
  *   `REBALANCE_TOO_LARGE`, lequel garde le sien parce que le §9 le nomme a part.
+ *   Depuis S7b, il couvre aussi la jambe **refusee par l'exchange** pour un
+ *   autre motif que le post-only ; le refus post-only, normal, n'alerte pas.
  *
  * ## Ce qui n'alerte pas
  *
@@ -81,15 +83,29 @@ export interface RiskOutcome {
 }
 
 /**
- * Un reequilibrage reellement passe. **Toujours vide en phase 1** : rien ne
- * s'execute, le garde-fou de noms d'`eslint.config.js` refuse le code qui le
- * ferait, et `daily.ts` passe une liste vide en le disant. Le chemin existe et
- * est eprouve directement ; il s'alimentera de la table `orders` en phase 3.
+ * L'etape 6 d'une strategie, telle que l'alerte la raconte (E27). `placed` :
+ * les ordres acceptes par l'exchange ; `executed` et `partial` : ceux que le
+ * statut lu juste apres dit entierement ou partiellement executes. **Les deux
+ * comptes different le plus souvent** — un limit post-only au repos n'est pas
+ * encore execute quand le run le relit —, et c'est pourquoi l'alerte porte les
+ * deux au lieu d'un seul.
+ *
+ * Une entree a `placed` nul n'emet pas `REBALANCE_EXECUTED` : rien n'est parti.
+ * Elle peut porter des refus qui, eux, alertent.
  */
 export interface RebalanceExecuted {
   readonly strategy: StrategyName;
-  readonly orders: number;
+  readonly placed: number;
+  readonly executed: number;
+  readonly partial: number;
+  /** Montant engage au prix limite, sur les ordres places. */
   readonly notional: UsdcAmount;
+  /** `total_fees` lus, sur les ordres dont le statut a ete lu. */
+  readonly fees: UsdcAmount;
+  /** Jambes refusees en post-only : le fonctionnement normal du §7, comptees sans alerter. */
+  readonly postOnlyRejected: number;
+  /** Jambes refusees pour **un autre motif** : chacune alerte, en `RISK_REJECTED`. */
+  readonly refused: readonly { readonly clientOrderId: string; readonly reason: string }[];
 }
 
 export interface AlertInput {
@@ -224,12 +240,16 @@ export function alertsFor(input: AlertInput): readonly Alert[] {
   const alerts: Alert[] = [];
 
   for (const done of input.executed) {
+    if (done.placed === 0) continue;
+    const rejets =
+      done.postOnlyRejected === 0 ? '' : ` ${String(done.postOnlyRejected)} jambe(s) refusee(s) en post-only, non replacee(s).`;
     alerts.push(
       alert(
         input.runDate,
         'REBALANCE_EXECUTED',
-        `Ubac ${input.runDate} — reequilibrage execute, ${done.strategy}`,
-        `${String(done.orders)} ordre(s) passe(s), ${done.notional.toFixed(2)} USDC deplaces.`,
+        `Ubac ${input.runDate} — ordres places, ${done.strategy}`,
+        `${String(done.placed)} ordre(s) place(s), ${String(done.executed)} execute(s), ${String(done.partial)} partiel(s) a la lecture qui a suivi. ` +
+          `${done.notional.toFixed(2)} USDC engages au prix limite, frais reels ${done.fees.toFixed(2)} USDC.${rejets}`,
       ),
     );
   }
@@ -271,6 +291,24 @@ export function alertsFor(input: AlertInput): readonly Alert[] {
   }
 
   for (const outcome of input.outcomes) alerts.push(...rejets(input.runDate, outcome));
+
+  /*
+   * Un refus de l'exchange **autre que post-only** part en `RISK_REJECTED`, le
+   * « jambe rejetee » du §9. Le post-only, lui, se tait : c'est le §7 qui marche,
+   * et l'alerter chaque fois apprendrait a l'operateur a ignorer l'evenement.
+   */
+  for (const done of input.executed) {
+    if (done.refused.length === 0) continue;
+    alerts.push(
+      alert(
+        input.runDate,
+        'RISK_REJECTED',
+        `Ubac ${input.runDate} — jambe refusee par l'exchange, ${done.strategy}`,
+        `L'exchange a refuse ${String(done.refused.length)} jambe(s) pour un autre motif que le post-only : ce n'est pas le fonctionnement normal, et rien n'est replace dans ce run.\n` +
+          done.refused.map((r) => `${r.clientOrderId} : ${r.reason}`).join('\n'),
+      ),
+    );
+  }
 
   if (input.ending.status === 'ABORTED') alerts.push(abandon(input.runDate, input.ending));
 

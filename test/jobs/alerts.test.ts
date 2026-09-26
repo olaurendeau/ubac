@@ -12,7 +12,7 @@ import type {
   UsdcAmount,
   Verdict,
 } from '../../src/core/types.js';
-import type { AlertInput, RunEnding } from '../../src/jobs/alerts.js';
+import type { AlertInput, RebalanceExecuted, RunEnding } from '../../src/jobs/alerts.js';
 import { ALERT_ORDER, alertsFor } from '../../src/jobs/alerts.js';
 import type { BalanceDivergence, Resynchronization } from '../../src/jobs/reconcile.js';
 import { RESYNC_MARKER } from '../../src/jobs/reconcile.js';
@@ -49,6 +49,19 @@ const SAIN: AlertInput = {
 };
 
 const entree = (overrides: Partial<AlertInput> = {}): AlertInput => ({ ...SAIN, ...overrides });
+
+/** L'etape 6 d'une strategie : deux ordres places, aucun encore execute — le cas le plus probable d'un limit au repos. */
+const parti = (overrides: Partial<RebalanceExecuted> = {}): RebalanceExecuted => ({
+  strategy: 'rebalance',
+  placed: 2,
+  executed: 0,
+  partial: 0,
+  notional: usdc('12345.678'),
+  fees: usdc('0'),
+  postOnlyRejected: 0,
+  refused: [],
+  ...overrides,
+});
 
 const rejet = (code: RejectionCode, legIndex?: number): Rejection => ({
   code,
@@ -106,7 +119,7 @@ const evenements = (alerts: readonly Alert[]): AlertEvent[] => alerts.map((a) =>
  */
 const ATTEINT: Readonly<Record<AlertEvent, AlertInput>> = {
   REBALANCE_EXECUTED: entree({
-    executed: [{ strategy: 'rebalance', orders: 2, notional: usdc('12345.678') }],
+    executed: [parti()],
   }),
   DRAWDOWN: entree({ suspension: SUSPENDU }),
   REBALANCE_TOO_LARGE: verdicts(rejete([rejet('REBALANCE_TOO_LARGE')])),
@@ -375,7 +388,7 @@ describe('ce que porte chaque alerte', () => {
    */
   it('formate le notionnel d’un reequilibrage execute en USDC', () => {
     const alerts = alertsFor(ATTEINT.REBALANCE_EXECUTED);
-    expect(alerts[0]?.body).toContain('2 ordre(s)');
+    expect(alerts[0]?.body).toContain('2 ordre(s) place(s)');
     expect(alerts[0]?.body).toContain('12345.68 USDC');
   });
 
@@ -402,7 +415,7 @@ describe('ce que porte chaque alerte', () => {
           verdict: rejete([rejet('MIN_CASH'), rejet('REBALANCE_TOO_LARGE')]),
         },
       ],
-      executed: [{ strategy: 'rebalance', orders: 1, notional: usdc('100') }],
+      executed: [parti({ placed: 1, notional: usdc('100') })],
     });
 
     expect(evenements(alerts)).toEqual([
@@ -447,8 +460,8 @@ describe('ce que porte chaque alerte', () => {
     const alerts = alertsFor(
       entree({
         executed: [
-          { strategy: 'rebalance', orders: 1, notional: usdc('1') },
-          { strategy: 'rebalance_ab', orders: 1, notional: usdc('2') },
+          parti({ placed: 1, notional: usdc('1') }),
+          parti({ strategy: 'rebalance_ab', placed: 1, notional: usdc('2') }),
         ],
       }),
     );
@@ -457,5 +470,53 @@ describe('ce que porte chaque alerte', () => {
       expect.stringContaining('rebalance'),
       expect.stringContaining('rebalance_ab'),
     ]);
+  });
+});
+
+// --- E27 : ce qui est parti ------------------------------------------------
+
+describe('E27 — REBALANCE_EXECUTED porte le compte place et le compte execute', () => {
+  const corps = (done: RebalanceExecuted): string =>
+    alertsFor(entree({ executed: [done] })).find((a) => a.event === 'REBALANCE_EXECUTED')?.body ?? '';
+
+  /* Les deux comptes different, et c'est le cas nominal : les confondre rougit ici. */
+  it('dit trois places dont un execute et un partiel, pas trois executes', () => {
+    const texte = corps(parti({ placed: 3, executed: 1, partial: 1 }));
+    expect(texte).toContain('3 ordre(s) place(s), 1 execute(s), 1 partiel(s)');
+  });
+
+  it('dit deux places et zero execute quand rien n’est encore rempli', () => {
+    expect(corps(parti())).toContain('2 ordre(s) place(s), 0 execute(s), 0 partiel(s)');
+  });
+
+  it('cite les frais reels en USDC, a deux decimales', () => {
+    expect(corps(parti({ fees: usdc('1.2345') }))).toContain('frais reels 1.23 USDC');
+  });
+
+  it('un run sans ordre place n’emet pas REBALANCE_EXECUTED, meme avec des refus post-only', () => {
+    const alerts = alertsFor(entree({ executed: [parti({ placed: 0, postOnlyRejected: 2 })] }));
+    expect(alerts).toEqual([]);
+  });
+
+  it('compte les refus post-only dans le corps sans les alerter a part', () => {
+    const alerts = alertsFor(entree({ executed: [parti({ postOnlyRejected: 1 })] }));
+    expect(evenements(alerts)).toEqual(['REBALANCE_EXECUTED']);
+    expect(alerts[0]?.body).toContain('1 jambe(s) refusee(s) en post-only');
+  });
+});
+
+describe('S7b — un refus de l’exchange autre que post-only alerte', () => {
+  const refus = { clientOrderId: 'cid-1', reason: 'INSUFFICIENT_FUND' };
+
+  it('part en RISK_REJECTED avec son code, et sans REBALANCE_EXECUTED si rien n’est place', () => {
+    const alerts = alertsFor(entree({ executed: [parti({ placed: 0, refused: [refus] })] }));
+    expect(evenements(alerts)).toEqual(['RISK_REJECTED']);
+    expect(alerts[0]?.title).toContain("refusee par l'exchange");
+    expect(alerts[0]?.body).toContain('cid-1 : INSUFFICIENT_FUND');
+  });
+
+  it('accompagne REBALANCE_EXECUTED quand une autre jambe est partie', () => {
+    const alerts = alertsFor(entree({ executed: [parti({ placed: 1, refused: [refus] })] }));
+    expect(evenements(alerts)).toEqual(['REBALANCE_EXECUTED', 'RISK_REJECTED']);
   });
 });

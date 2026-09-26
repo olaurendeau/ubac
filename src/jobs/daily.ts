@@ -35,12 +35,14 @@ import type {
   Weights,
 } from '../core/types.js';
 import { renderDailyReport } from '../report/daily-report.js';
-import type { AlertInput } from './alerts.js';
+import type { AlertInput, RebalanceExecuted } from './alerts.js';
 import { alertsFor } from './alerts.js';
 import type { IssueDeJambe } from './execute.js';
 import { auCarnet, placer } from './execute.js';
 import type { ReconcileObservations, Resynchronization } from './reconcile.js';
 import { reconcile } from './reconcile.js';
+import type { ExecutionDeStrategie } from './suivi.js';
+import { compter, engage, fraisReels, suivre } from './suivi.js';
 import type { BenchmarkGap, DrawdownState, SnapshotWrite, Suspension } from './snapshot.js';
 import { prepareSnapshot } from './snapshot.js';
 
@@ -185,7 +187,7 @@ function shiftDay(date: IsoDate, jours: number, champ: string): IsoDate {
  * l'objet a `reconcile`, seul fichier de `src/jobs/` autorise a lire les soldes.
  */
 export interface DailyPorts {
-  readonly exchange: Pick<CoinbaseReader, 'keyPermissions' | 'balances' | 'openOrders'>;
+  readonly exchange: Pick<CoinbaseReader, 'keyPermissions' | 'balances' | 'openOrders' | 'orderStatus'>;
   readonly market: Pick<MarketReader, 'dailyCandles'>;
   readonly db: Pick<
     UbacDatabase,
@@ -335,6 +337,8 @@ type DailyOutcome =
       readonly outcomes: readonly StrategyOutcome[];
       /** Etape 6 : l'issue de chaque jambe transmise, dans l'ordre de placement. */
       readonly placements: readonly IssueDeJambe[];
+      /** Etape 6, vue de l'exchange : ce qui est parti et dans quel etat (E27, E28). */
+      readonly executions: readonly ExecutionDeStrategie[];
       readonly totalValue: UsdcAmount;
       /** Etape 7 : ce qui est parti dans `snapshots.benchmarks`. */
       readonly benchmarks: Readonly<Record<string, Decimal>>;
@@ -597,7 +601,12 @@ function decideAll(
  * ou l'on a demande, par exemple. **N'alerte pas** : c'est `runDaily` qui le
  * fait, une fois que celui-ci a rendu ou leve.
  */
-async function executeRun(run: DailyRun): Promise<DailyOutcome> {
+/**
+ * `parti` recoit l'etape 6 **au fil de l'eau**, et pas seulement au retour :
+ * une exception posterieure aux placements — la photo de l'etape 7 qui leve —
+ * sortirait sinon en `JOB_FAILED` sans rien dire des ordres deja partis.
+ */
+async function executeRun(run: DailyRun, parti: ExecutionDeStrategie[]): Promise<DailyOutcome> {
   const { ports, clock, config, gitSha, log } = run;
   const runDate = clock.today();
 
@@ -762,6 +771,7 @@ async function executeRun(run: DailyRun): Promise<DailyOutcome> {
       log(`${strategy} : ${issue.clientOrderId} ${issue.kind}${detail}`);
     }
     placements.push(...issues);
+    parti.push(await suivre(ports.exchange, strategy, ordres, issues, log));
   }
 
   /*
@@ -793,6 +803,7 @@ async function executeRun(run: DailyRun): Promise<DailyOutcome> {
     resync,
     outcomes,
     placements,
+    executions: parti,
     totalValue: valuation.total,
     benchmarks: step.benchmarks,
     benchmarkGaps: step.gaps,
@@ -814,10 +825,9 @@ function texte(error: unknown): string {
  * fait cette traduction, et il est ici : `alerts.ts` reste pur et ne connait pas
  * `DailyOutcome`.
  *
- * `executed` est **vide, toujours**, et ce n'est pas un raccourci : la phase 1
- * ne place rien, donc aucun reequilibrage n'a jamais ete execute. Meme motif que
- * les deux ancres nulles de l'etape 5. Le champ se remplira de la table `orders`
- * quand elle portera des executions.
+ * `executed` n'est rempli que dans la branche **conclue** (E27). Un abandon
+ * survient avant l'etape 6 — valorisation ou decision —, donc rien n'a pu
+ * partir : y declarer des executions annoncerait un ordre qui n'existe pas.
  */
 function alertInputOf(outcome: DailyOutcome): AlertInput {
   if (outcome.status === 'ABORTED') {
@@ -833,6 +843,7 @@ function alertInputOf(outcome: DailyOutcome): AlertInput {
       resync: outcome.resync,
       // Aucun verdict : un abandon survient avant que la couche risque ne parle.
       outcomes: [],
+      // Rien n'est parti : l'abandon precede l'etape 6.
       executed: [],
     };
   }
@@ -846,7 +857,23 @@ function alertInputOf(outcome: DailyOutcome): AlertInput {
       isShadow,
       verdict,
     })),
-    executed: [],
+    executed: outcome.executions.map(resume),
+  };
+}
+
+/** L'etape 6 d'une strategie, reduite a ce que l'alerte raconte. */
+function resume(execution: ExecutionDeStrategie): RebalanceExecuted {
+  return {
+    strategy: execution.strategy,
+    placed: execution.ordres.length,
+    executed: compter(execution, 'EXECUTE'),
+    partial: compter(execution, 'PARTIEL'),
+    notional: engage(execution),
+    fees: fraisReels(execution),
+    postOnlyRejected: execution.rejets.filter((r) => r.postOnly).length,
+    refused: execution.rejets
+      .filter((r) => !r.postOnly)
+      .map((r) => ({ clientOrderId: r.order.clientOrderId, reason: r.reason })),
   };
 }
 
@@ -1207,8 +1234,9 @@ export async function runDaily(run: DailyRun): Promise<DailyRunResult> {
 
   const runDate = run.clock.today();
   let outcome: DailyOutcome;
+  const parti: ExecutionDeStrategie[] = [];
   try {
-    outcome = await executeRun(run);
+    outcome = await executeRun(run, parti);
   } catch (error) {
     await announce(run, {
       runDate,
@@ -1223,7 +1251,8 @@ export async function runDaily(run: DailyRun): Promise<DailyRunResult> {
        */
       resync: { status: 'NOT_NEEDED' },
       outcomes: [],
-      executed: [],
+      // Ce qui est parti avant l'exception : un echec ne doit pas taire un ordre place.
+      executed: parti.map(resume),
     });
     /*
      * **Aucun ping ici, et c'est la seule ligne de ce fichier dont l'absence de

@@ -5,6 +5,7 @@ import type {
   DailyReportInput,
   PreviousSnapshot,
   ReportDrawdown,
+  ReportExecution,
   ReportGap,
   ReportMarketDay,
   ReportOutcome,
@@ -44,7 +45,7 @@ void entier;
 const refuse: CompletedRun = abandonne;
 void refuse;
 
-/** V3 — champ par champ, pour qu'un renommage dise **lequel** a bouge. Les onze champs lus, et rien d'autre. */
+/** V3 — champ par champ, pour qu'un renommage dise **lequel** a bouge. Les douze champs lus, et rien d'autre. */
 const runDate: CompletedRun['runDate'] = acheve.runDate;
 const pricedOn: CompletedRun['pricedOn'] = acheve.pricedOn;
 const totalValue: CompletedRun['totalValue'] = acheve.totalValue;
@@ -56,7 +57,9 @@ const gaps: readonly ReportGap[] = acheve.benchmarkGaps;
 const drawdown: ReportDrawdown = acheve.drawdown;
 const suspension: ReportSuspension = acheve.suspension;
 const outcomes: readonly ReportOutcome[] = acheve.outcomes;
-void [runDate, pricedOn, totalValue, weights, holdings, history, benchmarks, gaps, drawdown, suspension, outcomes];
+/** E28 (S7b) : l'etape 6 vue de l'exchange, que le rapport rend en « Ordres du jour ». */
+const executions: readonly ReportExecution[] = acheve.executions;
+void [runDate, pricedOn, totalValue, weights, holdings, history, benchmarks, gaps, drawdown, suspension, outcomes, executions];
 
 /**
  * V4 — les deux branches de chaque union. L'assignation du type entier ne dirait
@@ -106,6 +109,7 @@ rendre({
   drawdown: acheve.drawdown,
   suspension: acheve.suspension,
   outcomes: acheve.outcomes,
+  executions: acheve.executions,
 });
 
 /**
