@@ -1,9 +1,9 @@
-import { ccxtTransport, openCoinbase } from '../adapters/coinbase.js';
+import { ccxtTransport, openCoinbase, openCoinbaseExecution } from '../adapters/coinbase.js';
 import { openDatabase } from '../adapters/db.js';
 import { openHealthcheck } from '../adapters/healthcheck.js';
 import { openHttp } from '../adapters/http.js';
 import type { Effets } from '../adapters/inertes.js';
-import { executionJournalisee, portsInertes } from '../adapters/inertes.js';
+import { portsInertes } from '../adapters/inertes.js';
 import { openMailer } from '../adapters/mailer.js';
 import { openMarketData } from '../adapters/market.js';
 import { openNotifier } from '../adapters/notifier.js';
@@ -76,7 +76,7 @@ const OPTIONS = ['run-date', 'git-sha', 'at'] as const;
 const LIGNE_DRY_RUN =
   'mode DRY_RUN : lectures reelles ; decisions, photo, alertes, rapport, ping et ordres retenus par des ports inertes.';
 const LIGNE_NORMALE =
-  'mode normal : ecritures et envois reels ; ordres journalises, jamais places — l’execution n’est pas armee.';
+  'mode normal : ecritures et envois reels ; ordres places sur Coinbase, en limit post-only.';
 
 /**
  * La derniere occurrence gagne : `npm run daily` pose ses defauts, et
@@ -203,18 +203,19 @@ async function main(argv: readonly string[]): Promise<number> {
    */
   const http = openHttp();
   /*
-   * **Le port d'execution est le port journalisant, dans les deux modes.** Le
-   * port reel, `openCoinbaseExecution`, n'est compose nulle part : A24 de
-   * `test/jobs/purete.test.ts` le constate et rougit le jour ou il l'est. C'est
-   * l'armement (S7) qui l'ecrira ici, apres ce lot dans l'historique de `main` :
-   * c'est ce qu'E12 verifie.
+   * **Le port reel d'execution n'existe que dans les effets reels**, et n'est
+   * ouvert qu'a l'etape 1 du run : c'est la qu'une cle sans `can_trade` le fait
+   * lever (E7), dans le `try` de `runDaily`, donc avec son alerte. Le meme
+   * lecteur, memoise, sert la cle aux deux : une seule lecture, une seule ligne
+   * d'E8. En `DRY_RUN`, `portsInertes` le remplace sans jamais l'ouvrir : A24 de
+   * `test/jobs/purete.test.ts` tient les deux moities.
    */
   const reels: Effets = {
     db,
     notifier: openNotifier(config.secrets, http),
     mailer: openMailer(config.secrets, http),
     healthcheck: openHealthcheck(config.secrets, http),
-    execution: executionJournalisee(log),
+    execution: () => openCoinbaseExecution(transport, exchange),
   };
   /*
    * **La seule condition de mode du depot** (E15). Les ports inertes sont des

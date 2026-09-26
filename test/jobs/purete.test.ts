@@ -139,11 +139,13 @@ import { EXECUTION_METHODS, WRITE_ROUTES } from '../../src/adapters/coinbase.js'
  *   l'arbre reel est « exactement `src/jobs/execute.ts` », comme A19 et A20.
  *   Les noms sont lus dans `EXECUTION_METHODS` et `WRITE_ROUTES`, qu'E10
  *   enumere : ce fichier ne les recopie pas.
- * - **A24** — E12 et B3 : le port reel d'execution n'est **compose nulle
- *   part**. `openCoinbaseExecution` n'est nomme dans aucun fichier de `src/`
- *   hors de `src/adapters/coinbase.ts`, qui le definit et **doit** y figurer.
- *   Tant que ce verdict tient, l'etape 6 ne parle qu'au port journalisant, dans
- *   les deux modes ; l'armement (S7) le changera expres, et ici.
+ * - **A24** — E12 et B3 : le port reel d'execution est compose **exactement en
+ *   mode normal, jamais en `DRY_RUN`**. `openCoinbaseExecution` n'est nomme
+ *   qu'a sa definition, a son import et dans les effets reels (`reels`) de
+ *   `daily-main.ts`, une fois ; `reels` n'y est lu que par `portsInertes`, qui
+ *   le remplace, et par la branche normale du mode. La moitie qui se joue a
+ *   l'execution — `portsInertes` n'ouvre pas le port reel — est sondee par
+ *   `test/jobs/daily.test.ts`, sur un run complet avec une cle sans trade.
  * - **A25** — E15 et E17 : le mode n'a qu'un lieu. Nommer le `DRY_RUN` — en
  *   identifiant, en chaine, en gabarit — tombe partout dans `src/`, et
  *   `force` ou `bypass` comme identifiant aussi ; le verdict sur l'arbre reel
@@ -1319,26 +1321,52 @@ describe('A23 — l’ecriture sur l’exchange n’a qu’un module (E11)', () 
   });
 });
 
-// --- A24, A25 : le port reel n'est compose nulle part, et le mode a un lieu --
+// --- A24, A25 : le port reel en mode normal seulement, et le mode a un lieu --
 
 /**
- * A24 remplace une propriete que S5 fait tomber : S4 livrait `execute.ts` sans
- * appelant, et « rien n'ecrit sur l'exchange » se lisait a l'absence d'appel.
- * L'etape 6 appelle desormais `placer` ; ce qui garantit qu'aucun ordre ne part
- * avant l'armement est que **le seul constructeur du port reel n'est nomme par
- * aucun code qui compose**. Un port reel fabrique a la main, sans lui, tombe
- * sur A23 : il faudrait nommer les methodes ou les routes d'ecriture.
+ * A24 remplace celle de S5, que l'armement (S7) fait tomber : « le port reel
+ * n'est compose dans aucun mode » devient « **dans le mode normal, et dans lui
+ * seul** ». Un port reel fabrique a la main, sans son constructeur, tombe sur
+ * A23 : il faudrait nommer les methodes ou les routes d'ecriture.
  */
 const TOUT_SRC = 'src/**/*.ts';
+const LES_EFFETS_REELS = "VariableDeclarator[id.name='reels'] Property[key.name='execution'] Identifier";
 const PORT_REEL = gardien({
   'no-restricted-syntax': [
     'error',
     {
-      selector: "Identifier[name='openCoinbaseExecution']",
-      message: "le port reel d'execution n'est compose nulle part avant l'armement (E12, B3).",
+      selector: `Identifier[name='openCoinbaseExecution']:not(ImportSpecifier > Identifier, ${LES_EFFETS_REELS})`,
+      message: "le port reel d'execution ne se compose que dans les effets reels (E12, B3).",
+    },
+    {
+      selector: [
+        "Identifier[name='reels']:not(VariableDeclarator > Identifier.id",
+        "CallExpression[callee.name='portsInertes'] > Identifier.arguments",
+        "ConditionalExpression[test.name='dryRun'] > ObjectExpression.alternate > Property[key.name='effets'] > Identifier.value)",
+      ].join(', '),
+      message: 'les effets reels ne vont qu’a la branche normale, ou a portsInertes qui les remplace (E12, B3).',
     },
   ],
 });
+const PORT_REEL_COMPOSE = gardien({
+  'no-restricted-syntax': ['error', { selector: `${LES_EFFETS_REELS}[name='openCoinbaseExecution']`, message: 'compose' }],
+});
+
+const ENTETE_24 = [
+  "import { openCoinbaseExecution } from '../adapters/coinbase.js';",
+  "import { portsInertes } from '../adapters/inertes.js';",
+  'declare const t: never, ex: never, log: never, dryRun: boolean;',
+  'const reels = { db: 1, execution: () => openCoinbaseExecution(t, ex) };',
+].join('\n');
+const MODE_24 = (dry: string): string => `${ENTETE_24}\nexport const m = dryRun ? { effets: ${dry} } : { effets: reels };`;
+const COMPOSITIONS: Sondes = {
+  'la composition livree': [MODE_24('portsInertes(reels, log)'), 0],
+  'le DRY_RUN compose le port reel': [MODE_24('{ execution: () => openCoinbaseExecution(t, ex) }'), 1],
+  'le DRY_RUN reprend le port des effets reels': [MODE_24('{ ...portsInertes(reels, log), execution: reels.execution }'), 1],
+  'le DRY_RUN recoit les effets reels': [MODE_24('reels'), 1],
+  'le DRY_RUN etale les effets reels': [MODE_24('{ ...reels }'), 1],
+  'le port reel hors des effets reels': [`${ENTETE_24}\nexport const p = openCoinbaseExecution(t, ex);`, 1],
+};
 
 const MODE_NOMME =
   'le mode se lit au point d’entree et ne voyage pas (E15, E17) : ni condition, ni parametre, ni variable ailleurs.';
@@ -1359,10 +1387,19 @@ const MODES: Sondes = {
   'un mot voisin': ['export const forcer = 1;\nexport const runDate = 2;', 0],
 };
 
-describe('A24, A25 — le port reel n’est compose nulle part, et le mode n’a qu’un lieu', () => {
-  it('A24 : openCoinbaseExecution n’est nomme que la ou il est defini', async () => {
-    expect(await messagesDe(PORT_REEL, 'export const p = openCoinbaseExecution;', DAILY_MAIN)).toBe(1);
+describe('A24, A25 — le port reel en mode normal seulement, et le mode n’a qu’un lieu', () => {
+  it('A24 : les compositions du port reel recoivent le verdict attendu', async () => {
+    const lues = await Promise.all(
+      Object.entries(COMPOSITIONS).map(async ([nom, [code]]) => [nom, await messagesDe(PORT_REEL, code, DAILY_MAIN)]),
+    );
+    expect(Object.fromEntries(lues)).toEqual(attendus(COMPOSITIONS));
+  });
+
+  it('A24 : le port reel est compose une fois, dans les effets reels de daily-main.ts, et nulle part ailleurs', async () => {
+    // Sa definition seule parle hors de daily-main.ts : elle n'est ni un import ni une composition.
     expect(fautifs(await PORT_REEL.lintFiles([TOUT_SRC]))).toEqual(['src/adapters/coinbase.ts']);
+    const [compose] = await PORT_REEL_COMPOSE.lintFiles([DAILY_MAIN]);
+    expect(compose?.messages).toHaveLength(1);
   });
 
   it('A25 : les formes du mode recoivent le verdict attendu', async () => {

@@ -1055,7 +1055,7 @@ function cancelledFrom(raw: unknown, exchangeIds: readonly string[]): readonly C
  * L'executeur. **`can_trade` est une condition de construction, pas un
  * drapeau** (E7) : avec une cle qui ne peut pas trader, il n'y a pas de port,
  * donc rien a appeler, et aucun parametre ne le fait exister autrement. Le run
- * qui le composera (S7) refusera donc de demarrer arme.
+ * quotidien l'ouvre a son etape 1 (`daily.ts`) : il refuse donc de demarrer arme.
  *
  * La permission vient du lecteur, qui a deja verifie la cle contre le
  * portefeuille attendu (E6) et l'a journalisee (E8) : un seul controle de la cle

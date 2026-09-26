@@ -135,10 +135,9 @@ Aucune variable `UBAC_RISK_*` n'est acceptée : les seuils de risque vivent dans
    décidées, validées par la couche risque, puis journalisées. Une ligne par
    stratégie et par run, `trigger NONE` comprise : un run sans action laisse une
    trace.
-6. **L'exécution, minimale.** Les ordres d'un verdict `ACCEPTED` de la **seule
-   production** passent par `src/jobs/execute.ts` vers le port d'exécution ; une
-   ombre n'y passe jamais (E18). Ce port est, dans les deux modes, le port
-   **journalisant** : rien n'est placé. Section 4.
+6. **L'exécution.** Les ordres d'un verdict `ACCEPTED` de la **seule
+   production** passent par `src/jobs/execute.ts` ; une ombre n'y passe jamais
+   (E18). Section 4.
 7. **Benchmarks et photo du jour** dans `snapshots` : valeur totale, poids,
    positions, benchmarks. Détail ci-dessous.
 8. **Le rapport quotidien Brevo.** Tout run conclu l'envoie, `trigger NONE`
@@ -301,17 +300,37 @@ condamné. Voir [reconciliation.md](reconciliation.md) section 1 bis.
 
 ## 4. Ce que le run ne fait pas
 
-**Il ne place aucun ordre.** L'étape 6 existe, mais le port qu'elle appelle est
-`executionJournalisee` d'`src/adapters/inertes.ts`, **dans les deux modes** : il
-journalise, pour chaque jambe qui serait partie, `client_order_id`, paire, côté,
-quantité, prix limite et `post_only`, lus sur le corps même que l'exécuteur réel
-enverrait. Le port réel, `openCoinbaseExecution`, n'est composé nulle part : A24
-de `test/jobs/purete.test.ts` le constate sur tout `src/`. C'est l'armement (S7)
-qui le composera, avec l'écriture `PENDING` dans `orders` avant le placement, le
-classement d'un rejet post-only, `REBALANCE_EXECUTED` et le prix mid ± 0,1 %.
+**En mode normal, il place des ordres réels** (S7a). Le port réel,
+`openCoinbaseExecution`, est ouvert à l'étape 1 : une clé sans `can_trade`, ou
+dont la réponse `key_permissions` ne porte pas `can_transfer` à `false`, arrête
+le run avant toute autre lecture, avec `JOB_FAILED` (E7). En `DRY_RUN`, il n'est
+jamais ouvert (A24) ; le port journalisant le remplace, section 8.
 
-Conséquence voulue : **chaque run de production journalise déjà ce qu'il aurait
-placé**, sur les vraies données, sans qu'un ordre parte.
+Pour chaque jambe, dans l'ordre :
+
+1. **Prix au carnet** : mid ± 0,1 % du côté qui ne croise pas — sous le mid à
+   l'achat, au-dessus à la vente —, arrondi au pas de 0,01 USDC en s'éloignant
+   du mid ; quantité arrondie à 1e-8 vers le bas. **Ce sens n'est pas un biais
+   à corriger** : arrondir le prix vers le mid pourrait le faire croiser le
+   carnet, et l'exchange rejetterait l'ordre post-only ; arrondir la quantité
+   vers le haut engagerait plus que ce que la couche risque a validé. Le mid
+   est la clôture du dernier jour clos, celle que la couche risque a validée.
+   La marge est celle de la sortie (`prixLimite`, `src/jobs/liquidate.ts`), pas une copie.
+2. **Écriture `PENDING`** dans `orders`, `decision_id` posé : c'est le seul lien
+   de l'ordre à son `run_date` (E23).
+3. **Placement** en limit post-only. Accepté, la ligne reçoit son
+   `exchange_id` ; rejeté par l'exchange — post-only qui croiserait —, elle passe
+   `REJECTED`, la ligne du journal cite le code, et la jambe suivante part. Un run
+   dont toutes les jambes sont rejetées a **conclu**. Rien n'est replacé dans le
+   run (E26).
+
+Un job tué entre 2 et 3 laisse une ligne `PENDING` **sans** `exchange_id` : la
+réconciliation la rattrape. **Rejouer le jour ne place rien** (E24) : la décision
+déjà écrite arrête l'étape 6, et à défaut la clé primaire d'`orders` arrête
+l'ordre. Les deux lignes ont chacune leur test, et celles de la base ne tournent
+qu'avec `make test-db`.
+
+L'alerte `REBALANCE_EXECUTED` et le rapport des ordres restent à S7b.
 
 **Les trois canaux du §9, eux, partent bien d'ici**, après la dernière écriture
 et dans cet ordre : les **alertes push** ([alertes.md](alertes.md)), puis le
@@ -448,6 +467,7 @@ dégradée, et dit sur sa propre ligne ce qu'il a retenu :
 | `sendReport` | `SENT`, `HTTP 0` | zéro : aucun échange n'a eu lieu, et aucun code Brevo ne vaut zéro |
 | `ping` | `PINGED` | le marqueur est celui que le corps aurait porté |
 | `placeOrder` | identifiant `non-place-<client_order_id>` | les six champs, sur une ligne `ordre non place` |
+| `recordOrder`, `recordPlacement` | `RECORDED`, rien | la ligne `PENDING` et son issue ne sont pas écrites ; le port réel n'est pas ouvert, donc une clé sans `can_trade` suffit |
 
 Un `FAILED` aurait fait sortir l'essai en 1 et changé le pulse pour une raison
 qui n'est pas la sienne. Le code de sortie d'un `DRY_RUN` est donc celui qu'aurait

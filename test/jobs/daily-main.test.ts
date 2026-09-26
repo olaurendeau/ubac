@@ -205,18 +205,18 @@ describe('composition du lecteur Coinbase', () => {
  * E14 a E16 au point de composition, lus dans le source pour la meme raison
  * que ci-dessus. Le run complet sous `portsInertes` est eprouve dans
  * `test/jobs/daily.test.ts` ; ici, que ce soit bien cette fonction qui est
- * composee, par **une seule condition**, et que le port d'execution reel ne le
- * soit dans aucun des deux modes (A24 le tient pour tout `src/`).
+ * composee, par **une seule condition**, et que le port d'execution reel soit
+ * ouvert sur le transport et le lecteur du run (A24 tient les deux modes).
  */
 describe('composition du mode', () => {
-  it('une seule condition choisit les ports inertes, et le port d’execution journalise dans les deux modes', async () => {
+  it('une seule condition choisit les ports inertes, et le port d’execution reel est dans les effets reels', async () => {
     const source = await readFile(ENTREE, 'utf8');
 
     expect(source).toMatch(
       /const mode = dryRun\s*\?\s*\{ ligne: LIGNE_DRY_RUN, effets: portsInertes\(reels, log\) \}\s*:\s*\{ ligne: LIGNE_NORMALE, effets: reels \};\s*log\(mode\.ligne\);/,
     );
     expect(source).toMatch(/ports: \{ exchange, market, \.\.\.mode\.effets \}/);
-    expect(source).toMatch(/execution: executionJournalisee\(log\),/);
+    expect(source).toMatch(/execution: \(\) => openCoinbaseExecution\(transport, exchange\),/);
     // Declare, rendu par `readArguments`, lu dans `main`, teste une fois : une seconde condition rougit ici.
     expect(source.match(/\bdryRun\b/g)).toHaveLength(4);
   });

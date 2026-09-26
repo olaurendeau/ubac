@@ -168,7 +168,8 @@ type NonLusAttendus =
   | 'snapshot'
   | 'report'
   | 'previousSnapshot'
-  | 'snapshotSeries';
+  | 'snapshotSeries'
+  | 'placements';
 type MemeEnsemble<A extends B, B> = A;
 declare const nonLus: [MemeEnsemble<NonLus, NonLusAttendus>, MemeEnsemble<NonLusAttendus, NonLus>];
 void nonLus;

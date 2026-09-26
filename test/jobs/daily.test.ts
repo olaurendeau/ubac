@@ -1,7 +1,13 @@
 import { Decimal } from 'decimal.js';
 import { describe, expect, it } from 'vitest';
 
-import type { AssetBalance, KeyPermissions, PortfolioBalances } from '../../src/adapters/coinbase.js';
+import type {
+  AssetBalance,
+  CreateOrderBody,
+  KeyPermissions,
+  PortfolioBalances,
+} from '../../src/adapters/coinbase.js';
+import { openCoinbaseExecution } from '../../src/adapters/coinbase.js';
 import type {
   CashFlowRecord,
   DecisionToRecord,
@@ -115,6 +121,10 @@ interface Scenario {
    * la derniere ecriture.
    */
   readonly panne?: 'keyPermissions' | 'dailyCandles' | 'recordSnapshot';
+  /** La cle de phase 1, qui ne peut pas trader. Par defaut : celle de phase 3. */
+  readonly sansTrade?: true;
+  /** Les `client_order_id` que l'exchange rejette, comme un post-only qui croiserait. */
+  readonly rejetes?: 'TOUS';
   /** Variables d'environnement ajoutees a `ENV` avant `loadConfig`. */
   readonly env?: Readonly<Record<string, string>>;
 }
@@ -145,8 +155,10 @@ interface Harnais {
   readonly courriers: { readonly url: string; readonly payload: BrevoPayload }[];
   /** Les pings reellement tentes, corps en clair compris. Au plus un par run. */
   readonly pings: { readonly url: string; readonly body: string }[];
-  /** Les ordres transmis au port d'execution, dans l'ordre de l'etape 6. */
-  readonly ordres: Order[];
+  /** Les corps envoyes a `create_order`, dans l'ordre de l'etape 6. */
+  readonly corps: CreateOrderBody[];
+  /** La table `orders`, par cle primaire : `PENDING <decision>`, `PLACED <exchange_id>` ou `REJECTED`. */
+  readonly lignesOrdres: Map<string, string>;
 }
 
 /**
@@ -197,7 +209,7 @@ const ENV = {
   NTFY_TOPIC: 'ubac-test',
 };
 
-const PERMISSIONS: KeyPermissions = { canView: true, canTrade: false, portfolioUuid: PORTFOLIO };
+const PERMISSIONS: KeyPermissions = { canView: true, canTrade: true, portfolioUuid: PORTFOLIO };
 
 /**
  * Le double de `recordDecision` reproduit **l'index unique**
@@ -221,7 +233,8 @@ function harnais(scenario: Scenario = {}): Harnais {
   const pushes: { url: string; payload: NtfyPayload }[] = [];
   const courriers: { url: string; payload: BrevoPayload }[] = [];
   const pings: { url: string; body: string }[] = [];
-  const ordres: Order[] = [];
+  const corps: CreateOrderBody[] = [];
+  const lignesOrdres = new Map<string, string>();
   if (scenario.snapshot !== undefined) photos.set(scenario.snapshot.runDate, scenario.snapshot);
   const runDate = scenario.runDate ?? RUN_DATE;
   const closes = scenario.closes ?? { BTC: BTC_CLOSE, ETH: ETH_CLOSE };
@@ -252,6 +265,26 @@ function harnais(scenario: Scenario = {}): Harnais {
     return scenario.pulse === undefined ? { status: 'OK', httpStatus: 200 } : scenario.pulse(request);
   };
 
+  // Memoisee comme celle du vrai lecteur : le run et l'executeur partagent une lecture.
+  let cle: Promise<KeyPermissions> | undefined;
+  const exchange: DailyPorts['exchange'] = {
+    keyPermissions: () => {
+      if (cle !== undefined) return cle;
+      appels.push('keyPermissions');
+      if (scenario.panne === 'keyPermissions') throw new Error(PANNE);
+      cle = Promise.resolve(scenario.sansTrade === true ? { ...PERMISSIONS, canTrade: false } : PERMISSIONS);
+      return cle;
+    },
+    balances: () => {
+      appels.push('balances');
+      return Promise.resolve(portfolio);
+    },
+    openOrders: () => {
+      appels.push('openOrders');
+      return Promise.resolve([]);
+    },
+  };
+
   return {
     appels,
     lignes,
@@ -262,27 +295,14 @@ function harnais(scenario: Scenario = {}): Harnais {
     pushes,
     courriers,
     pings,
-    ordres,
+    corps,
+    lignesOrdres,
     gitSha: GIT_SHA,
     clock: { today: () => runDate, instant: () => new Date(`${runDate}T07:00:00.000Z`) },
     config,
     log: (line) => lignes.push(line),
     ports: {
-      exchange: {
-        keyPermissions: () => {
-          appels.push('keyPermissions');
-          if (scenario.panne === 'keyPermissions') throw new Error(PANNE);
-          return Promise.resolve(PERMISSIONS);
-        },
-        balances: () => {
-          appels.push('balances');
-          return Promise.resolve(portfolio);
-        },
-        openOrders: () => {
-          appels.push('openOrders');
-          return Promise.resolve([]);
-        },
-      },
+      exchange,
       market: {
         dailyCandles: (asset, window) => {
           appels.push(`dailyCandles:${asset}`);
@@ -337,21 +357,44 @@ function harnais(scenario: Scenario = {}): Harnais {
             id: `decision-${String(table.size)}`,
           });
         },
+        recordOrder: ({ order, decisionId }) => {
+          appels.push('recordOrder');
+          if (lignesOrdres.has(order.clientOrderId)) return Promise.resolve({ status: 'ALREADY_RECORDED' as const });
+          lignesOrdres.set(order.clientOrderId, `PENDING ${decisionId}`);
+          return Promise.resolve({ status: 'RECORDED' as const });
+        },
+        recordPlacement: (issue) => {
+          appels.push('recordPlacement');
+          lignesOrdres.set(issue.clientOrderId, issue.kind === 'PLACED' ? `PLACED ${issue.exchangeId}` : 'REJECTED');
+          return Promise.resolve();
+        },
       },
       notifier: openNotifier(config.secrets, transport),
       mailer: openMailer(config.secrets, postier),
       healthcheck: openHealthcheck(config.secrets, pulse),
-      /* Un double du port reel : il compte, et rend ce que l'exchange rendrait. */
-      execution: {
-        placeOrder: (order) => {
-          appels.push('placeOrder');
-          ordres.push(order);
-          return Promise.resolve({ kind: 'PLACED' as const, exchangeId: `ex-${order.clientOrderId}`, clientOrderId: order.clientOrderId });
-        },
-        cancelOrders: (ids) => {
-          appels.push('cancelOrders');
-          return Promise.resolve(ids.map((exchangeId) => ({ kind: 'CANCELLED' as const, exchangeId })));
-        },
+      /*
+       * Le **vrai** port, compose comme `daily-main.ts` le compose, sur un
+       * transport d'ecriture qui compte et rend ce que l'exchange rendrait :
+       * `can_trade` y est verifie pour de bon (E7).
+       */
+      execution: () => {
+        appels.push('ouvrirExecution');
+        return openCoinbaseExecution(
+          {
+            write: (route) => {
+              if (route.kind !== 'create_order') throw new Error(`route inattendue ${route.kind}`);
+              appels.push('placeOrder');
+              corps.push(route.body);
+              const id = route.body.client_order_id;
+              return Promise.resolve(
+                scenario.rejetes === 'TOUS'
+                  ? { success: false, error_response: { error: 'INVALID_LIMIT_PRICE_POST_ONLY' } }
+                  : { success: true, success_response: { order_id: `ex-${id}`, client_order_id: id } },
+              );
+            },
+          },
+          exchange,
+        );
       },
     },
   };
@@ -431,6 +474,8 @@ describe('§8 etapes 1 a 5 — l’enchainement du run', () => {
 
     expect(h.appels).toEqual([
       'keyPermissions',
+      // E7 : le port d'execution s'ouvre au demarrage, sur la meme lecture de la cle.
+      'ouvrirExecution',
       'balances',
       'openOrders',
       'pendingOrders',
@@ -2009,15 +2054,18 @@ describe('§8 etape 6 — seule la production transmet ses ordres (E18)', () => 
    * production a l'identique, `client_order_id` compris — c'est pourquoi la
    * sonde compte les ordres transmis au lieu de chercher un intrus.
    */
-  it('quatre verdicts ACCEPTED, et seuls les ordres de rebalance atteignent le port', async () => {
+  it('quatre verdicts ACCEPTED, et seuls les ordres de rebalance sont ecrits et places', async () => {
     const h = harnais({ balances: JUSTE_HORS_BANDE, runDate: '2026-10-01' });
     const result = await lance(h);
 
     expect(complete(result).outcomes.map((o) => o.verdict.status)).toEqual(['ACCEPTED', 'ACCEPTED', 'ACCEPTED', 'ACCEPTED']);
     expect(ordresDe(result, 'rebalance_ab')).not.toHaveLength(0);
     expect(ordresDe(result, 'dca')).not.toHaveLength(0);
-    expect(h.ordres).toEqual(ordresDe(result, 'rebalance'));
-    expect(h.ordres.map((o) => `${o.side} ${o.asset}`)).toEqual(['SELL BTC']);
+    const production = ordresDe(result, 'rebalance').map((o) => o.clientOrderId);
+    expect(h.corps.map((c) => c.client_order_id)).toEqual(production);
+    expect([...h.lignesOrdres.keys()]).toEqual(production);
+    expect(h.appels.filter((a) => a === 'recordOrder')).toHaveLength(production.length);
+    expect(h.corps.map((c) => `${c.side} ${c.product_id}`)).toEqual(['SELL BTC-USDC']);
   });
 
   it('un verdict REJECTED de la production ne transmet rien', async () => {
@@ -2028,8 +2076,78 @@ describe('§8 etape 6 — seule la production transmet ses ordres (E18)', () => 
   });
 });
 
-/** Les six effets comptes : trois ecritures — decision, photo, ordre — et trois envois. */
-const EFFETS = ['recordDecision', 'recordSnapshot', 'placeOrder', 'notify', 'sendReport', 'ping'] as const;
+describe('§8 etape 6 — l’execution armee (E7, E20, E23, E24, E26)', () => {
+  it('ecrit la ligne PENDING rattachee a la decision du jour, puis place au-dessus du mid a la vente', async () => {
+    const h = harnais({ balances: JUSTE_HORS_BANDE, runDate: '2026-10-01' });
+    const result = complete(await lance(h));
+    const [corps] = h.corps;
+    const recorded = result.outcomes.find((o) => o.strategy === 'rebalance')?.recorded;
+
+    expect(h.appels.indexOf('recordOrder')).toBeLessThan(h.appels.indexOf('placeOrder'));
+    expect(recorded?.status).toBe('RECORDED');
+    expect(h.table.get('2026-10-01|rebalance|false')).toBeDefined();
+    expect(corps?.side).toBe('SELL');
+    expect(corps?.order_configuration.limit_limit_gtc).toEqual({
+      base_size: '0.14',
+      limit_price: '50050',
+      post_only: true,
+    });
+    expect(h.lignesOrdres.get(corps?.client_order_id ?? '')).toBe(`PLACED ex-${corps?.client_order_id ?? ''}`);
+    expect(result.placements.map((p) => p.kind)).toEqual(['PLACED']);
+  });
+
+  it('refuse de demarrer avec une cle qui ne peut pas trader, avant toute autre lecture', async () => {
+    const h = harnais({ balances: JUSTE_HORS_BANDE, sansTrade: true });
+    await expect(lance(h)).rejects.toThrow(/can_trade vaut false/);
+
+    expect(h.appels.filter((a) => !['keyPermissions', 'ouvrirExecution', 'notify'].includes(a))).toEqual([]);
+    expect(evenements(h)).toEqual(['JOB_FAILED']);
+  });
+
+  it('un run dont toutes les jambes sont rejetees en post-only a conclu, sans rien replacer', async () => {
+    const h = harnais({ balances: JUSTE_HORS_BANDE, runDate: '2026-10-01', rejetes: 'TOUS' });
+    const result = await lance(h);
+
+    expect(complete(result).placements.map((p) => p.kind)).toEqual(['REJECTED']);
+    expect([...h.lignesOrdres.values()]).toEqual(['REJECTED']);
+    expect(h.appels.filter((a) => a === 'placeOrder')).toHaveLength(1);
+    expect(h.lignes.some((l) => l.includes('REJECTED (INVALID_LIMIT_PRICE_POST_ONLY)'))).toBe(true);
+    expect(reported(result)).toBe(true);
+  });
+
+  it('E24, premiere ligne : rejouer le jour, decision deja ecrite, ne place aucun second ordre', async () => {
+    const h = harnais({ balances: JUSTE_HORS_BANDE, runDate: '2026-10-01' });
+    await lance(h);
+    h.lignesOrdres.clear();
+    const rejeu = complete(await lance(h));
+
+    expect(rejeu.outcomes.find((o) => o.strategy === 'rebalance')?.recorded.status).toBe('ALREADY_RECORDED');
+    expect(h.appels.filter((a) => a === 'placeOrder')).toHaveLength(1);
+    expect(h.appels.filter((a) => a === 'recordOrder')).toHaveLength(1);
+    expect(rejeu.placements).toEqual([]);
+  });
+
+  it('E24, seconde ligne : une decision neuve dont l’ordre est deja ecrit ne le place pas', async () => {
+    const h = harnais({ balances: JUSTE_HORS_BANDE, runDate: '2026-10-01' });
+    await lance(h);
+    h.table.clear();
+    const rejeu = complete(await lance(h));
+
+    expect(rejeu.outcomes.find((o) => o.strategy === 'rebalance')?.recorded.status).toBe('RECORDED');
+    expect(h.appels.filter((a) => a === 'placeOrder')).toHaveLength(1);
+    expect(rejeu.placements.map((p) => p.kind)).toEqual(['ALREADY_RECORDED']);
+  });
+});
+
+/**
+ * Les neuf effets comptes : cinq ecritures — decision, photo, ligne d'ordre, son
+ * issue, placement —, trois envois, et l'ouverture du port reel, qui n'a pas
+ * lieu en `DRY_RUN` (A24).
+ */
+const EFFETS = [
+  'recordDecision', 'recordSnapshot', 'recordOrder', 'recordPlacement', 'placeOrder',
+  'ouvrirExecution', 'notify', 'sendReport', 'ping',
+] as const;
 
 const compte = (h: Harnais): Record<string, number> =>
   Object.fromEntries(EFFETS.map((effet) => [effet, h.appels.filter((a) => a === effet).length]));
@@ -2042,13 +2160,7 @@ const compte = (h: Harnais): Record<string, number> =>
 function enDryRun(h: Harnais): Promise<DailyRunResult> {
   const { db, notifier, mailer, healthcheck, execution } = h.ports;
   const reels: Effets = {
-    db: {
-      ...db,
-      // L'etape 6 n'ecrit pas encore dans `orders` : ces deux ecritures n'ont pas d'appelant.
-      recordOrder: () => Promise.reject(new Error('recordOrder sans appelant')),
-      recordPlacement: () => Promise.reject(new Error('recordPlacement sans appelant')),
-      close: () => Promise.resolve(),
-    },
+    db: { ...db, close: () => Promise.resolve() },
     notifier,
     mailer,
     healthcheck,
@@ -2071,12 +2183,17 @@ describe('DRY_RUN — des ports inertes a la place des vrais (E14, E15, E16)', (
   it('n’appelle aucune des trois ecritures ni aucun des trois envois, que le mode normal atteint', async () => {
     const normal = harnais(JOURNEE);
     await lance(normal);
-    expect(compte(normal)).toEqual({ recordDecision: 4, recordSnapshot: 1, placeOrder: 1, notify: 1, sendReport: 1, ping: 1 });
+    expect(compte(normal)).toEqual({
+      recordDecision: 4, recordSnapshot: 1, recordOrder: 1, recordPlacement: 1, placeOrder: 1,
+      ouvrirExecution: 1, notify: 1, sendReport: 1, ping: 1,
+    });
 
-    const essai = harnais(JOURNEE);
+    // La cle de phase 1 : le port reel refuserait de s'ouvrir, et le DRY_RUN ne l'ouvre pas.
+    const essai = harnais({ ...JOURNEE, sansTrade: true });
     const result = await enDryRun(essai);
 
-    expect(compte(essai)).toEqual({ recordDecision: 0, recordSnapshot: 0, placeOrder: 0, notify: 0, sendReport: 0, ping: 0 });
+    expect(Object.values(compte(essai)).every((n) => n === 0)).toBe(true);
+    expect(essai.lignesOrdres.size).toBe(0);
     expect(essai.appels).not.toContain('cancelOrders');
     expect(essai.table.size).toBe(0);
     expect([...essai.photos.keys()]).toEqual([PRICED_ON]);
@@ -2117,7 +2234,7 @@ describe('DRY_RUN — des ports inertes a la place des vrais (E14, E15, E16)', (
     expect(essai.lignes.filter((l) => l.startsWith('ordre non place'))).toEqual(
       ordres.map(
         (o) =>
-          `ordre non place (port journalisant) : client_order_id=${o.clientOrderId} paire=BTC-USDC cote=SELL quantite=0.14 prix_limite=50000 post_only=true`,
+          `ordre non place (port journalisant) : client_order_id=${o.clientOrderId} paire=BTC-USDC cote=SELL quantite=0.14 prix_limite=50050 post_only=true`,
       ),
     );
   });
