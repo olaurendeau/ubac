@@ -33,6 +33,24 @@ const PORTE = `${WORKFLOWS}/ci.yml`;
 /** Le nom du controle requis (D3). Un contrat, pas un choix de style. */
 const JOB_PORTE = 'test';
 
+/** Le job qui construit, verifie et pousse l'image (lot R2). */
+const JOB_IMAGE = 'build';
+
+/**
+ * La seule condition admise sur `build` (D4 = 2) : une poussee, jamais une PR,
+ * dont le commit de fusion disparait au merge avec l'image qui le porterait.
+ */
+const SI_POUSSEE = "github.event_name == 'push'";
+
+/** Ce que `build` execute, dans cet ordre : les deux scripts du depot, puis la poussee. */
+const ETAPES_IMAGE = ['./scripts/build-image.sh', './scripts/verifier-image.sh', 'docker push'];
+
+/** Seule l'absence constatee dans le registre ouvre la construction : rien ne s'ecrase. */
+const SI_ABSENTE = "steps.registre.outputs.existe == 'non'";
+
+/** Ce que le job ne refait pas : construire autrement, ou recopier les controles des scripts. */
+const SECONDE_DEFINITION = /docker\s+(?:buildx\s+)?build\b|--push\b|docker\s+(?:image\s+)?inspect\b|docker\s+tag\b|UBAC_GIT_SHA/;
+
 /**
  * Ce que la porte execute, dans l'ordre. La couverture et non `npm test` : elle
  * rejoue toute la suite et fait respecter les 100 % de `src/core/risk.ts`.
@@ -108,6 +126,11 @@ function jobs(workflow: Objet, ou: string): Objet {
 
 function jobPorte(depot: Depot): Objet | undefined {
   const job = jobs(porte(depot), PORTE)[JOB_PORTE];
+  return estObjet(job) ? job : undefined;
+}
+
+function jobImage(depot: Depot): Objet | undefined {
+  const job = jobs(porte(depot), PORTE)[JOB_IMAGE];
   return estObjet(job) ? job : undefined;
 }
 
@@ -342,9 +365,9 @@ const REGLES = {
     },
   },
   declencheurs: {
-    nom: 'la porte se declenche sur main et sur les PR vers main, et rien d autre',
+    nom: 'la chaine se declenche sur main, les tags v* et les PR vers main, et rien d autre',
     verifier: (depot) => {
-      const attendu = { push: { branches: ['main'] }, pull_request: { branches: ['main'] } };
+      const attendu = { push: { branches: ['main'], tags: ['v*'] }, pull_request: { branches: ['main'] } };
       const vus = porte(depot)['on'];
       return isDeepStrictEqual(vus, attendu)
         ? []
@@ -352,12 +375,90 @@ const REGLES = {
     },
   },
   jeton: {
-    nom: 'le jeton de la porte ne fait que lire le code',
+    nom: 'le jeton de chaque job ne fait que lire le code',
+    verifier: (depot) =>
+      Object.entries(jobs(porte(depot), PORTE)).flatMap(([nom, job]) => {
+        const effectives = (estObjet(job) ? job['permissions'] : undefined) ?? porte(depot)['permissions'];
+        return isDeepStrictEqual(effectives, { contents: 'read' })
+          ? []
+          : [`job ${nom} : permissions ${JSON.stringify(effectives)}, attendu {"contents":"read"}`];
+      }),
+  },
+  image: {
+    nom: 'build construit et verifie par les scripts du depot avant de pousser, et rien d autre',
     verifier: (depot) => {
-      const effectives = jobPorte(depot)?.['permissions'] ?? porte(depot)['permissions'];
-      return isDeepStrictEqual(effectives, { contents: 'read' })
+      const job = jobImage(depot);
+      if (job === undefined) return [`aucun job « ${JOB_IMAGE} » : l'image ne sort plus de la chaine`];
+      const vues = commandes(job);
+      const rangs = ETAPES_IMAGE.map((etape) => vues.findIndex((c) => c.startsWith(etape)));
+      const motifs = ETAPES_IMAGE.flatMap((etape, i) =>
+        rangs[i] === -1 ? [`job ${JOB_IMAGE} : aucune etape « ${etape} »`] : [],
+      );
+      if (motifs.length === 0 && !rangs.every((r, i) => i === 0 || r > (rangs[i - 1] ?? -1))) {
+        motifs.push(`job ${JOB_IMAGE} : ordre ${JSON.stringify(vues)}, attendu ${ETAPES_IMAGE.join(' puis ')}`);
+      }
+      for (const commande of vues.filter((c) => SECONDE_DEFINITION.test(c))) {
+        motifs.push(`job ${JOB_IMAGE} : « ${commande} » double ce que font les scripts du depot`);
+      }
+      return motifs;
+    },
+  },
+  fusion: {
+    nom: 'build ne construit jamais une PR, dont le commit de fusion disparait',
+    verifier: (depot) => {
+      const si = jobImage(depot)?.['if'];
+      return si === SI_POUSSEE
         ? []
-        : [`permissions ${JSON.stringify(effectives)}, attendu {"contents":"read"}`];
+        : [`job ${JOB_IMAGE} : if ${JSON.stringify(si)}, attendu « ${SI_POUSSEE} » : une PR serait construite`];
+    },
+  },
+  reecriture: {
+    nom: 'une image deja poussee n est jamais reconstruite ni reecrite',
+    verifier: (depot) => {
+      const job = jobImage(depot) ?? {};
+      const motifs: string[] = [];
+      const registre = steps(job).find((s) => s['id'] === 'registre');
+      const sonde = String(registre?.['run'] ?? '');
+      if (!sonde.includes('imagetools inspect "$UBAC_REFERENCE"') || !sonde.includes(': not found')) {
+        motifs.push('aucune etape « registre » qui constate l absence de la reference');
+      }
+      for (const step of steps(job)) {
+        const run = String(step['run'] ?? '');
+        if (ETAPES_IMAGE.some((e) => run.includes(e)) && step['if'] !== SI_ABSENTE) {
+          motifs.push(`« ${run} » sans « if: ${SI_ABSENTE} » : elle ecraserait l'image deja poussee`);
+        }
+      }
+      // main et un tag v* sur le meme commit : sans file par SHA, deux executions
+      // constateraient l'absence en meme temps.
+      const file = job['concurrency'];
+      const annule = estObjet(file) ? file['cancel-in-progress'] : undefined;
+      if (!estObjet(file) || !String(file['group']).includes('github.sha') || (annule !== false && annule !== 'false')) {
+        motifs.push(`job ${JOB_IMAGE} : concurrency ${JSON.stringify(file)}, attendu une file par github.sha, sans annulation`);
+      }
+      return motifs;
+    },
+  },
+  connexion: {
+    nom: 'la cle secrete n entre que par l entree standard du seul docker login',
+    verifier: (depot) => {
+      const motifs = lignes(depot, /set\s+-\S*x|xtrace/).map((l) => `${l} : une trace recopie les secrets`);
+      const parcourir = (valeur: unknown, ou: readonly string[], step: Objet | undefined): void => {
+        if (typeof valeur === 'string' && valeur.includes('secrets.')) {
+          const run = String(step?.['run'] ?? '');
+          const dansEnvDeStep = ou.length >= 2 && ou[ou.length - 2] === 'env' && step !== undefined;
+          const parStdin =
+            /^printf '%s' "\$\w+" \| docker login "\$REGISTRE" --username nologin --password-stdin$/.test(run.trim());
+          if (!dansEnvDeStep || !parStdin) {
+            motifs.push(`${ou.join(' > ')} : un secret ne vit que dans l'env d'un docker login --password-stdin`);
+          }
+        }
+        if (Array.isArray(valeur)) valeur.forEach((v, i) => parcourir(v, [...ou, String(i)], step));
+        if (!estObjet(valeur)) return;
+        const estStep = ou[ou.length - 2] === 'steps';
+        for (const [cle, v] of Object.entries(valeur)) parcourir(v, [...ou, cle], estStep ? valeur : step);
+      };
+      for (const [chemin, contenu] of workflows(depot)) parcourir(load(contenu), [chemin], undefined);
+      return motifs;
     },
   },
   rafale: {
@@ -434,6 +535,9 @@ interface Sonde {
 }
 
 const NODE_22 = "node-version: '22'";
+const POUSSER = '        run: docker push "$UBAC_REFERENCE"\n';
+const VERIFIER = `      - if: ${SI_ABSENTE}\n        run: ./scripts/verifier-image.sh "$UBAC_REFERENCE"\n`;
+const CONNEXION = `printf '%s' "$SCW_SECRET_KEY" | docker login "$REGISTRE" --username nologin --password-stdin`;
 const COUVRIR = '- run: npm run test:coverage';
 const INSTALLER = '- run: npm ci\n';
 
@@ -593,6 +697,108 @@ const SONDES: readonly Sonde[] = [
     mutation: 'ajouter pull_request_target',
     appliquer: (d) => muter(d, PORTE, '  pull_request:\n', '  pull_request_target:\n  pull_request:\n'),
     motif: '"pull_request_target":null',
+  },
+  {
+    regle: 'fusion',
+    mutation: 'ajouter pull_request aux declencheurs du job build',
+    appliquer: (d) =>
+      muter(d, PORTE, `    if: ${SI_POUSSEE}\n`, `    if: ${SI_POUSSEE} || github.event_name == 'pull_request'\n`),
+    motif: 'une PR serait construite',
+  },
+  {
+    regle: 'fusion',
+    mutation: 'retirer la condition du job build',
+    appliquer: (d) => muter(d, PORTE, `    if: ${SI_POUSSEE}\n`, ''),
+    motif: 'if undefined',
+  },
+  {
+    regle: 'declencheurs',
+    mutation: 'retirer les tags v*',
+    appliquer: (d) => muter(d, PORTE, "    tags: ['v*']\n", ''),
+    motif: 'declencheurs {"push":{"branches":["main"]}',
+  },
+  {
+    regle: 'image',
+    mutation: 'retirer l appel a verifier-image.sh',
+    appliquer: (d) => muter(d, PORTE, VERIFIER, ''),
+    motif: 'aucune etape « ./scripts/verifier-image.sh »',
+  },
+  {
+    regle: 'image',
+    mutation: 'pousser avant de verifier',
+    appliquer: (d) => muter(muter(d, PORTE, VERIFIER, ''), PORTE, POUSSER, `${POUSSER}${VERIFIER}`),
+    motif: 'attendu ./scripts/build-image.sh puis',
+  },
+  {
+    regle: 'image',
+    mutation: 'construire et pousser d un seul buildx, sans les scripts',
+    appliquer: (d) =>
+      muter(d, PORTE, 'run: ./scripts/build-image.sh "$UBAC_IMAGE"', 'run: docker buildx build --push -t "$UBAC_REFERENCE" .'),
+    motif: 'double ce que font les scripts du depot',
+  },
+  {
+    regle: 'image',
+    mutation: 'recopier le controle d architecture dans le YAML',
+    appliquer: (d) =>
+      muter(d, PORTE, POUSSER, `${POUSSER}      - run: docker image inspect --format '{{.Architecture}}' "$UBAC_REFERENCE"\n`),
+    motif: '« docker image inspect',
+  },
+  {
+    regle: 'latest',
+    mutation: 'ecrire latest dans un tag',
+    appliquer: (d) =>
+      muter(d, PORTE, POUSSER, `${POUSSER}      - run: docker tag "$UBAC_REFERENCE" "$UBAC_IMAGE:latest"\n`),
+    motif: 'UBAC_IMAGE:latest',
+  },
+  {
+    regle: 'reecriture',
+    mutation: 'pousser sans constater l absence',
+    appliquer: (d) => muter(d, PORTE, `      - if: ${SI_ABSENTE}\n${POUSSER}`, `      - ${POUSSER.trimStart()}`),
+    motif: 'elle ecraserait l\'image deja poussee',
+  },
+  {
+    regle: 'reecriture',
+    mutation: 'traiter toute erreur du registre comme une absence',
+    appliquer: (d) => muter(d, PORTE, 'elif [[ "$sortie" == *": not found" ]]; then', 'else'),
+    motif: 'constate l absence',
+  },
+  {
+    regle: 'reecriture',
+    mutation: 'annuler une construction en cours sur le meme SHA',
+    appliquer: (d) => muter(d, PORTE, '      cancel-in-progress: false\n', '      cancel-in-progress: true\n'),
+    motif: 'une file par github.sha',
+  },
+  {
+    regle: 'connexion',
+    mutation: 'la cle secrete en argument de docker login',
+    appliquer: (d) =>
+      muter(d, PORTE, CONNEXION, 'docker login "$REGISTRE" --username nologin --password "$SCW_SECRET_KEY"'),
+    motif: 'env > SCW_SECRET_KEY',
+  },
+  {
+    regle: 'connexion',
+    mutation: 'le secret interpole dans le script',
+    appliquer: (d) => muter(d, PORTE, `"$SCW_SECRET_KEY" | docker login`, '"${{ secrets.SCW_SECRET_KEY }}" | docker login'),
+    motif: 'run : un secret',
+  },
+  {
+    regle: 'connexion',
+    mutation: 'le secret expose a tout le job build',
+    appliquer: (d) =>
+      muter(d, PORTE, '      REGISTRE: rg.fr-par.scw.cloud\n', '      REGISTRE: rg.fr-par.scw.cloud\n      CLE: ${{ secrets.SCW_SECRET_KEY }}\n'),
+    motif: 'build > env > CLE',
+  },
+  {
+    regle: 'connexion',
+    mutation: 'une trace set -x dans le job build',
+    appliquer: (d) => muter(d, PORTE, `run: ${CONNEXION}`, `run: set -x; ${CONNEXION}`),
+    motif: 'une trace recopie les secrets',
+  },
+  {
+    regle: 'jeton',
+    mutation: 'un job build dont le jeton ecrit',
+    appliquer: (d) => muter(d, PORTE, '    permissions:\n      contents: read\n', '    permissions:\n      contents: write\n'),
+    motif: 'job build : permissions {"contents":"write"}',
   },
   {
     regle: 'rafale',
