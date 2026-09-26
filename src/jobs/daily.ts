@@ -37,7 +37,8 @@ import type {
 import { renderDailyReport } from '../report/daily-report.js';
 import type { AlertInput } from './alerts.js';
 import { alertsFor } from './alerts.js';
-import { placer } from './execute.js';
+import type { IssueDeJambe } from './execute.js';
+import { auCarnet, placer } from './execute.js';
 import type { ReconcileObservations, Resynchronization } from './reconcile.js';
 import { reconcile } from './reconcile.js';
 import type { BenchmarkGap, DrawdownState, SnapshotWrite, Suspension } from './snapshot.js';
@@ -48,12 +49,11 @@ import { prepareSnapshot } from './snapshot.js';
  * journalise, il transmet les ordres de la production, il photographie, il rend
  * compte.
  *
- * **L'etape 6 est minimale, et elle ne sait pas a qui elle parle.** Les ordres
- * d'un verdict `ACCEPTED` de la seule production passent par `execute.ts` vers
- * `ports.execution` ; ce port est compose par `daily-main.ts`, et c'est jusqu'a
- * l'armement (S7) le port **journalisant** d'`inertes.ts`, dans les deux modes.
- * Aucune condition de mode n'est ecrite ici (E15) : `DRY_RUN` ou non, ce module
- * appelle les memes ports.
+ * **L'etape 6 ne sait pas a qui elle parle.** Les ordres d'un verdict
+ * `ACCEPTED` de la seule production passent par `execute.ts` vers le port
+ * d'execution, ouvert a l'etape 1 ; `daily-main.ts` compose le port **reel** en
+ * mode normal et le **journalisant** d'`inertes.ts` en `DRY_RUN`. Aucune
+ * condition de mode n'est ecrite ici (E15) : ce module appelle les memes ports.
  *
  * **Tout le §9 part d'ici** : les alertes push (`alerts.ts`, `docs/alertes.md`),
  * le rapport quotidien (`src/report/daily-report.ts`,
@@ -195,6 +195,8 @@ export interface DailyPorts {
     | 'snapshotSeries'
     | 'recentCashFlows'
     | 'pendingOrders'
+    | 'recordOrder'
+    | 'recordPlacement'
   >;
   /** §9 : le canal court. Il ne rejette jamais, donc il n'est jamais entoure d'un `try`. */
   readonly notifier: Notifier;
@@ -202,8 +204,12 @@ export interface DailyPorts {
   readonly mailer: Mailer;
   /** §9 : la surveillance d'absence. Elle ne rejette jamais non plus, meme motif. */
   readonly healthcheck: Healthcheck;
-  /** Etape 6 : le port d'execution, jamais appele d'ici mais par `execute.ts`. */
-  readonly execution: ExecutionPort;
+  /**
+   * Etape 1 : ouvre le port d'execution, que l'etape 6 passe a `execute.ts`.
+   * Ouvert **au demarrage** : le port reel leve sur une cle qui ne peut pas
+   * trader (E7), et le run refuse alors de demarrer, alerte comprise.
+   */
+  readonly execution: () => Promise<ExecutionPort>;
 }
 
 export interface DailyRun {
@@ -327,6 +333,8 @@ type DailyOutcome =
       /** §7 : l'etat interne a-t-il du se rendre a l'exchange ce jour-la. */
       readonly resync: Resynchronization;
       readonly outcomes: readonly StrategyOutcome[];
+      /** Etape 6 : l'issue de chaque jambe transmise, dans l'ordre de placement. */
+      readonly placements: readonly IssueDeJambe[];
       readonly totalValue: UsdcAmount;
       /** Etape 7 : ce qui est parti dans `snapshots.benchmarks`. */
       readonly benchmarks: Readonly<Record<string, Decimal>>;
@@ -598,6 +606,8 @@ async function executeRun(run: DailyRun): Promise<DailyOutcome> {
   log(
     `run quotidien — run_date=${runDate} git_sha=${gitSha} portefeuille=${permissions.portfolioUuid} lecture=${String(permissions.canView)}`,
   );
+  // E7 : avant toute lecture de solde, toute decision et toute ecriture.
+  const execution = { port: await ports.execution(), db: ports.db };
 
   /*
    * 2. Reconciliation, avant toute decision. **Elle n'abandonne plus.** Au-dela
@@ -731,13 +741,27 @@ async function executeRun(run: DailyRun): Promise<DailyOutcome> {
    * 6. L'execution, **de la production seule et d'un verdict `ACCEPTED`
    * seulement** (E18) : une ombre ne place rien, par definition, et ses
    * `client_order_id` — ceux de la production des que la jambe coincide — le
-   * rendraient dangereux. Minimale : ni ecriture dans `orders`, ni classement
-   * d'un rejet, ni alerte ; c'est l'armement (S7) qui les ajoute.
+   * rendraient dangereux.
+   *
+   * **Premiere ligne de defense d'E24** : une decision `ALREADY_RECORDED` est
+   * celle d'un run du jour deja passe, et rien n'est transmis. La seconde, la
+   * cle primaire d'`orders`, est dans `execute.ts`. Le `decisionId` rattache
+   * chaque ordre a son run, par `decisions.run_date` : S9 en depend.
    */
-  for (const { strategy, isShadow, verdict } of outcomes) {
+  const placements: IssueDeJambe[] = [];
+  for (const { strategy, isShadow, verdict, recorded } of outcomes) {
     if (isShadow || verdict.status !== 'ACCEPTED' || verdict.orders.length === 0) continue;
-    const transmis = await placer(ports.execution, verdict.orders);
-    log(`${strategy} : ${String(transmis.length)} ordre(s) transmis au port d'execution`);
+    if (recorded.status !== 'RECORDED') {
+      log(`${strategy} : decision du jour deja enregistree, aucun ordre transmis`);
+      continue;
+    }
+    const ordres = verdict.orders.map((ordre) => auCarnet(ordre, prices));
+    const issues = await placer(execution, { decisionId: recorded.id, createdAt, ordres });
+    for (const issue of issues) {
+      const detail = issue.kind === 'REJECTED' ? ` (${issue.reason})` : '';
+      log(`${strategy} : ${issue.clientOrderId} ${issue.kind}${detail}`);
+    }
+    placements.push(...issues);
   }
 
   /*
@@ -768,6 +792,7 @@ async function executeRun(run: DailyRun): Promise<DailyOutcome> {
     observations: reconciled.observations,
     resync,
     outcomes,
+    placements,
     totalValue: valuation.total,
     benchmarks: step.benchmarks,
     benchmarkGaps: step.gaps,

@@ -5,7 +5,7 @@ import { exitClientOrderId } from '../core/order-id.js';
 import type { Holdings } from '../core/portfolio.js';
 import { MIN_LEG_USDC, QUOTE } from '../core/risk.js';
 import type { MidPrices, TradableAsset } from '../core/risk.js';
-import type { IsoDate, Order, Price, Quantity, UsdcAmount } from '../core/types.js';
+import type { IsoDate, Order, Price, Quantity, Side, UsdcAmount } from '../core/types.js';
 import type { ReconciledBalances } from './reconcile.js';
 
 /**
@@ -269,9 +269,14 @@ function midDe(asset: TradableAsset, mids: MidPrices): Price {
   return mid;
 }
 
-/** Mid + 0,1 % : au repos dans le carnet, donc acceptable en post-only. */
-function prixLimiteDeVente(mid: Price): Price {
-  return mid.mul(new Decimal(1).add(MARGE_LIMITE_PCT)) as Price;
+/**
+ * Mid ± 0,1 %, **du cote qui ne croise pas le carnet** : sous le mid a l'achat,
+ * au-dessus a la vente — au repos, donc acceptable en post-only. La seule
+ * definition du depot (T3) : l'etape 6 du run quotidien la partage.
+ */
+export function prixLimite(side: Side, mid: Price): Price {
+  const marge = side === 'BUY' ? MARGE_LIMITE_PCT.neg() : MARGE_LIMITE_PCT;
+  return mid.mul(new Decimal(1).add(marge)) as Price;
 }
 
 function quantiteDe(asset: TradableAsset, holdings: Holdings): Quantity {
@@ -361,7 +366,7 @@ function cessions(runDate: IsoDate, holdings: Holdings, mids: MidPrices): Cessio
      * cession de reprendre l'identifiant d'une jambe du reequilibrage du jour.
      */
     const legIndex = intentions.length;
-    const limitPrice = prixLimiteDeVente(mid);
+    const limitPrice = prixLimite('SELL', mid);
     const identifiant = exitClientOrderId({ runDate, asset, side: 'SELL', legIndex });
     const ordre: Order = {
       clientOrderId: identifiant,
