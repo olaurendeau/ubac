@@ -294,10 +294,17 @@ export function ccxtTransport(
           /*
            * Un refus ne revient pas en `success: false` : ccxt leve des
            * qu'`error_response` est present (4.5.78, `coinbase.js:5435`), rejet
-           * post-only compris. Le classer — journalise sans faire echouer le
-           * run, dit le §7 — revient a l'appelant, en S7.
+           * post-only compris, avec le corps brut en message apres `coinbase `.
+           * Ce corps est rendu tel quel, et `placedFrom` le classe : le §7 veut
+           * un rejet journalise, pas un run qui echoue.
            */
-          return exchange.v3PrivatePostBrokerageOrders(route.body);
+          try {
+            return await exchange.v3PrivatePostBrokerageOrders(route.body);
+          } catch (error) {
+            const refus = refusDeCreation(error);
+            if (refus === undefined) throw error;
+            return refus;
+          }
         case 'cancel_orders':
           return exchange.v3PrivatePostBrokerageOrdersBatchCancel({
             order_ids: [...route.exchangeIds],
@@ -310,6 +317,25 @@ export function ccxtTransport(
   };
 }
 
+/**
+ * Le corps d'un `success: false` que ccxt a leve, ou rien. Seul un
+ * `ExchangeError` dont le message porte un objet JSON a `success` faux et
+ * `error_response` est un refus de l'exchange ; toute autre erreur — reseau,
+ * signature, reponse illisible — continue son chemin et fait echouer le run.
+ */
+function refusDeCreation(error: unknown): unknown {
+  if (!(error instanceof ccxt.ExchangeError)) return undefined;
+  const corps = error.message.replace(/^coinbase /, '');
+  try {
+    const brut: unknown = JSON.parse(corps);
+    const record = brut as Readonly<Record<string, unknown>> | null;
+    if (typeof record !== 'object' || record === null) return undefined;
+    return record['success'] === false && typeof record['error_response'] === 'object' ? brut : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // --- Formes exposees --------------------------------------------------------
 
 /**
@@ -319,7 +345,8 @@ export function ccxtTransport(
  * en prime une permission que Coinbase ajouterait demain. Le mot etait
  * inecrivable ici tant que la regle de noms d'`eslint.config.js` valait ; elle
  * est retiree (B4), et **ce refus est desormais le seul controle sur ce
- * point** — l'absence du champ passe encore, et S7 doit l'exiger.
+ * point** — complete en S7 par la **presence exigee** de `can_transfer` : sa
+ * seule absence ne prouve pas qu'il vaut `false`.
  */
 export interface KeyPermissions {
   readonly canView: boolean;
@@ -528,6 +555,16 @@ function permissionsFrom(raw: unknown, attendue: ExpectedKey): KeyPermissions {
   if (inattendues.length > 0) {
     throw new CoinbaseFrontierError(
       `key_permissions : permission inattendue, accordee ou pas franchement refusee (${inattendues.join(', ')}). Seul le booleen false vaut refus ; la spec §7 n'admet que la lecture, et le trade a partir de la phase 3.`,
+    );
+  }
+  /*
+   * E7, exigence du 2026-09-22 : la permission de sortie doit etre **presente**
+   * et valoir `false`. Accordee, elle est deja refusee ci-dessus ; absente, la
+   * spec §7 — jamais de permission de retrait — ne serait plus constatable.
+   */
+  if (!('can_transfer' in record)) {
+    throw new CoinbaseFrontierError(
+      'key_permissions : can_transfer absent de la reponse. La permission de sortie doit etre constatee a false, son absence ne prouve rien.',
     );
   }
   // Deja du bon cote avant le correctif : `"true"` n'y vaut pas lecture. Seul le message change.
@@ -877,11 +914,15 @@ export function openCoinbase(transport: CoinbaseTransport, attendue: ExpectedKey
 
 // --- L'execution : le port, et la cle qui le conditionne --------------------
 
-/** Un ordre que l'exchange a accepte, sous l'identifiant qu'il lui a donne. */
-export interface PlacedOrder {
-  readonly exchangeId: string;
-  readonly clientOrderId: string;
-}
+/**
+ * L'issue d'un placement. `PLACED` : l'exchange a accepte l'ordre, sous
+ * l'identifiant qu'il lui a donne. `REJECTED` : il l'a refuse — un post-only qui
+ * croiserait le carnet, typiquement —, et le §7 refuse d'en faire une erreur.
+ * `reason` est le code de l'API tel quel.
+ */
+export type PlacementOutcome =
+  | { readonly kind: 'PLACED'; readonly exchangeId: string; readonly clientOrderId: string }
+  | { readonly kind: 'REJECTED'; readonly clientOrderId: string; readonly reason: string };
 
 /**
  * L'issue d'une annulation, **ordre par ordre** : un lot ne se replie pas sur un
@@ -900,7 +941,7 @@ export type CancelOutcome =
  * point d'entree. Seul `src/jobs/execute.ts` appelle ces methodes (E11).
  */
 export interface ExecutionPort {
-  placeOrder(order: Order): Promise<PlacedOrder>;
+  placeOrder(order: Order): Promise<PlacementOutcome>;
   cancelOrders(exchangeIds: readonly string[]): Promise<readonly CancelOutcome[]>;
 }
 
@@ -947,15 +988,27 @@ export function createOrderBody(order: Order): CreateOrderBody {
 }
 
 /**
- * Seul le booleen `success: true` vaut placement. L'exchange qui repond pour un
+ * Le booleen `success: true` vaut placement, `success: false` avec son
+ * `error_response` vaut rejet ; toute autre forme leve. L'exchange qui repond pour un
  * autre `client_order_id` arrete tout : l'identifiant deterministe est ce qui
  * rend le placement idempotent — un second envoi du meme identifiant rend
  * l'ordre existant au lieu d'en creer un, dit la documentation de l'API, que
  * rien n'a encore mesure —, et c'est donc lui qui se verifie.
  */
-function placedFrom(raw: unknown, clientOrderId: string): PlacedOrder {
+function placedFrom(raw: unknown, clientOrderId: string): PlacementOutcome {
   const contexte = `create_order[${clientOrderId}]`;
   const reponse = asRecord(raw, contexte);
+  if (reponse['success'] === false) {
+    const refus = asRecord(reponse['error_response'], `${contexte}.error_response`);
+    // Les deux codes, quand ils sont poses : l'un vaut souvent `UNKNOWN_FAILURE_REASON`.
+    const codes = [refus['error'], refus['preview_failure_reason']].filter(
+      (code): code is string => typeof code === 'string' && code.length > 0,
+    );
+    if (codes.length === 0) {
+      throw new CoinbaseFrontierError(`${contexte} : rejet sans code, ${JSON.stringify(refus)}.`);
+    }
+    return { kind: 'REJECTED', clientOrderId, reason: codes.join(' / ') };
+  }
   if (reponse['success'] !== true) {
     throw new CoinbaseFrontierError(
       `${contexte} : ordre non accepte, success=${JSON.stringify(reponse['success'])} (${JSON.stringify(reponse['error_response'])}).`,
@@ -966,7 +1019,7 @@ function placedFrom(raw: unknown, clientOrderId: string): PlacedOrder {
   if (rendu !== clientOrderId) {
     throw new CoinbaseFrontierError(`${contexte} : l'exchange repond pour ${rendu}.`);
   }
-  return { exchangeId: asText(accepte['order_id'], `${contexte}.order_id`), clientOrderId };
+  return { kind: 'PLACED', exchangeId: asText(accepte['order_id'], `${contexte}.order_id`), clientOrderId };
 }
 
 /**
@@ -1019,7 +1072,7 @@ export async function openCoinbaseExecution(
     );
   }
   return {
-    async placeOrder(order: Order): Promise<PlacedOrder> {
+    async placeOrder(order: Order): Promise<PlacementOutcome> {
       const body = createOrderBody(order);
       const reponse = await transport.write({ kind: 'create_order', body });
       return placedFrom(reponse, order.clientOrderId);

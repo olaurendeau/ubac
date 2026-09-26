@@ -346,7 +346,7 @@ function harnais(scenario: Scenario = {}): Harnais {
         placeOrder: (order) => {
           appels.push('placeOrder');
           ordres.push(order);
-          return Promise.resolve({ exchangeId: `ex-${order.clientOrderId}`, clientOrderId: order.clientOrderId });
+          return Promise.resolve({ kind: 'PLACED' as const, exchangeId: `ex-${order.clientOrderId}`, clientOrderId: order.clientOrderId });
         },
         cancelOrders: (ids) => {
           appels.push('cancelOrders');
@@ -2042,7 +2042,13 @@ const compte = (h: Harnais): Record<string, number> =>
 function enDryRun(h: Harnais): Promise<DailyRunResult> {
   const { db, notifier, mailer, healthcheck, execution } = h.ports;
   const reels: Effets = {
-    db: { ...db, close: () => Promise.resolve() },
+    db: {
+      ...db,
+      // L'etape 6 n'ecrit pas encore dans `orders` : ces deux ecritures n'ont pas d'appelant.
+      recordOrder: () => Promise.reject(new Error('recordOrder sans appelant')),
+      recordPlacement: () => Promise.reject(new Error('recordPlacement sans appelant')),
+      close: () => Promise.resolve(),
+    },
     notifier,
     mailer,
     healthcheck,

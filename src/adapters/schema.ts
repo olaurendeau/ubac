@@ -180,6 +180,9 @@ export const decisions = pgTable(
   ],
 );
 
+/** Le nom de la cle primaire d'`orders`, que `recordOrder` reconnait dans une violation 23505. */
+export const ORDERS_PRIMARY_KEY = 'orders_pkey';
+
 /**
  * Ordres. En phase 1 la table reste vide : rien n'est place. Elle existe parce
  * que `pendingOrders()` doit pouvoir la lire, et que la reconciliation du §7 en

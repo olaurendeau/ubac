@@ -1,8 +1,16 @@
 import type { Order } from '../core/types.js';
 import type { DailyReportMail } from '../report/daily-report.js';
-import type { CancelOutcome, ExecutionPort, PlacedOrder } from './coinbase.js';
+import type { CancelOutcome, ExecutionPort, PlacementOutcome } from './coinbase.js';
 import { createOrderBody } from './coinbase.js';
-import type { DecisionToRecord, RecordDecisionOutcome, SnapshotToRecord, UbacDatabase } from './db.js';
+import type {
+  DecisionToRecord,
+  OrderToRecord,
+  PlacementToRecord,
+  RecordDecisionOutcome,
+  RecordOrderOutcome,
+  SnapshotToRecord,
+  UbacDatabase,
+} from './db.js';
 import type { Healthcheck, PingOutcome, RunPulse } from './healthcheck.js';
 import type { MailOutcome, Mailer } from './mailer.js';
 import type { Alert, AlertOutcome, Notifier } from './notifier.js';
@@ -87,6 +95,14 @@ export function baseSansEcriture(db: UbacDatabase, log: Journal): UbacDatabase {
     snapshotSeries: () => db.snapshotSeries(),
     recentCashFlows: (since) => db.recentCashFlows(since),
     pendingOrders: () => db.pendingOrders(),
+    recordOrder(input: OrderToRecord): Promise<RecordOrderOutcome> {
+      log(`base inerte : ordre ${input.order.clientOrderId} non ecrit`);
+      return Promise.resolve({ status: 'RECORDED' });
+    },
+    recordPlacement(input: PlacementToRecord): Promise<void> {
+      log(`base inerte : issue ${input.kind} de ${input.clientOrderId} non ecrite`);
+      return Promise.resolve();
+    },
     // Fermer la connexion des lectures : ce n'est pas une ecriture.
     close: () => db.close(),
   };
@@ -138,13 +154,17 @@ export function healthcheckInerte(log: Journal): Healthcheck {
  */
 export function executionJournalisee(log: Journal): ExecutionPort {
   return {
-    async placeOrder(order: Order): Promise<PlacedOrder> {
+    async placeOrder(order: Order): Promise<PlacementOutcome> {
       const corps = createOrderBody(order);
       const limite = corps.order_configuration.limit_limit_gtc;
       log(
         `ordre non place (port journalisant) : client_order_id=${corps.client_order_id} paire=${corps.product_id} cote=${corps.side} quantite=${limite.base_size} prix_limite=${limite.limit_price} post_only=${String(limite.post_only)}`,
       );
-      return { exchangeId: `${ORDRE_NON_PLACE}${corps.client_order_id}`, clientOrderId: order.clientOrderId };
+      return {
+        kind: 'PLACED',
+        exchangeId: `${ORDRE_NON_PLACE}${corps.client_order_id}`,
+        clientOrderId: order.clientOrderId,
+      };
     },
 
     async cancelOrders(exchangeIds: readonly string[]): Promise<readonly CancelOutcome[]> {

@@ -19,7 +19,7 @@ function portDe(): { port: ExecutionPort; journal: string[] } {
         journal.push(`debut ${order.clientOrderId}`);
         await Promise.resolve();
         journal.push(`fin ${order.clientOrderId}`);
-        return { exchangeId: `x-${order.clientOrderId}`, clientOrderId: order.clientOrderId };
+        return { kind: 'PLACED' as const, exchangeId: `x-${order.clientOrderId}`, clientOrderId: order.clientOrderId };
       },
       async cancelOrders(ids: readonly string[]): Promise<readonly CancelOutcome[]> {
         journal.push(`annule ${ids.join(',')}`);
@@ -45,7 +45,7 @@ describe('execute — le seul module de jobs/ qui ecrit sur l’exchange', () =>
     const { port, journal } = portDe();
     const places = await placer(port, [ordre('a'), ordre('b')]);
     expect(journal).toEqual(['debut a', 'fin a', 'debut b', 'fin b']);
-    expect(places.map((p) => p.exchangeId)).toEqual(['x-a', 'x-b']);
+    expect(places.map((p) => (p.kind === 'PLACED' ? p.exchangeId : p.kind))).toEqual(['x-a', 'x-b']);
   });
 
   it('refuse un lot ou un client_order_id revient, avant tout envoi', async () => {
