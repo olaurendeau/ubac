@@ -66,6 +66,13 @@ const MISE_A_JOUR = 'scw jobs definition update "$DEFINITION" image-uri="$UBAC_R
 /** Les seules lectures admises, chacune dans un fichier : la definition porte ses variables en clair. */
 const LECTURE = /^scw jobs (?:definition get "\$DEFINITION"|(?:trigger|secret) list job-definition-id="\$DEFINITION") region=fr-par -o json > "\$RUNNER_TEMP\/(?:avant|apres)-\w+\.json"$/;
 
+/**
+ * Ce que le CLI exige en plus de sa cle : sans organisation, il refuse toute
+ * commande avant le moindre appel (« organization ID is required », tag v0.3.0).
+ * Des variables de forge, pas des secrets.
+ */
+const CONFIGURATION_SCW = ['SCW_DEFAULT_ORGANIZATION_ID', 'SCW_DEFAULT_PROJECT_ID'];
+
 /** Ou vivent les variables que l'image exige au demarrage. */
 const ENV = 'src/config/env.ts';
 
@@ -584,6 +591,30 @@ const REGLES = {
       return motifs;
     },
   },
+  configuration: {
+    nom: 'toute etape scw recoit l organisation et le projet, par des variables de forge',
+    verifier: (depot) => {
+      const motifs: string[] = [];
+      for (const [chemin, contenu] of workflows(depot)) {
+        const workflow = objet(load(contenu), chemin);
+        for (const [nomJob, job] of Object.entries(jobs(workflow, chemin))) {
+          steps(objet(job, nomJob)).forEach((step, i) => {
+            if (!commandesDe(step['run']).some((c) => /^scw\s/.test(c))) return;
+            // L'env effectif d'une etape : celui du workflow, du job, puis le sien.
+            const env: Objet = Object.fromEntries(
+              [workflow, objet(job, nomJob), step].flatMap((b) => (estObjet(b['env']) ? Object.entries(b['env']) : [])),
+            );
+            for (const nom of CONFIGURATION_SCW) {
+              if (!new RegExp(`^\\$\\{\\{\\s*vars\\.${nom}\\s*\\}\\}$`).test(String(env[nom]))) {
+                motifs.push(`${chemin} > ${nomJob} > ${String(step['id'] ?? i)} : scw sans ${nom} = \${{ vars.${nom} }}, le CLI refuserait`);
+              }
+            }
+          });
+        }
+      }
+      return motifs;
+    },
+  },
   variables: {
     nom: 'deploy exige les variables sans defaut de src/config/env.ts, ni plus ni moins',
     verifier: (depot) => {
@@ -647,6 +678,8 @@ const COUVRIR = '- run: npm run test:coverage';
 const INSTALLER = '- run: npm ci\n';
 const SI_DEPLOI = `    if: ${SI_TAG}\n`;
 const LIRE_AVANT = 'scw jobs definition get "$DEFINITION" region=fr-par -o json > "$RUNNER_TEMP/avant-definition.json"';
+const ORGANISATION = 'SCW_DEFAULT_ORGANIZATION_ID: ${{ vars.SCW_DEFAULT_ORGANIZATION_ID }}';
+const PROJET = 'SCW_DEFAULT_PROJECT_ID: ${{ vars.SCW_DEFAULT_PROJECT_ID }}';
 const CLE_SCW = '          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}\n';
 
 /** Retire une etape entiere de deploy, de son `- name:` a l'etape ou au commentaire suivant. */
@@ -1018,6 +1051,33 @@ const SONDES: readonly Sonde[] = [
     mutation: 'deplacer le declencheur depuis la chaine',
     appliquer: (d) => muter(d, PORTE, `${LIRE_AVANT}\n`, `${LIRE_AVANT}\n          scw jobs trigger update "$ID" cron-config.schedule="0 8 * * *"\n`),
     motif: '« scw jobs trigger update',
+  },
+  {
+    regle: 'configuration',
+    mutation: 'retirer l organisation du job deploy',
+    appliquer: (d) => muter(d, PORTE, `      ${ORGANISATION}\n`, ''),
+    motif: 'mise-a-jour : scw sans SCW_DEFAULT_ORGANIZATION_ID',
+  },
+  {
+    regle: 'configuration',
+    mutation: 'retirer le projet du job deploy',
+    appliquer: (d) => muter(d, PORTE, `      ${PROJET}\n`, ''),
+    motif: 'avant : scw sans SCW_DEFAULT_PROJECT_ID',
+  },
+  {
+    regle: 'configuration',
+    mutation: 'l organisation passee par un secret',
+    appliquer: (d) => muter(d, PORTE, ORGANISATION, ORGANISATION.replace('vars.', 'secrets.')),
+    motif: 'apres : scw sans SCW_DEFAULT_ORGANIZATION_ID',
+  },
+  {
+    regle: 'configuration',
+    mutation: 'la configuration posee sur la seule lecture avant',
+    appliquer: (d) => {
+      const sansJob = muter(d, PORTE, `      ${ORGANISATION}\n      ${PROJET}\n`, '');
+      return muter(sansJob, PORTE, '        id: avant\n        env:\n', `        id: avant\n        env:\n          ${ORGANISATION}\n          ${PROJET}\n`);
+    },
+    motif: 'mise-a-jour : scw sans SCW_DEFAULT_PROJECT_ID',
   },
   {
     regle: 'variables',

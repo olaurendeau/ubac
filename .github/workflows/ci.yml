@@ -172,6 +172,12 @@ jobs:
     env:
       UBAC_REFERENCE: ${{ needs.build.outputs.reference }}
       DEFINITION: ${{ vars.SCW_JOB_DEFINITION_ID }}
+      # Le CLI refuse toute commande sans organisation (« organization ID is
+      # required », constate au premier tag v0.3.0) : des variables de forge,
+      # pas des secrets, posees pour tout le job afin qu'aucune etape scw ne
+      # puisse les oublier.
+      SCW_DEFAULT_ORGANIZATION_ID: ${{ vars.SCW_DEFAULT_ORGANIZATION_ID }}
+      SCW_DEFAULT_PROJECT_ID: ${{ vars.SCW_DEFAULT_PROJECT_ID }}
     steps:
       - uses: actions/checkout@v7
         with:
