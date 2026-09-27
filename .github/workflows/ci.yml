@@ -1,5 +1,5 @@
-# La porte du depot et l'image de production : spec §10, lots R1 et R2 de la
-# phase 2.
+# La porte du depot, l'image de production et son deploiement : spec §10,
+# lots R1 a R3 de la phase 2.
 #
 # Ce fichier est une seconde definition de « comment on teste », a cote du
 # Makefile et de Compose. test/ci/workflow.test.ts le tient aligne sur
@@ -11,7 +11,8 @@ name: ci
 # Chaque poussee qui peut atteindre main : une PR vers main, et main lui-meme,
 # ou arrive le commit de squash qu'aucune PR n'a teste tel quel. Une branche
 # sans PR n'est pas fusionnable, elle n'est donc pas testee. Les tags v* (D4)
-# ne servent qu'au job build, qui ne construit jamais une PR.
+# servent a build, qui ne construit jamais une PR, et a deploy, qui ne part
+# que d'eux.
 on:
   push:
     branches: [main]
@@ -68,6 +69,8 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+    outputs:
+      reference: ${{ steps.reference.outputs.reference }}
     # main et un tag v* peuvent designer le meme commit. Deux executions
     # simultanees constateraient toutes deux l'absence de l'image et la
     # pousseraient deux fois : le groupe par SHA les met en file, et la seconde
@@ -88,9 +91,14 @@ jobs:
         with:
           persist-credentials: false
       # La reference que build-image.sh construira : le meme git rev-parse, sur
-      # le meme HEAD. GITHUB_ENV vit hors de l'arbre, qui reste propre.
+      # le meme HEAD. GITHUB_ENV vit hors de l'arbre, qui reste propre. deploy la
+      # recoit en sortie : il deploie l'image que ce job a verifiee ou trouvee.
       - name: reference de l'image
-        run: echo "UBAC_REFERENCE=${UBAC_IMAGE}:$(git rev-parse --verify HEAD)" >> "$GITHUB_ENV"
+        id: reference
+        run: |
+          reference="${UBAC_IMAGE}:$(git rev-parse --verify HEAD)"
+          echo "UBAC_REFERENCE=$reference" >> "$GITHUB_ENV"
+          echo "reference=$reference" >> "$GITHUB_OUTPUT"
       # L'utilisateur nologin, et la cle secrete par l'ENTREE STANDARD : un
       # argument de ligne de commande finit dans une trace, et le journal est
       # public. Le secret n'existe que dans l'environnement de cette etape.
@@ -135,3 +143,201 @@ jobs:
       - name: deconnexion du registre
         if: always()
         run: docker logout "$REGISTRE"
+
+  # Le deploiement (spec §10, lot R3) : la definition du job Scaleway repointee
+  # sur l'image de ce commit, et RIEN d'autre. L'image deployee place des ordres
+  # reels : la relecture qui suit la mise a jour est le seul controle entre ce
+  # job et le run de 7 h, et aucun humain ne regarde derriere elle (D7 = 2).
+  deploy:
+    needs: build
+    # La rampe de R3 a R4 : un tag v* SEULEMENT. Poser un tag est un geste
+    # delibere ; c'est l'humain, replace dans la boucle tant que la barriere de
+    # migration n'existe pas. R4, et lui seul, ouvrira le push sur main.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # Sans relecteur (D7) : la protection est la restriction de l'environnement
+    # aux tags v*, posee dans la console (docs/integration-continue.md §8).
+    environment: production
+    permissions:
+      contents: read
+    # Un deploiement a la fois, quel que soit le tag : deux relectures croisees
+    # compareraient chacune l'etat que l'autre vient d'ecrire.
+    concurrency:
+      group: deploy
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: bash
+    env:
+      UBAC_REFERENCE: ${{ needs.build.outputs.reference }}
+      DEFINITION: ${{ vars.SCW_JOB_DEFINITION_ID }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      # Un tag se pose sur n'importe quel commit, y compris sur une branche
+      # jamais fusionnee. Seul un commit de main se deploie : c'est la
+      # restriction a main de D7, que l'environnement ne sait pas dire d'un tag.
+      - name: le commit du tag est sur main
+        id: main
+        run: git merge-base --is-ancestor HEAD origin/main
+      # Le CLI a version et empreinte epinglees, relevees le 2026-09-27 dans le
+      # SHA256SUMS de la release : aucune action tierce ne voit la cle.
+      - name: CLI scw
+        id: cli
+        env:
+          SCW_VERSION: 2.62.0
+          SCW_SHA256: 7638c385c1a43a5d9022a63791769fd464e14314032a51411726f062f3053e67
+        run: |
+          [[ -n "$DEFINITION" ]] || { echo "variable de forge SCW_JOB_DEFINITION_ID absente" >&2; exit 1; }
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSL -o "$RUNNER_TEMP/bin/scw" "https://github.com/scaleway/scaleway-cli/releases/download/v$SCW_VERSION/scaleway-cli_${SCW_VERSION}_linux_amd64"
+          echo "$SCW_SHA256  $RUNNER_TEMP/bin/scw" | sha256sum --check --strict
+          chmod +x "$RUNNER_TEMP/bin/scw"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      # Ce que la production porte AVANT : la definition, son declencheur, ses
+      # secrets. Tout va dans des fichiers et rien dans le journal : la
+      # definition porte ses variables ordinaires EN CLAIR, et le journal est public.
+      - name: lecture avant
+        id: avant
+        env:
+          SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
+          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
+        run: |
+          scw jobs definition get "$DEFINITION" region=fr-par -o json > "$RUNNER_TEMP/avant-definition.json"
+          scw jobs trigger list job-definition-id="$DEFINITION" region=fr-par -o json > "$RUNNER_TEMP/avant-declencheurs.json"
+          scw jobs secret list job-definition-id="$DEFINITION" region=fr-par -o json > "$RUNNER_TEMP/avant-secrets.json"
+      # Avant de toucher a quoi que ce soit : le tag precedent est ecrit, la
+      # production est dans l'etat attendu, le run du matin est loin. Un refus
+      # ici laisse la definition intacte. test/ci/deploiement.test.ts execute
+      # ce script tel quel.
+      - name: controles avant
+        id: controles
+        env:
+          # 140 et non les 0,1 vCPU de la spec §10 : la valeur deployee depuis
+          # la creation, retenue par le coordinateur le 2026-09-27.
+          CPU_MVCPU: '140'
+          MEMOIRE_MIO: '256'
+          DELAI_S: '300'
+          TENTATIVES: '0'
+          DECLENCHEUR: daily
+          FENETRE_MIN: '15'
+          # Les variables sans lesquelles l'image refuse de demarrer : celles de
+          # src/config/env.ts sans valeur par defaut. Ordinaires ou secretes.
+          VARIABLES: >-
+            DATABASE_URL COINBASE_API_KEY COINBASE_API_SECRET COINBASE_PORTFOLIO_UUID
+            BREVO_API_KEY BREVO_SENDER BREVO_RECIPIENT NTFY_URL NTFY_TOPIC NTFY_TOKEN
+            HEALTHCHECK_URL
+        run: |
+          avant="$RUNNER_TEMP/avant"
+          # Les variables ordinaires sont en clair : masquees des maintenant, une
+          # ligne qui les recopierait un jour ne montrerait que ***.
+          jq -r '.environment_variables // {} | .[]' "$avant-definition.json" \
+            | while IFS= read -r valeur; do [[ -z "$valeur" ]] || echo "::add-mask::$valeur"; done
+          # Le tag precedent, avant tout controle : ces deux lignes SONT la
+          # procedure de retour en arriere (docs/deploiement.md §8).
+          precedente=$(jq -r '.image_uri' "$avant-definition.json")
+          retour="scw jobs definition update $DEFINITION image-uri=$precedente region=fr-par"
+          echo "image deployee jusqu'ici : $precedente"
+          echo "retour en arriere : $retour"
+          printf '### Retour en arriere\n\n    %s\n\n' "$retour" >> "$GITHUB_STEP_SUMMARY"
+          motifs=$(jq -r -n \
+            --slurpfile definition "$avant-definition.json" \
+            --slurpfile declencheurs "$avant-declencheurs.json" \
+            --slurpfile secrets "$avant-secrets.json" \
+            --argjson cpu "$CPU_MVCPU" --argjson memoire "$MEMOIRE_MIO" \
+            --argjson delai "$DELAI_S" --argjson tentatives "$TENTATIVES" \
+            --arg declencheur "$DECLENCHEUR" --arg variables "$VARIABLES" '
+            $definition[0] as $d
+            | [$declencheurs[0] | if type == "array" then .[] else .triggers[] end] as $t
+            | [$secrets[0] | if type == "array" then .[] else .secrets[] end | .env_var.name // empty] as $s
+            | [ (if $d.cpu_limit != $cpu then "cpu-limit \($d.cpu_limit), attendu \($cpu)" else empty end),
+                (if $d.memory_limit != $memoire then "memory-limit \($d.memory_limit), attendu \($memoire)" else empty end),
+                (if ($d.job_timeout | tostring | sub("s$"; "") | tonumber? // null) != $delai
+                 then "job-timeout \($d.job_timeout), attendu \($delai)s" else empty end),
+                (if $d.retry_policy.max_retries != $tentatives
+                 then "max-retries \($d.retry_policy.max_retries), attendu \($tentatives)" else empty end),
+                (if $d.cron_schedule != null
+                 then "un cron sur la definition : seul le declencheur ordonnance le job" else empty end),
+                ((($variables | split(" ") | map(select(. != ""))) - ([$d.environment_variables // {} | keys[]] + $s))[]
+                 | "variable \(.) absente : le job refuserait de demarrer"),
+                (if ($t | length) != 1 or $t[0].name != $declencheur
+                 then "declencheurs \([$t[].name]), attendu le seul « \($declencheur) »" else empty end)
+              ] | .[]')
+          if [[ -n "$motifs" ]]; then
+            printf "REFUS, rien n'a ete modifie : %s\n" "$motifs" >&2
+            exit 1
+          fi
+          # La fenetre se lit dans le declencheur lui-meme, dans SON fuseau :
+          # aucune heure n'est figee ici, et le changement d'heure est celui de
+          # la production.
+          ligne=$(jq -r '(if type == "array" then .[] else .triggers[] end)
+            | [.cron_config.schedule, .cron_config.timezone] | @tsv' "$avant-declencheurs.json")
+          IFS=$'\t' read -r horaire fuseau <<< "$ligne"
+          if [[ ! "$horaire" =~ ^([0-9]{1,2})\ ([0-9]{1,2})\ \*\ \*\ \*$ || ! -f "/usr/share/zoneinfo/$fuseau" ]]; then
+            echo "REFUS, rien n'a ete modifie : declencheur « $horaire » en « $fuseau », forme non lue (attendu « M H * * * » et un fuseau connu)" >&2
+            exit 1
+          fi
+          run=$(( 10#${BASH_REMATCH[2]} * 60 + 10#${BASH_REMATCH[1]} ))
+          read -r h m <<< "$(TZ="$fuseau" date +'%H %M')"
+          ecart=$(( (10#$h * 60 + 10#$m - run + 1440) % 1440 ))
+          (( ecart <= 720 )) || ecart=$(( 1440 - ecart ))
+          if (( ecart <= FENETRE_MIN )); then
+            echo "REFUS, rien n'a ete modifie : il est $h:$m en $fuseau, a $ecart min du run « $horaire » ; relancer le job hors des $FENETRE_MIN min qui l'entourent" >&2
+            exit 1
+          fi
+          echo "controles avant : etat attendu, run a $ecart min"
+      # L'image, et RIEN d'autre. Une mise a jour qui passe des
+      # environment-variables REMPLACE la table entiere chez Scaleway.
+      - name: mise a jour
+        id: mise-a-jour
+        env:
+          SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
+          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
+        run: scw jobs definition update "$DEFINITION" image-uri="$UBAC_REFERENCE" region=fr-par -o json > /dev/null
+      - name: lecture apres
+        id: apres
+        env:
+          SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
+          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
+        run: |
+          scw jobs definition get "$DEFINITION" region=fr-par -o json > "$RUNNER_TEMP/apres-definition.json"
+          scw jobs trigger list job-definition-id="$DEFINITION" region=fr-par -o json > "$RUNNER_TEMP/apres-declencheurs.json"
+          scw jobs secret list job-definition-id="$DEFINITION" region=fr-par -o json > "$RUNNER_TEMP/apres-secrets.json"
+      # LA RELECTURE : l'image est la nouvelle, et tout le reste vaut ce qu'il
+      # valait avant — reglages, variables, declencheur, secrets. L'etat d'avant
+      # ayant passe les controles, l'egalite porte les valeurs epinglees. Les
+      # ecarts se nomment par leur cle, jamais par leur valeur.
+      - name: relecture
+        id: relecture
+        run: |
+          motifs=$(jq -r -n \
+            --slurpfile av "$RUNNER_TEMP/avant-definition.json" --slurpfile ap "$RUNNER_TEMP/apres-definition.json" \
+            --slurpfile dav "$RUNNER_TEMP/avant-declencheurs.json" --slurpfile dap "$RUNNER_TEMP/apres-declencheurs.json" \
+            --slurpfile sav "$RUNNER_TEMP/avant-secrets.json" --slurpfile sap "$RUNNER_TEMP/apres-secrets.json" \
+            --arg image "$UBAC_REFERENCE" '
+            def liste: if type == "array" then . else (.triggers // .secrets) end;
+            def par(cle): liste | map({(cle): .}) | add // {};
+            def ecarts($a; $b; $quoi):
+              ($a + $b | keys[]) as $k | select($a[$k] != $b[$k])
+              | "\($quoi) \($k) : ajoute, retire ou change pendant le deploiement";
+            [ (if $ap[0].image_uri != $image then "image-uri relue « \($ap[0].image_uri) », attendu « \($image) »" else empty end),
+              ecarts($av[0] | del(.image_uri, .updated_at, .environment_variables);
+                     $ap[0] | del(.image_uri, .updated_at, .environment_variables); "reglage"),
+              ecarts($av[0].environment_variables // {}; $ap[0].environment_variables // {}; "variable"),
+              ecarts($dav[0] | par(.name); $dap[0] | par(.name); "declencheur"),
+              ecarts($sav[0] | par(.env_var.name // .file.path // .secret_id);
+                     $sap[0] | par(.env_var.name // .file.path // .secret_id); "secret")
+            ] | .[]')
+          if [[ -n "$motifs" ]]; then
+            printf "RELECTURE EN ECHEC, la production a change : %s\n" "$motifs" >&2
+            exit 1
+          fi
+          jq -r '"relu : \(.image_uri), cpu \(.cpu_limit), memoire \(.memory_limit), delai \(.job_timeout), tentatives \(.retry_policy.max_retries), variables \(.environment_variables | keys | join(" "))"' \
+            "$RUNNER_TEMP/apres-definition.json" | tee -a "$GITHUB_STEP_SUMMARY"
+      # Les lectures portent les variables ordinaires en clair.
+      - name: effacement des lectures
+        if: always()
+        run: rm -f "$RUNNER_TEMP"/avant-*.json "$RUNNER_TEMP"/apres-*.json
