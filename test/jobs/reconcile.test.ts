@@ -383,3 +383,76 @@ describe('E37 et E38 — l’issue d’un ordre denoue est lue, et rendue a ecri
     expect(result.orders[0]?.transition).toBeNull();
   });
 });
+
+describe('§7 point 3 — les ordres de plus de 24 h sont rendus a annuler (E35)', () => {
+  const HEURE = 3_600_000;
+  const posesIlYA = (heures: number, ms = 0): Date => new Date(MAINTENANT.getTime() - heures * HEURE - ms);
+  const ouvertDepuis = (heures: number, ms = 0) => ({
+    pending: [ordreEnAttente({ createdAt: posesIlYA(heures, ms) })],
+    open: [ordreOuvert()],
+  });
+
+  it('un ordre ouvert de 25 h est rendu a annuler, un de 23 h ne l’est pas', async () => {
+    expect((await lance(ouvertDepuis(25))).cancellations).toEqual([
+      { clientOrderId: 'coid-1', exchangeId: 'exch-1', ageMs: 25 * HEURE },
+    ]);
+    expect((await lance(ouvertDepuis(23))).cancellations).toEqual([]);
+  });
+
+  it('strictement plus de 24 h : 24 h pile reste, une milliseconde de plus s’annule', async () => {
+    expect((await lance(ouvertDepuis(24))).cancellations).toEqual([]);
+    expect((await lance(ouvertDepuis(24, 1))).cancellations.map((c) => c.ageMs)).toEqual([24 * HEURE + 1]);
+  });
+
+  /*
+   * L'age vient de `orders.created_at`, ecrit par le run avec son instant — pas
+   * du `created_time` de l'exchange. Les deux sont ici en desaccord de sept
+   * heures, dans les deux sens : seule la base decide.
+   */
+  it('compte l’age sur created_at de la base, jamais sur l’horodatage de l’exchange', async () => {
+    const jeune = await lance({
+      pending: [ordreEnAttente({ createdAt: posesIlYA(23) })],
+      open: [ordreOuvert({ createdAt: posesIlYA(30) })],
+    });
+    const vieux = await lance({
+      pending: [ordreEnAttente({ createdAt: posesIlYA(25) })],
+      open: [ordreOuvert({ createdAt: posesIlYA(18) })],
+    });
+    expect(jeune.cancellations).toEqual([]);
+    expect(vieux.cancellations).toHaveLength(1);
+  });
+
+  it('l’horloge est celle du run, injectee : le meme ordre, deux instants, deux reponses', async () => {
+    const scenario = { pending: [ordreEnAttente({ createdAt: posesIlYA(20) })], open: [ordreOuvert()] };
+    expect((await lance(scenario)).cancellations).toEqual([]);
+    const plusTard = new Date(MAINTENANT.getTime() + 5 * HEURE);
+    expect((await lance({ ...scenario, now: plusTard })).cancellations).toHaveLength(1);
+  });
+
+  it('un ordre partiellement execute est « non execute » : il s’annule aussi', async () => {
+    const result = await lance({
+      pending: [ordreEnAttente({ createdAt: posesIlYA(25) })],
+      open: [ordreOuvert({ filled: qty('0.2') })],
+    });
+    expect(result.cancellations.map((c) => c.clientOrderId)).toEqual(['coid-1']);
+  });
+
+  it('un ordre denoue ou indeterminable ne s’annule pas, quel que soit son age', async () => {
+    const denoue = await lance({
+      pending: [ordreEnAttente({ createdAt: posesIlYA(72) })],
+      open: [],
+      statuts: { 'exch-1': statutConnu() },
+    });
+    const inconnu = await lance({ pending: [ordreEnAttente({ createdAt: posesIlYA(72) })], open: [] });
+    expect(denoue.cancellations).toEqual([]);
+    expect(inconnu.cancellations).toEqual([]);
+  });
+
+  it('annule par l’identifiant des ordres ouverts une ligne dont le placement n’a pas ete ecrit', async () => {
+    const result = await lance({
+      pending: [ordreEnAttente({ exchangeId: null, createdAt: posesIlYA(26) })],
+      open: [ordreOuvert({ exchangeId: 'exch-9' })],
+    });
+    expect(result.cancellations.map((c) => c.exchangeId)).toEqual(['exch-9']);
+  });
+});

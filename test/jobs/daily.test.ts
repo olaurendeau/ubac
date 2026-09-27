@@ -33,10 +33,10 @@ import { expectedCalendar } from '../../src/fixture/normalise.js';
 import { clientOrderId } from '../../src/core/order-id.js';
 import type { Order, Price, Quantity, UsdcAmount } from '../../src/core/types.js';
 import type { DailyPorts, DailyRunResult, RunClock } from '../../src/jobs/daily.js';
-import { DailyRunError, NTFY_CANAL_OUVERT_LIGNE, reported, runDaily } from '../../src/jobs/daily.js';
+import { DailyRunError, NTFY_CANAL_OUVERT_LIGNE, ORDRES_EN_VOL_MARKER, reported, runDaily } from '../../src/jobs/daily.js';
 import { RESYNC_MARKER } from '../../src/jobs/reconcile.js';
 import { REPORT_TAG } from '../../src/report/daily-report.js';
-import { photo, PORTFOLIO, qty, solde } from './doubles.js';
+import { ordreOuvert, photo, PORTFOLIO, qty, solde } from './doubles.js';
 
 /**
  * Le run quotidien, §8 etapes 1 a 5, contre des doubles. **Aucun reseau, aucune
@@ -144,6 +144,13 @@ interface Scenario {
   readonly enAttente?: readonly PendingOrderRecord[];
   /** Les ordres ouverts sur l'exchange au demarrage. */
   readonly ouverts?: readonly OpenOrder[];
+  /**
+   * Ce que l'exchange fait d'une annulation. Par defaut : il annule, et l'ordre
+   * se relit `CANCELLED`. `REFUSEE` : refus pour une vraie raison, l'ordre reste
+   * ouvert. `DEJA_DENOUE` : refus, l'ordre s'est rempli entre la lecture et
+   * l'annulation. `PANNE` : l'envoi leve.
+   */
+  readonly annulation?: 'REFUSEE' | 'DEJA_DENOUE' | 'PANNE';
 }
 
 /** Ce que leve le port en panne. Reconnaissable, et sans rapport avec le metier. */
@@ -257,6 +264,8 @@ function harnais(scenario: Scenario = {}): Harnais {
   const corps: CreateOrderBody[] = [];
   const lignesOrdres = new Map<string, string>();
   const transitions: TransitionToRecord[] = [];
+  const annules = new Set<string>();
+  const remplis = new Set<string>();
   if (scenario.snapshot !== undefined) photos.set(scenario.snapshot.runDate, scenario.snapshot);
   const runDate = scenario.runDate ?? RUN_DATE;
   const closes = scenario.closes ?? { BTC: BTC_CLOSE, ETH: ETH_CLOSE };
@@ -310,8 +319,9 @@ function harnais(scenario: Scenario = {}): Harnais {
       if (scenario.statut === 'PANNE') return Promise.reject(new Error(PANNE));
       if (scenario.statut === 'MALFORME') return Promise.resolve({ kind: 'OPEN', exchangeId } as unknown as OrderStatus);
       const rempli = scenario.statut === 'FILLED' ? '0.14' : scenario.statut === 'PARTIEL' ? '0.05' : '0';
+      const clos = annules.has(exchangeId) ? 'CANCELLED' : remplis.has(exchangeId) ? 'FILLED' : undefined;
       return Promise.resolve({
-        kind: scenario.statut === 'FILLED' ? 'FILLED' : 'OPEN',
+        kind: clos ?? (scenario.statut === 'FILLED' ? 'FILLED' : 'OPEN'),
         exchangeId,
         clientOrderId: exchangeId.replace(/^ex-/, ''),
         filled: qty(rempli),
@@ -430,7 +440,23 @@ function harnais(scenario: Scenario = {}): Harnais {
         return openCoinbaseExecution(
           {
             write: (route) => {
-              if (route.kind !== 'create_order') throw new Error(`route inattendue ${route.kind}`);
+              if (route.kind === 'cancel_orders') {
+                appels.push('cancelOrders');
+                if (scenario.annulation === 'PANNE') return Promise.reject(new Error(PANNE));
+                return Promise.resolve({
+                  results: route.exchangeIds.map((order_id) => {
+                    if (scenario.annulation === 'REFUSEE') {
+                      return { success: false, failure_reason: 'COMMANDER_REJECTED_CANCEL_ORDER', order_id };
+                    }
+                    if (scenario.annulation === 'DEJA_DENOUE') {
+                      remplis.add(order_id);
+                      return { success: false, failure_reason: 'UNKNOWN_CANCEL_ORDER', order_id };
+                    }
+                    annules.add(order_id);
+                    return { success: true, failure_reason: 'UNKNOWN_CANCEL_FAILURE_REASON', order_id };
+                  }),
+                });
+              }
               appels.push('placeOrder');
               corps.push(route.body);
               const id = route.body.client_order_id;
@@ -2393,6 +2419,94 @@ describe('§7 point 2 — les ordres d’un run precedent prennent leur statut r
     expect(result.status).toBe('COMPLETED');
     expect(h.appels).not.toContain('recordTransition');
     expect(h.lignes.some((l) => l.startsWith("ordre ubac-veille : INDETERMINABLE, rien d'ecrit"))).toBe(true);
+  });
+});
+
+/** L'ordre de la veille tel que l'exchange le liste encore : au carnet, rien d'execute. */
+const AU_CARNET = ordreOuvert({ clientOrderId: 'ubac-veille', exchangeId: 'ex-ubac-veille', side: 'SELL', quantity: qty('0.14') });
+
+describe('§7 point 3 et etape 6 — aucun ordre ne s’empile sur un ordre encore ouvert (E35, E36)', () => {
+  const JOUR = '2026-10-02';
+  /** Hors bande, et l'ordre de la veille pose a `heure` : le run du jour demarre a 07:00:00Z. */
+  const veilleA = (heure: string, extra: Partial<Scenario> = {}): Scenario => ({
+    balances: JUSTE_HORS_BANDE,
+    runDate: JOUR,
+    enAttente: [ligneDeLaVeille({ createdAt: new Date(`2026-10-01T${heure}Z`) })],
+    ouverts: [AU_CARNET],
+    ...extra,
+  });
+  const production = (h: Harnais) => h.table.get(`${JOUR}|rebalance|false`)?.intent.reason ?? '';
+
+  /*
+   * **La sonde du lot.** Le demarrage varie de quelques minutes d'un jour a
+   * l'autre : l'ordre de la veille a 23 h 57, le §7 le laisse ouvert, et le
+   * portefeuille est toujours hors bande. Sans garde, une seconde paire part
+   * par-dessus la premiere.
+   */
+  it('un ordre du run precedent encore ouvert a 23 h 57 : aucun nouvel ordre ne part', async () => {
+    const h = harnais(veilleA('07:03:00.000'));
+    const result = complete(await lance(h));
+
+    expect(ordresDe(result, 'rebalance')).not.toHaveLength(0);
+    expect(h.appels).not.toContain('cancelOrders');
+    expect(h.appels).not.toContain('recordOrder');
+    expect(h.appels).not.toContain('placeOrder');
+    // Le refus s'ecrit, sur la ligne de la production et sur elle seule.
+    expect(production(h).startsWith(ORDRES_EN_VOL_MARKER)).toBe(true);
+    expect(production(h)).toContain('ubac-veille');
+    expect(h.table.get(`${JOUR}|rebalance_ab|true`)?.intent.reason).not.toContain(ORDRES_EN_VOL_MARKER);
+    expect(h.lignes).toContain("rebalance : 1 ordre(s) d'un run precedent encore ouvert(s), aucun ordre transmis");
+    expect(reported(result)).toBe(true);
+  });
+
+  it('a 24 h 01, l’ordre de la veille est annule avant toute decision, puis la nouvelle paire part', async () => {
+    const h = harnais(veilleA('06:59:00.000'));
+    await lance(h);
+
+    expect(h.appels.filter((a) => a === 'cancelOrders')).toHaveLength(1);
+    expect(h.appels.indexOf('cancelOrders')).toBeLessThan(h.appels.indexOf('recordDecision'));
+    expect(h.appels.filter((a) => a === 'placeOrder')).toHaveLength(1);
+    expect(h.lignes).toContain('annulation ubac-veille : ANNULE');
+    expect(production(h)).not.toContain(ORDRES_EN_VOL_MARKER);
+  });
+
+  it('une annulation refusee laisse l’ordre ouvert : le run conclut, rien ne part', async () => {
+    const h = harnais(veilleA('05:00:00.000', { annulation: 'REFUSEE' }));
+    const result = await lance(h);
+
+    expect(reported(result)).toBe(true);
+    expect(h.appels).toContain('cancelOrders');
+    expect(h.appels).not.toContain('placeOrder');
+    expect(h.lignes.some((l) => l.startsWith('annulation ubac-veille : ECHEC — COMMANDER_REJECTED_CANCEL_ORDER'))).toBe(true);
+    expect(production(h).startsWith(ORDRES_EN_VOL_MARKER)).toBe(true);
+  });
+
+  it('un envoi d’annulation qui leve : le run conclut, sans JOB_FAILED, et rien ne part', async () => {
+    const h = harnais(veilleA('05:00:00.000', { annulation: 'PANNE' }));
+    const result = await lance(h);
+
+    expect(reported(result)).toBe(true);
+    expect(evenements(h)).not.toContain('JOB_FAILED');
+    expect(h.appels).not.toContain('placeOrder');
+  });
+
+  /* E36 vu du run : l'ordre s'est rempli entre la lecture et l'annulation. Le refus n'est pas une erreur, et l'ordre est ferme. */
+  it('un ordre deja denoue au moment de l’annuler n’est pas une erreur du run, et ne retient rien', async () => {
+    const h = harnais(veilleA('05:00:00.000', { annulation: 'DEJA_DENOUE' }));
+    const result = await lance(h);
+
+    expect(reported(result)).toBe(true);
+    expect(evenements(h)).not.toContain('JOB_FAILED');
+    expect(h.lignes.some((l) => l.startsWith('annulation ubac-veille : DEJA_DENOUE'))).toBe(true);
+    expect(h.appels.filter((a) => a === 'placeOrder')).toHaveLength(1);
+  });
+
+  it('en DRY_RUN, l’annulation est journalisee et n’atteint pas l’exchange', async () => {
+    const essai = harnais(veilleA('05:00:00.000'));
+    await enDryRun(essai);
+
+    expect(essai.appels).not.toContain('cancelOrders');
+    expect(essai.lignes).toContain('annulation non envoyee (port journalisant) : ex-ubac-veille');
   });
 });
 

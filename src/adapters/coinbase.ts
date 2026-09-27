@@ -926,8 +926,8 @@ export type PlacementOutcome =
 /**
  * L'issue d'une annulation, **ordre par ordre** : un lot ne se replie pas sur un
  * booleen, sinon un refus pour une vraie raison passerait pour un ordre deja
- * denoue. `reason` est le `failure_reason` de l'API tel quel ; distinguer
- * « deja denoue » d'une vraie panne revient a S8.
+ * denoue. `reason` est le `failure_reason` de l'API tel quel ; « deja denoue »
+ * ne se lit pas sur ce texte : `annuler` (`src/jobs/execute.ts`) relit le statut.
  */
 export type CancelOutcome =
   | { readonly kind: 'CANCELLED'; readonly exchangeId: string }

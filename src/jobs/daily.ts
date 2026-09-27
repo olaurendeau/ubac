@@ -38,9 +38,9 @@ import type {
 import { renderDailyReport } from '../report/daily-report.js';
 import type { AlertInput, RebalanceExecuted } from './alerts.js';
 import { alertsFor } from './alerts.js';
-import type { IssueDeJambe } from './execute.js';
-import { auCarnet, placer } from './execute.js';
-import type { ReconcileObservations, Resynchronization } from './reconcile.js';
+import type { IssueDAnnulation, IssueDeJambe } from './execute.js';
+import { annuler, auCarnet, placer } from './execute.js';
+import type { PendingOrderReconciliation, ReconcileObservations, Resynchronization } from './reconcile.js';
 import { reconcile } from './reconcile.js';
 import type { ExecutionDeStrategie } from './suivi.js';
 import { compter, engage, fraisReels, suivre } from './suivi.js';
@@ -514,6 +514,46 @@ function marquer(intent: Intent, resync: Resynchronization): Intent {
   return { ...intent, reason: `${resync.reason}\n${intent.reason}` };
 }
 
+/**
+ * Marqueur en tete de la `reason` de la production un jour ou l'etape 6 est
+ * suspendue parce que des ordres d'un run precedent sont encore ouverts. Meme
+ * forme et meme motif que `RESYNC_MARKER` : le refus s'ecrit, il ne se deduit
+ * pas d'une absence d'ordre. Exporte pour que la sonde et le code lisent le meme
+ * litteral.
+ */
+export const ORDRES_EN_VOL_MARKER = 'ORDRES_EN_VOL';
+
+/**
+ * **Aucun run ne place d'ordre tant qu'un ordre d'un run precedent est ouvert.**
+ * Ce sont les ordres que la reconciliation a vus ouverts, moins ceux que
+ * l'annulation a fermes — annules, ou deja denoues.
+ *
+ * La regle des 24 h ne suffit pas a elle seule, et c'est pourquoi ce garde
+ * existe. Le run demarre a quelques minutes pres d'un jour sur l'autre : un ordre
+ * de la veille peut avoir 23 h 57 au run du lendemain, ne pas etre annule, et le
+ * portefeuille — l'USDC gele comptant encore comme detenu — etre toujours hors
+ * bande. Sans ce garde, une seconde paire partirait par-dessus la premiere, puis
+ * une troisieme : chaque run est plafonne, la somme des jours ne l'est pas.
+ * L'ordre de 23 h 57 reste ouvert, comme le §7 le veut, et le run suivant
+ * l'annule.
+ */
+function ordresEnVol(
+  ordres: readonly PendingOrderReconciliation[],
+  annulations: readonly IssueDAnnulation[],
+): readonly string[] {
+  const fermes = new Set(annulations.filter((a) => a.kind !== 'ECHEC').map((a) => a.clientOrderId));
+  return ordres
+    .filter(({ order, status }) => (status.kind === 'PENDING' || status.kind === 'PARTIAL') && !fermes.has(order.clientOrderId))
+    .map(({ order }) => order.clientOrderId);
+}
+
+function motifEnVol(enVol: readonly string[]): string {
+  return (
+    `${ORDRES_EN_VOL_MARKER} : ${String(enVol.length)} ordre(s) d'un run precedent encore ouvert(s) sur l'exchange ` +
+    `(${enVol.join(', ')}). L'etape 6 ne place rien tant qu'il en reste un : un nouvel ordre s'empilerait sur l'ancien.`
+  );
+}
+
 interface Decided {
   readonly strategy: StrategyName;
   readonly isShadow: boolean;
@@ -693,6 +733,20 @@ async function executeRun(run: DailyRun, parti: ExecutionDeStrategie[]): Promise
     log(`ordre ${order.clientOrderId} : ${transition.status}, ${transition.filledQty.toFixed()} execute — ${ecrit.status}`);
   }
 
+  /*
+   * 2ter. Le §7, point 3 : les ordres ouverts de plus de 24 h s'annulent (E35).
+   * La reconciliation a decide, `execute.ts` applique (T4, E11). Deja denoue
+   * n'est pas une erreur (E36), un echec non plus — mais l'ordre reste ouvert,
+   * et l'etape 6 ne placera rien par-dessus.
+   */
+  const annulations = await annuler({ port: execution.port, exchange: ports.exchange }, reconciled.cancellations);
+  for (const issue of annulations) {
+    log(`annulation ${issue.clientOrderId} : ${issue.kind}${issue.kind === 'ANNULE' ? '' : ` — ${issue.reason}`}`);
+  }
+  const enVol = ordresEnVol(reconciled.orders, annulations);
+  const suspendue = enVol.length === 0 ? undefined : motifEnVol(enVol);
+  if (suspendue !== undefined) log(suspendue);
+
   // 3. Soldes reels — ci-dessus — et prix du dernier jour clos.
   const pricedOn = shiftDay(runDate, -1, 'run_date');
   const window: DailyWindow = {
@@ -768,7 +822,9 @@ async function executeRun(run: DailyRun, parti: ExecutionDeStrategie[]): Promise
 
   const outcomes: StrategyOutcome[] = [];
   for (const { strategy, isShadow, intent: decide } of decided.decided) {
-    const intent = marquer(decide, resync);
+    // La suspension de l'etape 6 ne concerne que la production, seule a placer.
+    const retenue = isShadow || suspendue === undefined ? decide : { ...decide, reason: `${suspendue}\n${decide.reason}` };
+    const intent = marquer(retenue, resync);
     const verdict = validate(intent, {
       makeClientOrderId: clientOrderId,
       mids: prices,
@@ -824,6 +880,10 @@ async function executeRun(run: DailyRun, parti: ExecutionDeStrategie[]): Promise
     if (isShadow || verdict.status !== 'ACCEPTED' || verdict.orders.length === 0) continue;
     if (recorded.status !== 'RECORDED') {
       log(`${strategy} : decision du jour deja enregistree, aucun ordre transmis`);
+      continue;
+    }
+    if (suspendue !== undefined) {
+      log(`${strategy} : ${String(enVol.length)} ordre(s) d'un run precedent encore ouvert(s), aucun ordre transmis`);
       continue;
     }
     const ordres = verdict.orders.map((ordre) => auCarnet(ordre, prices));
