@@ -13,6 +13,7 @@ import { HOLD_5050_KEYS, HOLD_BTC_KEYS, PORTFOLIO_KEYS } from '../../src/jobs/sn
 import type {
   CompletedRun,
   DailyReportInput,
+  ReportExecution,
   ReportOutcome,
   TwrPoint,
 } from '../../src/report/daily-report.js';
@@ -107,6 +108,7 @@ const RUN: CompletedRun = {
   drawdown: { status: 'COMPUTED', drawdown: dec('-0.0385') },
   suspension: { status: 'INACTIVE' },
   outcomes: OUTCOMES,
+  executions: [],
 };
 
 /** La photo de la veille : c'est elle qui rend le P&L du jour calculable. */
@@ -181,7 +183,7 @@ describe('rendu — la sortie attendue, ligne a ligne', () => {
   it('rend exactement le rapport de l’etat fige', () => {
     expect(lignes(renderDailyReport(INPUT).html)).toEqual([
       'Ubac — rapport du 2026-09-13',
-      "Prix de cloture du 2026-09-12. Phase 1 : observation, aucun ordre n'est place.",
+      "Prix de cloture du 2026-09-12. Les ordres de la production partent en limit post-only ; les ombres n'en placent aucun.",
       'Valeur totale | P&L jour (TWR) | P&L cumule (TWR)',
       '100000.00 USDC | +4.17 % | +25.00 %',
       'Distance au prochain declenchement',
@@ -194,6 +196,17 @@ describe('rendu — la sortie attendue, ligne a ligne', () => {
       'rebalance_ab (ombre) | NONE | 0 jambe(s) | ACCEPTED | ratio dans la bande : aucun reequilibrage',
       'ladder (ombre) | NONE | 0 jambe(s) | ACCEPTED | ancres posees au cours du jour',
       'dca (ombre) | NONE | 0 jambe(s) | ACCEPTED | hors jour de DCA',
+      'Ordres du jour',
+      'Ordres | Nombre',
+      'Place | 0',
+      'Execute | 0',
+      'Partiel | 0',
+      'Non execute | 0',
+      'Statut non lu | 0',
+      'Rejete (post-only) | 0',
+      'Rejete (autre motif) | 0',
+      'Frais reels | 0.00 USDC',
+      "Aucun ordre n'est parti aujourd'hui.",
       'Allocation',
       'Ligne | Quantite | Poids | Cible | Ecart',
       'BTC | 0.50000000 | 41.00 % | 40.00 % | +1.00 %',
@@ -223,6 +236,13 @@ describe('rendu — la sortie attendue, ligne a ligne', () => {
       "trigger | Ce qui a declenche la decision du jour, ou NONE quand rien ne l'a declenchee.",
       "jambe | Un ordre elementaire d'un reequilibrage : un actif, un sens et un montant. Une decision en compte zero, une, ou plusieurs.",
       'risque | Le verdict de la couche de risque sur la decision du jour : ACCEPTED si elle passe, REJECTED suivi du code du refus sinon.',
+      "place | Un ordre que l'exchange a accepte et pose au carnet. Les quatre etats qui suivent se partagent les ordres places, et eux seuls.",
+      'execute | Un ordre place entierement rempli : la quantite demandee a change de mains au prix limite ou mieux.',
+      'partiel | Un ordre place dont une partie seulement a ete remplie ; la quantite remplie est donnee entre parentheses.',
+      "non execute | Un ordre place dont rien n'a encore ete rempli, ou qui a pris fin sans l'etre.",
+      "statut non lu | Un ordre place dont le run n'a pas pu relire l'etat : il n'est compte ni execute ni non execute, et ses frais restent inconnus.",
+      "post-only | Un ordre qui ne doit jamais croiser le carnet : s'il le croisait, l'exchange le rejette, et c'est le fonctionnement normal, pas une panne.",
+      "frais reels | Les frais que l'exchange a effectivement preleves sur les ordres du jour, tels qu'il les rend, et jamais une estimation.",
       'poids | La part que represente une ligne dans la valeur totale, en pourcentage. La colonne Cible donne la part visee, la colonne Ecart la difference des deux.',
       "ombre | Une strategie evaluee chaque jour mais qui ne place jamais d'ordre : elle sert de point de comparaison, pas de gestion.",
       "hold | Ne rien faire, et le mesurer : Hold BTC garde du BTC seul, Hold 50/50 garde moitie BTC moitie ETH, aucun des deux n'arbitre jamais.",
@@ -605,7 +625,7 @@ describe('R1 a R6 — le lexique vit dans le rapport, et n’y est ni mort ni mu
       .slice(2)
       .map((entree) => (entree.split(' | ')[0] ?? '').toLowerCase());
 
-    expect(termes.length).toBe(21);
+    expect(termes.length).toBe(28);
     for (const terme of termes) expect(texte).toContain(terme);
   });
 
@@ -809,5 +829,69 @@ describe('R17 — 5 000 photos tiennent loin sous la coupure de Gmail', { timeou
     /* Et le graphe est bien la : une sonde de taille passerait aussi sur un rapport ampute. */
     expect(mail.html).toContain('5001 photo(s)');
     expect(mail.html).toContain('Lexique');
+  });
+});
+
+// --- E28 : les ordres du jour -----------------------------------------------
+
+describe('E28 — le rapport distingue place, execute, partiel et non execute, et cite les frais reels', () => {
+  const ordre = (clientOrderId: string, side: 'BUY' | 'SELL'): ReportExecution['rejets'][number]['order'] => ({
+    clientOrderId,
+    asset: 'BTC',
+    quote: 'USDC',
+    side,
+    quantity: dec('0.14') as Quantity,
+    limitPrice: dec('50050') as Price,
+  });
+  const EXECUTION: ReportExecution = {
+    strategy: 'rebalance',
+    ordres: [
+      { order: ordre('a', 'SELL'), etat: 'EXECUTE', filled: dec('0.14'), fees: dec('4.2042') },
+      { order: ordre('b', 'SELL'), etat: 'PARTIEL', filled: dec('0.05'), fees: dec('1.5') },
+      { order: ordre('c', 'BUY'), etat: 'NON_EXECUTE', filled: dec('0'), fees: dec('0') },
+      { order: ordre('d', 'BUY'), etat: 'NON_LU', filled: dec('0'), fees: null },
+    ],
+    rejets: [
+      { order: ordre('e', 'BUY'), reason: 'INVALID_LIMIT_PRICE_POST_ONLY', postOnly: true },
+      { order: ordre('f', 'SELL'), reason: 'INSUFFICIENT_FUND', postOnly: false },
+    ],
+  };
+  const rendu = (): readonly string[] => lignes(renderDailyReport(avecRun({ executions: [EXECUTION] })).html);
+
+  it('compte chaque etat a part : quatre places, un de chaque, et les deux refus separes', () => {
+    const section = rendu();
+    const debut = section.indexOf('Ordres du jour');
+    expect(section.slice(debut, debut + 18)).toEqual([
+      'Ordres du jour',
+      'Ordres | Nombre',
+      'Place | 4',
+      'Execute | 1',
+      'Partiel | 1',
+      'Non execute | 1',
+      'Statut non lu | 1',
+      'Rejete (post-only) | 1',
+      'Rejete (autre motif) | 1',
+      /* 4.2042 + 1.5 + 0, et l'ordre non lu n'y entre pas : ses frais sont inconnus, pas nuls. */
+      'Frais reels | 5.70 USDC',
+      'Jambe | Limite | Etat | Frais ou motif',
+      'SELL BTC 0.14000000 | 50050.00 USDC | Execute | 4.20 USDC',
+      'SELL BTC 0.14000000 | 50050.00 USDC | Partiel (0.05000000) | 1.50 USDC',
+      'BUY BTC 0.14000000 | 50050.00 USDC | Non execute | 0.00 USDC',
+      'BUY BTC 0.14000000 | 50050.00 USDC | Statut non lu | inconnus',
+      'BUY BTC 0.14000000 | 50050.00 USDC | Rejete (post-only) | INVALID_LIMIT_PRICE_POST_ONLY',
+      'SELL BTC 0.14000000 | 50050.00 USDC | Rejete (autre motif) | INSUFFICIENT_FUND',
+      "Etat lu juste apres le placement : un ordre limit au repos n'est en general pas encore execute, et la suite se lit les jours suivants. Aucune jambe refusee n'est replacee dans le run.",
+    ]);
+  });
+
+  it('reste sans accent, sans ressource distante, et son lexique n’a aucune entree morte', () => {
+    const html = renderDailyReport(avecRun({ executions: [EXECUTION] })).html;
+    expect(html.normalize('NFD')).not.toMatch(/[̀-ͯ]|[æœÆŒ]/);
+    for (const interdit of ['<img', '<svg', 'url(', 'http']) expect(html).not.toContain(interdit);
+    const index = html.indexOf('>Lexique<');
+    const corps = lignes(html.slice(0, index)).join('\n').toLowerCase();
+    for (const entree of lignes(html.slice(index)).slice(2)) {
+      expect(corps).toContain((entree.split(' | ')[0] ?? '').toLowerCase());
+    }
   });
 });

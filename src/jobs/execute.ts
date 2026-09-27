@@ -98,8 +98,20 @@ export type IssueDeJambe = PlacementOutcome | { readonly kind: 'ALREADY_RECORDED
  * Deux ordres du meme `client_order_id` font refuser le lot avant toute
  * ecriture : l'exchange rendrait au second l'ordre du premier, au titre du
  * doublon et sans erreur — et la jambe manquerait en silence.
+ *
+ * **`issues` est fourni par l'appelant, et alimente au fil de l'eau** : chaque
+ * issue y entre des que l'exchange l'a rendue, **avant** son ecriture. Si une
+ * ecriture posterieure leve — l'issue de cette jambe ou d'une suivante —,
+ * l'exception remonte telle quelle, mais l'appelant tient deja toutes les
+ * jambes parties et peut les dire (alerte du jour) avant de la relancer. Une
+ * valeur de retour se perdrait avec l'exception ; une erreur qui transporterait
+ * les issues ne couvrirait que les exceptions que ce module sait envelopper.
  */
-export async function placer(execution: Execution, lot: Lot): Promise<readonly IssueDeJambe[]> {
+export async function placer(
+  execution: Execution,
+  lot: Lot,
+  issues: IssueDeJambe[],
+): Promise<readonly IssueDeJambe[]> {
   const vus = new Set<string>();
   for (const { clientOrderId } of lot.ordres) {
     if (vus.has(clientOrderId)) {
@@ -109,7 +121,6 @@ export async function placer(execution: Execution, lot: Lot): Promise<readonly I
     }
     vus.add(clientOrderId);
   }
-  const issues: IssueDeJambe[] = [];
   for (const order of lot.ordres) {
     const ecrit = await execution.db.recordOrder({
       order,
@@ -121,8 +132,9 @@ export async function placer(execution: Execution, lot: Lot): Promise<readonly I
       continue;
     }
     const issue = await execution.port.placeOrder(order);
-    await execution.db.recordPlacement(issue);
+    // Partie : connue de l'appelant avant que son ecriture puisse lever.
     issues.push(issue);
+    await execution.db.recordPlacement(issue);
   }
   return issues;
 }

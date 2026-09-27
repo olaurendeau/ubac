@@ -96,6 +96,34 @@ const FIXES: readonly EntreeLexique[] = [
     'Le verdict de la couche de risque sur la decision du jour : ACCEPTED si elle passe, REJECTED suivi du code du refus sinon.',
   ),
   entree(
+    'place',
+    "Un ordre que l'exchange a accepte et pose au carnet. Les quatre etats qui suivent se partagent les ordres places, et eux seuls.",
+  ),
+  entree(
+    'execute',
+    "Un ordre place entierement rempli : la quantite demandee a change de mains au prix limite ou mieux.",
+  ),
+  entree(
+    'partiel',
+    'Un ordre place dont une partie seulement a ete remplie ; la quantite remplie est donnee entre parentheses.',
+  ),
+  entree(
+    'non execute',
+    "Un ordre place dont rien n'a encore ete rempli, ou qui a pris fin sans l'etre.",
+  ),
+  entree(
+    'statut non lu',
+    "Un ordre place dont le run n'a pas pu relire l'etat : il n'est compte ni execute ni non execute, et ses frais restent inconnus.",
+  ),
+  entree(
+    'post-only',
+    "Un ordre qui ne doit jamais croiser le carnet : s'il le croisait, l'exchange le rejette, et c'est le fonctionnement normal, pas une panne.",
+  ),
+  entree(
+    'frais reels',
+    "Les frais que l'exchange a effectivement preleves sur les ordres du jour, tels qu'il les rend, et jamais une estimation.",
+  ),
+  entree(
     'poids',
     'La part que represente une ligne dans la valeur totale, en pourcentage. La colonne Cible donne la part visee, la colonne Ecart la difference des deux.',
   ),

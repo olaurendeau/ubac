@@ -1,10 +1,11 @@
 import { Decimal } from 'decimal.js';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type {
   AssetBalance,
   CreateOrderBody,
   KeyPermissions,
+  OrderStatus,
   PortfolioBalances,
 } from '../../src/adapters/coinbase.js';
 import { openCoinbaseExecution } from '../../src/adapters/coinbase.js';
@@ -118,19 +119,30 @@ interface Scenario {
   /**
    * Le port qui leve, pour eprouver les chemins d'exception. Trois profondeurs
    * de l'enchainement : avant la premiere lecture, au milieu des lectures, apres
-   * la derniere ecriture.
+   * la derniere ecriture. `recordPlacement` leve a la **deuxieme** issue
+   * seulement : la premiere jambe est placee et ecrite, la seconde placee et non ecrite.
    */
-  readonly panne?: 'keyPermissions' | 'dailyCandles' | 'recordSnapshot';
+  readonly panne?: 'keyPermissions' | 'dailyCandles' | 'recordSnapshot' | 'recordPlacement';
   /** La cle de phase 1, qui ne peut pas trader. Par defaut : celle de phase 3. */
   readonly sansTrade?: true;
   /** Les `client_order_id` que l'exchange rejette, comme un post-only qui croiserait. */
-  readonly rejetes?: 'TOUS';
+  readonly rejetes?: 'TOUS' | 'FONDS';
+  /**
+   * Ce que l'exchange dit d'un ordre place quand le run le relit. Par defaut :
+   * ouvert, rien d'execute — un limit post-only au repos. `PANNE` : la lecture leve.
+   * `MALFORME` : un statut sans quantite, que `suivre` ne sait pas classer — il leve.
+   */
+  readonly statut?: 'FILLED' | 'PARTIEL' | 'PANNE' | 'MALFORME';
+  /** `log` leve sur toute ligne qui contient ce texte, avec `JOURNAL_HS`. */
+  readonly journalEnPanne?: string;
   /** Variables d'environnement ajoutees a `ENV` avant `loadConfig`. */
   readonly env?: Readonly<Record<string, string>>;
 }
 
 /** Ce que leve le port en panne. Reconnaissable, et sans rapport avec le metier. */
 const PANNE = 'panne simulee';
+/** Ce que leve le journal en panne : distinct de `PANNE`, pour savoir laquelle remonte. */
+const JOURNAL_HS = 'journal hors service';
 
 interface Harnais {
   readonly ports: DailyPorts;
@@ -283,6 +295,20 @@ function harnais(scenario: Scenario = {}): Harnais {
       appels.push('openOrders');
       return Promise.resolve([]);
     },
+    orderStatus: (exchangeId) => {
+      appels.push('orderStatus');
+      if (scenario.statut === 'PANNE') return Promise.reject(new Error(PANNE));
+      if (scenario.statut === 'MALFORME') return Promise.resolve({ kind: 'OPEN', exchangeId } as unknown as OrderStatus);
+      const rempli = scenario.statut === 'FILLED' ? '0.14' : scenario.statut === 'PARTIEL' ? '0.05' : '0';
+      return Promise.resolve({
+        kind: scenario.statut === 'FILLED' ? 'FILLED' : 'OPEN',
+        exchangeId,
+        clientOrderId: exchangeId.replace(/^ex-/, ''),
+        filled: qty(rempli),
+        averageFilledPrice: rempli === '0' ? null : price('50050'),
+        fees: new Decimal(rempli === '0' ? '0' : '1.2345') as UsdcAmount,
+      });
+    },
   };
 
   return {
@@ -300,7 +326,10 @@ function harnais(scenario: Scenario = {}): Harnais {
     gitSha: GIT_SHA,
     clock: { today: () => runDate, instant: () => new Date(`${runDate}T07:00:00.000Z`) },
     config,
-    log: (line) => lignes.push(line),
+    log: (line) => {
+      if (scenario.journalEnPanne !== undefined && line.includes(scenario.journalEnPanne)) throw new Error(JOURNAL_HS);
+      lignes.push(line);
+    },
     ports: {
       exchange,
       market: {
@@ -365,6 +394,9 @@ function harnais(scenario: Scenario = {}): Harnais {
         },
         recordPlacement: (issue) => {
           appels.push('recordPlacement');
+          if (scenario.panne === 'recordPlacement' && appels.filter((a) => a === 'recordPlacement').length === 2) {
+            throw new Error(PANNE);
+          }
           lignesOrdres.set(issue.clientOrderId, issue.kind === 'PLACED' ? `PLACED ${issue.exchangeId}` : 'REJECTED');
           return Promise.resolve();
         },
@@ -389,7 +421,9 @@ function harnais(scenario: Scenario = {}): Harnais {
               return Promise.resolve(
                 scenario.rejetes === 'TOUS'
                   ? { success: false, error_response: { error: 'INVALID_LIMIT_PRICE_POST_ONLY' } }
-                  : { success: true, success_response: { order_id: `ex-${id}`, client_order_id: id } },
+                  : scenario.rejetes === 'FONDS'
+                    ? { success: false, error_response: { error: 'INSUFFICIENT_FUND' } }
+                    : { success: true, success_response: { order_id: `ex-${id}`, client_order_id: id } },
               );
             },
           },
@@ -410,6 +444,15 @@ const evenements = (h: Harnais): AlertEvent[] => h.pushes.map((push) => push.pay
 const CLE = expect.stringMatching(/^cle-[0-9a-f]{12}$/) as unknown as string;
 
 const lance = (h: Harnais): Promise<DailyRunResult> => runDaily(h);
+
+/** L'issue d'un run et ce qu'il a ecrit sur stderr : le seul temoin de ce que le `finally` de l'etape 6 avale. */
+async function avecStderr(h: Harnais): Promise<{ issue: PromiseSettledResult<unknown>; stderr: string }> {
+  const espion = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+  const [issue] = await Promise.allSettled([lance(h)]);
+  const stderr = espion.mock.calls.map(([chunk]) => String(chunk)).join('');
+  espion.mockRestore();
+  return { issue, stderr };
+}
 
 function complete(result: DailyRunResult): Extract<DailyRunResult, { status: 'COMPLETED' }> {
   if (result.status !== 'COMPLETED') {
@@ -1400,12 +1443,10 @@ describe('§9 — les alertes push', () => {
   });
 
   /*
-   * La phase 1 ne place rien : `executed` est toujours vide, donc le run ne peut
-   * pas produire `REBALANCE_EXECUTED`. Le chemin existe et `alerts.test.ts`
-   * l'eprouve directement ; ici on constate qu'aucun run ne l'atteint, y compris
-   * celui qui declenche un reequilibrage complet.
+   * Un reequilibrage declenche mais refuse par la couche risque ne place rien :
+   * `REBALANCE_EXECUTED` ne part que quand un ordre part (E27, sonde plus bas).
    */
-  it('ne pousse jamais REBALANCE_EXECUTED, meme sur un reequilibrage declenche', async () => {
+  it('ne pousse pas REBALANCE_EXECUTED sur un reequilibrage declenche mais rejete', async () => {
     const h = harnais({ balances: HORS_BANDE });
     const result = complete(await lance(h));
 
@@ -2042,6 +2083,13 @@ const JUSTE_HORS_BANDE: readonly AssetBalance[] = [
   solde('USDC', '23000'),
 ];
 
+/** Cash a 23,75 % : deux ventes, BTC puis ETH, 6,25 % a elles deux, sous le plafond de 8 %. */
+const DEUX_JAMBES: readonly AssetBalance[] = [
+  solde('BTC', '0.9'),
+  solde('ETH', '12.5'),
+  solde('USDC', '23750'),
+];
+
 function ordresDe(result: DailyRunResult, strategy: string): readonly Order[] {
   const verdict = complete(result).outcomes.find((o) => o.strategy === strategy)?.verdict;
   return verdict?.status === 'ACCEPTED' ? verdict.orders : [];
@@ -2139,6 +2187,144 @@ describe('§8 etape 6 — l’execution armee (E7, E20, E23, E24, E26)', () => {
   });
 });
 
+/** Le texte de l'alerte d'un evenement, ou une chaine vide. */
+const pousse = (h: Harnais, event: AlertEvent): string => {
+  const trouve = h.pushes.find((p) => p.payload.tags[0] === event)?.payload;
+  return trouve === undefined ? '' : `${trouve.title}\n${trouve.message}`;
+};
+
+describe('E27 et E28 — ce qui est parti se dit, sur l’alerte et dans le rapport', () => {
+  const JOUR = { balances: JUSTE_HORS_BANDE, runDate: '2026-10-01' } as const;
+
+  /* Le cas le plus probable : l'ordre est au repos quand le run le relit. Place 1, execute 0 — les confondre rougit ici. */
+  it('un ordre au repos : REBALANCE_EXECUTED dit un place et zero execute, le rapport le classe non execute', async () => {
+    const h = harnais(JOUR);
+    await lance(h);
+
+    expect(evenements(h)).toEqual(['REBALANCE_EXECUTED']);
+    expect(pousse(h, 'REBALANCE_EXECUTED')).toContain('1 ordre(s) place(s), 0 execute(s), 0 partiel(s)');
+    const texte = courrier(h).htmlContent;
+    expect(texte).toMatch(/>Place<\/td><td[^>]*>1</);
+    expect(texte).toMatch(/>Non execute<\/td><td[^>]*>1</);
+    expect(texte).toMatch(/>Execute<\/td><td[^>]*>0</);
+  });
+
+  it('un ordre rempli : un execute, et les frais reels de l’exchange sur l’alerte et le rapport', async () => {
+    const h = harnais({ ...JOUR, statut: 'FILLED' });
+    await lance(h);
+
+    expect(pousse(h, 'REBALANCE_EXECUTED')).toContain('1 ordre(s) place(s), 1 execute(s), 0 partiel(s)');
+    expect(pousse(h, 'REBALANCE_EXECUTED')).toContain('frais reels 1.23 USDC');
+    const texte = courrier(h).htmlContent;
+    expect(texte).toMatch(/>Execute<\/td><td[^>]*>1</);
+    expect(texte).toMatch(/>Frais reels<\/td><td[^>]*>1\.23 USDC</);
+  });
+
+  it('un ordre entame : partiel, avec la quantite remplie', async () => {
+    const h = harnais({ ...JOUR, statut: 'PARTIEL' });
+    await lance(h);
+
+    expect(pousse(h, 'REBALANCE_EXECUTED')).toContain('1 ordre(s) place(s), 0 execute(s), 1 partiel(s)');
+    expect(courrier(h).htmlContent).toContain('Partiel (0.05000000)');
+  });
+
+  /* Les ordres sont partis : une lecture qui leve ne doit ni faire echouer le run, ni taire l'alerte. */
+  it('un statut illisible : le run conclut, l’alerte part, l’ordre est dit non lu', async () => {
+    const h = harnais({ ...JOUR, statut: 'PANNE' });
+    const result = await lance(h);
+
+    expect(reported(result)).toBe(true);
+    expect(pousse(h, 'REBALANCE_EXECUTED')).toContain('1 ordre(s) place(s), 0 execute(s)');
+    expect(courrier(h).htmlContent).toMatch(/>Statut non lu<\/td><td[^>]*>1</);
+    expect(h.lignes.some((l) => l.includes('statut non lu'))).toBe(true);
+  });
+
+  it('toutes les jambes refusees en post-only : aucun ordre parti, aucune alerte', async () => {
+    const h = harnais({ ...JOUR, rejetes: 'TOUS' });
+    await lance(h);
+
+    expect(evenements(h)).toEqual([]);
+    expect(courrier(h).htmlContent).toMatch(/>Rejete \(post-only\)<\/td><td[^>]*>1</);
+  });
+
+  it('une jambe refusee pour un autre motif alerte en RISK_REJECTED, sans REBALANCE_EXECUTED', async () => {
+    const h = harnais({ ...JOUR, rejetes: 'FONDS' });
+    await lance(h);
+
+    expect(evenements(h)).toEqual(['RISK_REJECTED']);
+    expect(pousse(h, 'RISK_REJECTED')).toContain('INSUFFICIENT_FUND');
+    expect(courrier(h).htmlContent).toMatch(/>Rejete \(autre motif\)<\/td><td[^>]*>1</);
+  });
+
+  /* Une exception apres le placement ne doit pas taire l'ordre parti : JOB_FAILED l'accompagne, il ne le remplace pas. */
+  it('une panne apres le placement : REBALANCE_EXECUTED part avec JOB_FAILED', async () => {
+    const h = harnais({ ...JOUR, panne: 'recordSnapshot' });
+    await expect(lance(h)).rejects.toThrow(PANNE);
+
+    expect(evenements(h)).toEqual(['REBALANCE_EXECUTED', 'JOB_FAILED']);
+  });
+
+  /*
+   * Une panne **pendant** le placement, pas apres : l'issue de la deuxieme jambe
+   * ne s'ecrit pas. Les deux jambes sont pourtant parties ; aucune ne doit
+   * disparaitre de l'alerte du jour — la premiere surtout, placee et ecrite
+   * avant que la seconde ne leve.
+   */
+  it('une issue non ecrite a la deuxieme jambe : les jambes deja parties atteignent l’alerte', async () => {
+    const h = harnais({ balances: DEUX_JAMBES, runDate: '2026-10-01', panne: 'recordPlacement' });
+    await expect(lance(h)).rejects.toThrow(PANNE);
+
+    expect(h.appels.filter((a) => a === 'placeOrder')).toHaveLength(2);
+    expect(evenements(h)).toEqual(['REBALANCE_EXECUTED', 'JOB_FAILED']);
+    expect(pousse(h, 'REBALANCE_EXECUTED')).toContain('2 ordre(s) place(s), 0 execute(s)');
+    // Le suivi a lu les deux ordres : l'exchange a ete interroge sur chacun.
+    expect(h.appels.filter((a) => a === 'orderStatus')).toHaveLength(2);
+  });
+
+  /*
+   * Le `finally` de l'etape 6 ne leve jamais : une levee y remplacerait
+   * l'exception d'origine et laisserait hors de `parti` des jambes deja parties.
+   * Ce qu'il avale part sur stderr, et le statut qu'il n'a pas lu se dit non lu.
+   */
+  it('un suivi qui leve apres un placement reussi : le run conclut, l’ordre part en alerte, dit non lu', async () => {
+    const h = harnais({ ...JOUR, statut: 'MALFORME' });
+    const { issue, stderr } = await avecStderr(h);
+
+    expect(issue.status).toBe('fulfilled');
+    expect(evenements(h)).toEqual(['REBALANCE_EXECUTED']);
+    expect(pousse(h, 'REBALANCE_EXECUTED')).toContain('1 ordre(s) place(s), 0 execute(s)');
+    expect(courrier(h).htmlContent).toMatch(/>Statut non lu<\/td><td[^>]*>1</);
+    expect(stderr).toContain('suivi interrompu');
+  });
+
+  it('un suivi qui leve apres une issue non ecrite : l’exception d’origine remonte, les deux jambes partent', async () => {
+    const h = harnais({ balances: DEUX_JAMBES, runDate: '2026-10-01', panne: 'recordPlacement', statut: 'MALFORME' });
+    const { issue } = await avecStderr(h);
+
+    expect(issue).toMatchObject({ status: 'rejected', reason: { message: PANNE } });
+    expect(evenements(h)).toEqual(['REBALANCE_EXECUTED', 'JOB_FAILED']);
+    expect(pousse(h, 'REBALANCE_EXECUTED')).toContain('2 ordre(s) place(s), 0 execute(s)');
+  });
+
+  it('un journal qui leve dans le finally : l’exception du placement remonte, pas celle du journal', async () => {
+    const h = harnais({ balances: DEUX_JAMBES, runDate: '2026-10-01', panne: 'recordPlacement', journalEnPanne: ' PLACED' });
+    const { issue, stderr } = await avecStderr(h);
+
+    expect(issue).toMatchObject({ status: 'rejected', reason: { message: PANNE } });
+    expect(pousse(h, 'JOB_FAILED')).toContain(PANNE);
+    expect(pousse(h, 'REBALANCE_EXECUTED')).toContain('2 ordre(s) place(s), 0 execute(s)');
+    expect(stderr).toContain(JOURNAL_HS);
+  });
+
+  it('un run sans ordre n’emet pas REBALANCE_EXECUTED, et son rapport dit que rien n’est parti', async () => {
+    const h = harnais({ balances: DANS_LA_BANDE });
+    await lance(h);
+
+    expect(evenements(h)).not.toContain('REBALANCE_EXECUTED');
+    expect(courrier(h).htmlContent).toContain("Aucun ordre n'est parti aujourd'hui.");
+  });
+});
+
 /**
  * Les neuf effets comptes : cinq ecritures — decision, photo, ligne d'ordre, son
  * issue, placement —, trois envois, et l'ouverture du port reel, qui n'a pas
@@ -2185,7 +2371,7 @@ describe('DRY_RUN — des ports inertes a la place des vrais (E14, E15, E16)', (
     await lance(normal);
     expect(compte(normal)).toEqual({
       recordDecision: 4, recordSnapshot: 1, recordOrder: 1, recordPlacement: 1, placeOrder: 1,
-      ouvrirExecution: 1, notify: 1, sendReport: 1, ping: 1,
+      ouvrirExecution: 1, notify: 2, sendReport: 1, ping: 1,
     });
 
     // La cle de phase 1 : le port reel refuserait de s'ouvrir, et le DRY_RUN ne l'ouvre pas.

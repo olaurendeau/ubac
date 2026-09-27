@@ -9,6 +9,7 @@ import type {
   AllowedAsset,
   Intent,
   IsoDate,
+  Order,
   StrategyName,
   UsdcAmount,
   Verdict,
@@ -63,6 +64,26 @@ export interface ReportOutcome {
   readonly verdict: Verdict;
 }
 
+/**
+ * Un ordre place, et ce que le run en a lu juste apres (E28). Recopie de
+ * `src/jobs/suivi.ts`, que le rendu n'importe pas ; `contrat-run.test-d.ts`
+ * ferme la compatibilite.
+ */
+export interface ReportOrdre {
+  readonly order: Order;
+  readonly etat: 'EXECUTE' | 'PARTIEL' | 'NON_EXECUTE' | 'NON_LU';
+  readonly filled: Decimal;
+  /** `null` : statut non lu, frais inconnus — pas nuls. */
+  readonly fees: Decimal | null;
+}
+
+/** L'etape 6 d'une strategie : ses ordres places et ses jambes refusees par l'exchange. */
+export interface ReportExecution {
+  readonly strategy: StrategyName;
+  readonly ordres: readonly ReportOrdre[];
+  readonly rejets: readonly { readonly order: Order; readonly reason: string; readonly postOnly: boolean }[];
+}
+
 /** Un jour de la fenetre OHLCV. Reduit a sa date : le rendu n'en lit rien d'autre. */
 export interface ReportMarketDay {
   readonly date: string;
@@ -82,6 +103,7 @@ export interface CompletedRun {
   readonly drawdown: ReportDrawdown;
   readonly suspension: ReportSuspension;
   readonly outcomes: readonly ReportOutcome[];
+  readonly executions: readonly ReportExecution[];
 }
 
 /** La photo de reference du P&L du jour : un `SnapshotRecord` reduit au necessaire. */
@@ -463,6 +485,66 @@ function decisionSection(run: CompletedRun): string {
   return section('Decision du jour', table(['Strategie', 'Trigger', 'Jambes', 'Risque', 'Motif'], rows));
 }
 
+// --- Les ordres du jour -----------------------------------------------------
+
+/** Les quatre etats d'un ordre place, et le libelle que le corps imprime pour chacun. */
+const ETATS: readonly (readonly [ReportOrdre['etat'], string])[] = [
+  ['EXECUTE', 'Execute'],
+  ['PARTIEL', 'Partiel'],
+  ['NON_EXECUTE', 'Non execute'],
+  ['NON_LU', 'Statut non lu'],
+];
+
+const jambe = (order: Order): string => `${order.side} ${order.asset} ${order.quantity.toFixed(8)}`;
+
+function etatText(ordre: ReportOrdre): string {
+  const libelle = ETATS.find(([etat]) => etat === ordre.etat)?.[1] ?? ordre.etat;
+  return ordre.etat === 'PARTIEL' ? `${libelle} (${ordre.filled.toFixed(8)})` : libelle;
+}
+
+/**
+ * E28 : ce qui est parti, **tous les jours**, zero compris. Le tableau des
+ * comptes est toujours la : un rapport qui se tairait les jours sans ordre ne
+ * dirait pas si rien n'est parti ou si la section a disparu.
+ *
+ * Les quatre etats se partagent les ordres **places** — acceptes par
+ * l'exchange. Les jambes refusees n'ont pas ete placees : elles sont comptees a
+ * part, le refus post-only separe des autres parce que seul le second est
+ * anormal. Les frais sont ceux que l'exchange rend, jamais une estimation.
+ */
+function ordresSection(run: CompletedRun): string {
+  const ordres = run.executions.flatMap((execution) => execution.ordres);
+  const rejets = run.executions.flatMap((execution) => execution.rejets);
+  const nombre = (n: number): string => String(n);
+  const frais = ordres.reduce((total, ordre) => (ordre.fees === null ? total : total.plus(ordre.fees)), new Decimal(0));
+  const comptes = table(
+    ['Ordres', 'Nombre'],
+    [
+      ['Place', nombre(ordres.length)],
+      ...ETATS.map(([etat, libelle]) => [libelle, nombre(ordres.filter((o) => o.etat === etat).length)]),
+      ['Rejete (post-only)', nombre(rejets.filter((r) => r.postOnly).length)],
+      ['Rejete (autre motif)', nombre(rejets.filter((r) => !r.postOnly).length)],
+      ['Frais reels', usdc(frais)],
+    ],
+  );
+  if (ordres.length === 0 && rejets.length === 0) {
+    return section('Ordres du jour', comptes + `<p style="${NOTE}">Aucun ordre n'est parti aujourd'hui.</p>`);
+  }
+  const detail = table(
+    ['Jambe', 'Limite', 'Etat', 'Frais ou motif'],
+    [
+      ...ordres.map((o) => [jambe(o.order), usdc(o.order.limitPrice), etatText(o), o.fees === null ? 'inconnus' : usdc(o.fees)]),
+      ...rejets.map((r) => [jambe(r.order), usdc(r.order.limitPrice), r.postOnly ? 'Rejete (post-only)' : 'Rejete (autre motif)', escape(r.reason)]),
+    ],
+  );
+  return section(
+    'Ordres du jour',
+    comptes +
+      detail +
+      `<p style="${NOTE}">Etat lu juste apres le placement : un ordre limit au repos n'est en general pas encore execute, et la suite se lit les jours suivants. Aucune jambe refusee n'est replacee dans le run.</p>`,
+  );
+}
+
 // --- Le graphe du TWR cumule ------------------------------------------------
 
 /** Une colonne : la derniere valeur de son paquet, ou rien. Jamais un zero, jamais une interpolation. */
@@ -808,12 +890,13 @@ export function renderDailyReport(input: DailyReportInput): DailyReportMail {
   const html =
     `<div style="${BODY}">` +
     `<h1 style="font-size:17px;margin:0 0 4px">Ubac — rapport du ${escape(run.runDate)}</h1>` +
-    `<p style="${NOTE}">Prix de cloture du ${escape(run.pricedOn)}. Phase 1 : observation, aucun ordre n'est place.</p>` +
+    `<p style="${NOTE}">Prix de cloture du ${escape(run.pricedOn)}. Les ordres de la production partent en limit post-only ; les ombres n'en placent aucun.</p>` +
     alerte +
     entete +
     noteJour +
     distanceSection(input) +
     decisionSection(run) +
+    ordresSection(run) +
     allocationSection(run, input.params.targets) +
     comparisonSection(input) +
     gapSection(run) +

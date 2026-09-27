@@ -49,6 +49,7 @@ Les six points du §9, dans l'ordre où ils apparaissent :
 | En-tête | valeur totale, P&L jour et cumulé en TWR | `totalValue`, `portfolio_twr_index` |
 | Distance au prochain déclenchement | poids USDC contre sa bande, ratio BTC/ETH contre la sienne quand B est armé | calculée par le rendu |
 | Décision du jour | les quatre stratégies, `trigger NONE` compris, avec le verdict de risque | `outcomes` |
+| **Ordres du jour** (E28, S7b) | les comptes **placé**, **exécuté**, **partiel**, **non exécuté**, statut non lu, rejeté post-only et rejeté pour un autre motif, puis les **frais réels** ; le détail jambe par jambe quand un ordre est parti. Le tableau des comptes est là tous les jours, zéros compris : une section qui disparaîtrait les jours sans ordre ne dirait pas si rien n'est parti | `executions`, lues par `src/jobs/suivi.ts` |
 | Allocation | poids constatés contre cibles, et l'écart | `weights`, `params.targets` |
 | Comparaison | le **graphe du TWR cumulé** (section 10), puis TWR, max drawdown et Sharpe 90 j, portefeuille contre hold BTC et hold 50/50 ; ladder et DCA y figurent **sans courbe**, avec leur raison (section 6) | `snapshots.benchmarks`, `series` |
 | Métriques indisponibles | ce que le noyau n'a pas pu rendre, et pourquoi | `benchmarkGaps` |
