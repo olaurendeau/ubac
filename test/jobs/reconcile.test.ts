@@ -5,7 +5,7 @@ import { RECONCILIATION_DRIFT_PCT } from '../../src/core/risk.js';
 import type { Price } from '../../src/core/types.js';
 import { reconcile, RESYNC_MARKER } from '../../src/jobs/reconcile.js';
 import type { ReconcileResult, Resynchronization } from '../../src/jobs/reconcile.js';
-import { harnais, ordreEnAttente, ordreOuvert, photo, qty, solde } from './doubles.js';
+import { harnais, MAINTENANT, ordreEnAttente, ordreOuvert, photo, qty, solde, statutConnu } from './doubles.js';
 
 /**
  * La reconciliation de la spec §7. Aucun de ces tests ne touche le reseau, la
@@ -209,51 +209,56 @@ describe('§7 etape 2 — les ordres PENDING selon leur statut reel', () => {
 
   it('laisse PENDING un ordre encore ouvert et sans execution', async () => {
     const result = await lance({
-        pending: [ordreEnAttente({ clientOrderId: 'coid-a' })],
-        open: [ordreOuvert({ clientOrderId: 'coid-a', filled: qty('0') })],
-      });
+      pending: [ordreEnAttente({ clientOrderId: 'coid-a' })],
+      open: [ordreOuvert({ clientOrderId: 'coid-a', filled: qty('0') })],
+    });
     expect(result.orders).toHaveLength(1);
-    expect(result.orders[0]?.status).toEqual({ kind: 'PENDING' });
+    expect(result.orders[0]?.status).toEqual({ kind: 'PENDING', exchangeId: 'exch-1' });
     expect(result.orders[0]?.order.clientOrderId).toBe('coid-a');
+    expect(result.orders[0]?.transition).toMatchObject({ status: 'PENDING', settledAt: null });
   });
 
   it('passe en PARTIAL un ordre ouvert deja partiellement execute, avec la quantite', async () => {
     const result = await lance({
-        pending: [ordreEnAttente({ clientOrderId: 'coid-b', requestedQty: qty('0.5') })],
-        open: [ordreOuvert({ clientOrderId: 'coid-b', filled: qty('0.2') })],
-      });
+      pending: [ordreEnAttente({ clientOrderId: 'coid-b', requestedQty: qty('0.5') })],
+      open: [ordreOuvert({ clientOrderId: 'coid-b', filled: qty('0.2') })],
+    });
     const statut = result.orders[0]?.status;
     expect(statut?.kind).toBe('PARTIAL');
     expect(statut?.kind === 'PARTIAL' ? statut.filled.toString() : undefined).toBe('0.2');
+    // Encore ouvert : la ligne gagne sa quantite executee, pas d'instant de denouement.
+    expect(result.orders[0]?.transition).toMatchObject({ status: 'PARTIAL', settledAt: null });
+    expect(result.orders[0]?.transition?.filledQty.toString()).toBe('0.2');
   });
 
-  it('declare INDETERMINABLE un ordre absent des ordres ouverts, sans le deviner', async () => {
+  it('declare INDETERMINABLE un ordre que l’exchange ne connait pas, sans le deviner ni rien ecrire', async () => {
     /*
-     * Le lecteur de la phase 1 ne voit que les ordres ouverts. Un PENDING absent
-     * s'est denoue — execute, annule ou rejete — et rien de ce qu'on lit ne dit
-     * lequel. Classer par defaut un ordre execute en annule est pire que ne pas
-     * le classer : le statut rendu est l'aveu, pas une valeur de repli.
+     * Absent des ordres ouverts, et inconnu de la lecture d'un ordre donne : un
+     * ordre jamais accepte, qu'E23 rend possible. Classer par defaut un ordre
+     * execute en annule est pire que ne pas le classer : le statut rendu est
+     * l'aveu, et l'aveu n'ecrit rien.
      */
     const result = await lance({ pending: [ordreEnAttente({ clientOrderId: 'coid-c' })], open: [] });
     const statut = result.orders[0]?.status;
     expect(statut?.kind).toBe('INDETERMINABLE');
     expect(statut?.kind === 'INDETERMINABLE' ? statut.reason : '').toContain('coid-c');
-    expect(['PENDING', 'PARTIAL', 'FILLED']).not.toContain(statut?.kind);
+    expect(['PENDING', 'PARTIAL', 'SETTLED']).not.toContain(statut?.kind);
+    expect(result.orders[0]?.transition).toBeNull();
   });
 
   it('apparie chaque ordre par son client_order_id et pas par sa position', async () => {
     // Deux ordres, rendus dans l'ordre inverse par l'exchange : un appariement
     // par index rendrait deux statuts justes en apparence et croises en fait.
     const result = await lance({
-        pending: [
-          ordreEnAttente({ clientOrderId: 'coid-1' }),
-          ordreEnAttente({ clientOrderId: 'coid-2' }),
-        ],
-        open: [
-          ordreOuvert({ clientOrderId: 'coid-2', filled: qty('0.3') }),
-          ordreOuvert({ clientOrderId: 'coid-1', filled: qty('0') }),
-        ],
-      });
+      pending: [
+        ordreEnAttente({ clientOrderId: 'coid-1', exchangeId: null }),
+        ordreEnAttente({ clientOrderId: 'coid-2', exchangeId: null }),
+      ],
+      open: [
+        ordreOuvert({ clientOrderId: 'coid-2', exchangeId: 'exch-2', filled: qty('0.3') }),
+        ordreOuvert({ clientOrderId: 'coid-1', exchangeId: 'exch-1', filled: qty('0') }),
+      ],
+    });
     expect(result.orders.map((o) => [o.order.clientOrderId, o.status.kind])).toEqual([
       ['coid-1', 'PENDING'],
       ['coid-2', 'PARTIAL'],
@@ -267,15 +272,114 @@ describe('§7 etape 2 — les ordres PENDING selon leur statut reel', () => {
 
   it('n’ecrit rien : les doubles n’exposent aucune ecriture', async () => {
     /*
-     * La reconciliation ne persiste pas les transitions qu'elle calcule. Ce
-     * n'est pas un report d'ecriture : c'est une **lecture** qui manque a
-     * l'adapter — determiner l'issue d'un ordre denoue demande son statut ou ses
-     * executions. Voir docs/reconciliation.md. Le contrat le dit en type : les
-     * deux dependances sont des `Pick` de lecture seule.
+     * La reconciliation **rend** les transitions, elle ne les persiste pas :
+     * c'est `daily.ts` qui ecrit, et le contrat le dit en type — les dependances
+     * sont des `Pick` de lecture seule.
      */
     const banc = harnais({ pending: [ordreEnAttente()], open: [] });
     await reconcile(banc.input);
     expect(Object.keys(banc.input.db)).toEqual(['pendingOrders', 'latestSnapshot']);
-    expect(Object.keys(banc.input.exchange)).toEqual(['balances', 'openOrders']);
+    expect(Object.keys(banc.input.exchange)).toEqual(['balances', 'openOrders', 'orderStatus']);
+  });
+});
+
+describe('E37 et E38 — l’issue d’un ordre denoue est lue, et rendue a ecrire', () => {
+  const DENOUE = { pending: [ordreEnAttente()], open: [] } as const;
+
+  /*
+   * **La sonde d'E37.** Avant S8, cet ordre — absent des ordres ouverts, et que
+   * l'exchange connait execute — sortait `INDETERMINABLE`. Il sort avec son
+   * issue, et les cinq colonnes du §4 a reporter.
+   */
+  it('un ordre execute que l’exchange connait sort FILLED, avec ses cinq colonnes', async () => {
+    const result = await lance({ ...DENOUE, statuts: { 'exch-1': statutConnu() } });
+    const [ligne] = result.orders;
+
+    expect(ligne?.status).toEqual({ kind: 'SETTLED', outcome: 'FILLED', filled: qty('0.5') });
+    expect(ligne?.transition?.status).toBe('FILLED');
+    expect(ligne?.transition?.filledQty.toFixed()).toBe('0.5');
+    expect(ligne?.transition?.filledPrice?.toFixed()).toBe('60000.12345678');
+    expect(ligne?.transition?.fees.toFixed()).toBe('75.00015432');
+    expect(ligne?.transition?.settledAt).toEqual(MAINTENANT);
+    expect(ligne?.transition?.exchangeId).toBe('exch-1');
+  });
+
+  it('un ordre partiellement execute puis annule garde sa quantite executee', async () => {
+    const lu = statutConnu({ kind: 'CANCELLED', filled: qty('0.2') });
+    const [ligne] = (await lance({ ...DENOUE, statuts: { 'exch-1': lu } })).orders;
+
+    expect(ligne?.status).toEqual({ kind: 'SETTLED', outcome: 'CANCELLED', filled: qty('0.2') });
+    expect(ligne?.transition?.status).toBe('CANCELLED');
+    expect(ligne?.transition?.filledQty.toFixed()).toBe('0.2');
+  });
+
+  it.each([
+    ['EXPIRED', 'CANCELLED'],
+    ['FAILED', 'REJECTED'],
+  ] as const)('l’issue %s s’ecrit %s, une des cinq valeurs du §4', async (kind, ecrit) => {
+    const lu = statutConnu({ kind, filled: qty('0'), averageFilledPrice: null });
+    const [ligne] = (await lance({ ...DENOUE, statuts: { 'exch-1': lu } })).orders;
+
+    expect(ligne?.status).toMatchObject({ kind: 'SETTLED', outcome: kind });
+    expect(ligne?.transition).toMatchObject({ status: ecrit, filledPrice: null, settledAt: MAINTENANT });
+  });
+
+  /*
+   * L'horloge est un parametre (E35) : deux instants de run donnent deux
+   * instants de denouement, et aucun autre temps n'entre. Une horloge lue au
+   * fond du module passerait le lint — `src/jobs/` est hors de son glob — et
+   * casserait cette sonde ; A7 de `purete.test.ts` refuse la lecture elle-meme.
+   */
+  it('date le denouement a l’instant injecte, et a aucun autre', async () => {
+    const plusTard = new Date('2026-09-14T05:03:00.000Z');
+    const [ligne] = (await lance({ ...DENOUE, statuts: { 'exch-1': statutConnu() }, now: plusTard })).orders;
+    expect(ligne?.transition?.settledAt).toEqual(plusTard);
+  });
+
+  it('lit par l’identifiant des ordres ouverts une ligne dont le placement n’a pas ete ecrit', async () => {
+    const result = await lance({
+      pending: [ordreEnAttente({ exchangeId: null })],
+      open: [ordreOuvert({ exchangeId: 'exch-9' })],
+    });
+    expect(result.orders[0]?.status).toEqual({ kind: 'PENDING', exchangeId: 'exch-9' });
+    // L'identifiant voyage avec la transition : la ligne le gagne, et le lendemain se lit.
+    expect(result.orders[0]?.transition?.exchangeId).toBe('exch-9');
+  });
+
+  it('ne consulte pas l’exchange pour une ligne sans identifiant et absente des ordres ouverts', async () => {
+    const banc = harnais({ pending: [ordreEnAttente({ exchangeId: null })], open: [] });
+    const result = await reconcile(banc.input);
+    expect(result.orders[0]?.status.kind).toBe('INDETERMINABLE');
+    expect(result.orders[0]?.transition).toBeNull();
+    expect(banc.appels).not.toContain('orderStatus');
+  });
+
+  /*
+   * **Un INDETERMINABLE n'ecrit rien**, donc n'ecrase rien : c'est la moitie
+   * « affinement » de la persistance, cote calcul. La base tient l'autre moitie.
+   */
+  it('une lecture en echec rend INDETERMINABLE, sans transition ni exception', async () => {
+    const result = await lance({ ...DENOUE, statuts: { 'exch-1': new Error('reseau coupe') } });
+    const statut = result.orders[0]?.status;
+    expect(statut?.kind === 'INDETERMINABLE' ? statut.reason : '').toContain('reseau coupe');
+    expect(result.orders[0]?.transition).toBeNull();
+  });
+
+  it('une lecture en echec sur un ordre encore ouvert garde la vue des ordres ouverts, sans rien ecrire', async () => {
+    const result = await lance({
+      pending: [ordreEnAttente()],
+      open: [ordreOuvert({ filled: qty('0.1') })],
+      statuts: { 'exch-1': new Error('reseau coupe') },
+    });
+    expect(result.orders[0]?.status).toEqual({ kind: 'PARTIAL', exchangeId: 'exch-1', filled: qty('0.1') });
+    expect(result.orders[0]?.transition).toBeNull();
+  });
+
+  it('refuse d’appliquer le statut d’un autre ordre', async () => {
+    const autre = statutConnu({ clientOrderId: 'coid-etranger' });
+    const result = await lance({ ...DENOUE, statuts: { 'exch-1': autre } });
+    const statut = result.orders[0]?.status;
+    expect(statut?.kind === 'INDETERMINABLE' ? statut.reason : '').toContain('coid-etranger');
+    expect(result.orders[0]?.transition).toBeNull();
   });
 });

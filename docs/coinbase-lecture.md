@@ -336,9 +336,9 @@ donnée de compte : une bougie est publique.
 
 Le prérequis que `docs/reconciliation.md` §4 posait à la phase 3 : distinguer
 les issues d'un ordre dénoué demande son statut réel, ou ses exécutions, pas la
-liste des ordres ouverts. **S2 porte la lecture, S8 porte le branchement dans
-`src/jobs/reconcile.ts`, et E37 n'est clos qu'après les deux** : d'ici S8, la
-réconciliation rend encore `INDETERMINABLE` pour tout ordre dénoué.
+liste des ordres ouverts. **S2 porte la lecture, S8a le branchement dans
+`src/jobs/reconcile.ts`, et E37 est clos par les deux** : la réconciliation lit
+`orderStatus` pour chaque ligne ouverte d'`orders` (`docs/reconciliation.md` §4).
 
 **La liste filtrée, pas la lecture par identifiant.** Sur un identifiant
 inconnu, `GET …/orders/historical/{order_id}` répond 404, et ccxt 4.5.78 en fait

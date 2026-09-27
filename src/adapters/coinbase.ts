@@ -41,9 +41,8 @@ import type { Order, Price, Quantity, Side, UsdcAmount } from '../core/types.js'
  *
  * Et une lecture que la reconciliation attendait (E37, lot S2) : le statut reel
  * d'un ordre donne et ses executions — `orderStatus`, `orderFills`. **S2 porte
- * la lecture, S8 porte le branchement dans `src/jobs/reconcile.ts`, et E37 n'est
- * clos qu'apres les deux** : d'ici S8, `statusOf` rend encore `INDETERMINABLE`
- * pour tout ordre denoue.
+ * la lecture, S8a le branchement dans `src/jobs/reconcile.ts`, et E37 est clos
+ * par les deux** : la reconciliation lit le statut de chaque ordre ouvert en base.
  */
 
 // --- Erreur de frontiere ----------------------------------------------------

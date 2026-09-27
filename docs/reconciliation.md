@@ -5,14 +5,15 @@ l'exchange dit, confronté à ce que la base croit**, avant qu'aucune décision 
 soit prise. Ce document dit ce qui est fait, ce qui ne l'est pas, et pourquoi.
 
 Lot Q4a de la phase 1, révisé au lot **Q10** : la divergence ne bloque plus, elle
-rafraîchit. Le run quotidien qui appelle cette fonction est `src/jobs/daily.ts`.
+rafraîchit ; puis au lot **S8a** de la phase 3 : l'issue de chaque ordre est lue
+et persistée. Le run quotidien qui appelle cette fonction est `src/jobs/daily.ts`.
 
 ## 1. Ce que la réconciliation fait
 
 | Étape de la spec §7 | État |
 |---|---|
 | 1. Lire les soldes réels et les ordres ouverts | fait |
-| 2. Mettre à jour les `orders` en `PENDING` selon leur statut réel | **calculé, non persisté** — section 4 |
+| 2. Mettre à jour les `orders` en `PENDING` selon leur statut réel | fait : lu ici, écrit par `daily.ts` — section 4 |
 | 3. Annuler les ordres limit de plus de 24 h | **reporté en phase 3** — section 3 |
 | 4. Comparer soldes réels et état interne, agir au-delà de 1 % | fait — section 1 bis |
 
@@ -22,7 +23,8 @@ observations, et un champ `resync` qui dit si l'état interne a dû se rendre.
 motif, et elle n'abandonne plus.
 
 Rien n'est corrigé *sur l'exchange*, rien n'est rattrapé : ce module ne place, ne
-retire ni n'annule quoi que ce soit, et ne persiste rien non plus. Ce qui se rend
+retire ni n'annule quoi que ce soit, et ne persiste rien non plus — il **rend**
+les lignes d'`orders` à écrire, et c'est le run qui les écrit. Ce qui se rend
 au-delà du seuil, c'est le **cache**.
 
 ## 1 bis. Au-delà du seuil, le cache se rend — pas le run
@@ -169,14 +171,14 @@ L'étape 3 du §7 — « annuler tout ordre limit non exécuté datant de plus d
 - La clé Coinbase est en lecture seule, donc le chemin ne serait de toute façon
   pas testable de bout en bout.
 
-Conséquence directe : **la réconciliation n'a pas d'horloge**. Ni système, ni
-injectée — aucune de ses décisions ne dépend du temps, et une horloge injectée
-qui ne sert à rien est un paramètre que le prochain lecteur croira utile. Le jour
-où l'étape 3 arrive, l'horloge devient un paramètre de `ReconcileInput` ; elle ne
-se lit pas dans le module. `src/jobs/` étant hors du glob de pureté
-d'`eslint.config.js`, l'interdit tient par un garde-fou de `test/jobs/` : ni
-`Date.now()`, ni `new Date()` sans argument, ni `Math.random()`, ni
-`crypto.randomUUID()`, ni `performance.now()` dans aucun module de `src/jobs/`.
+**L'horloge est un paramètre de `ReconcileInput`**, `now` — l'instant `--at` du
+run, jamais une lecture. Depuis S8a elle date le dénouement d'un ordre
+(section 4). `src/jobs/` étant hors du glob de pureté d'`eslint.config.js`,
+l'interdit tient par un garde-fou de `test/jobs/` : ni `Date.now()`, ni
+`new Date()` sans argument, ni `Math.random()`, ni `crypto.randomUUID()`, ni
+`performance.now()` dans aucun module de `src/jobs/` (A7). Une sonde de
+`test/jobs/reconcile.test.ts` vérifie que deux instants injectés donnent deux
+dates de dénouement.
 
 ## 3 bis. Ce qu'un exécuteur devra faire du marqueur — **à trancher avant la phase 3**
 
@@ -187,8 +189,8 @@ venait de modifier, ce qui est exactement ce qu'on veut savoir.
 **En phase 3, ce ne sera plus vrai.** Une divergence constatée juste avant de
 passer des ordres est précisément le signal qu'il ne faut pas ignorer : elle peut
 signifier qu'un ordre précédent a eu un sort qu'on ignore — exécuté, partiel,
-annulé — et la section 4 ci-dessous dit que la réconciliation ne lit pas encore
-lequel. Rafraîchir le cache et placer des ordres dans la foulée reviendrait à
+annulé — que la réconciliation lit désormais (section 4) sans que le cache en
+tienne compte. Rafraîchir le cache et placer des ordres dans la foulée reviendrait à
 agir sur un état dont on vient de constater qu'on ne le comprend pas.
 
 **Ce lot ne résout pas ce problème — l'exécution n'existe pas — mais il ne le
@@ -202,7 +204,7 @@ choisie :
    rédaction actuelle ; elle demande une valeur de `Trigger` ou un code de rejet
    pour le dire dans `decisions`.
 2. **Refuser seulement si des ordres `PENDING` sont indéterminables**, ce qui
-   suppose la lecture manquante de la section 4 et distingue « un humain a bougé
+   s'appuie sur la lecture de la section 4, branchée en S8a, et distingue « un humain a bougé
    le portefeuille » de « un de nos ordres s'est dénoué sans qu'on le sache ».
 3. **Exécuter quand même**, la divergence étant par hypothèse déjà réconciliée
    sur les soldes réels. À écrire ici seulement si elle est explicitement
@@ -212,54 +214,61 @@ choisie :
 placement n'existe. Tant que rien ne s'exécute, l'absence de décision ne coûte
 rien ; le jour où l'étape 6 est écrite, elle coûte la question entière.
 
-## 4. Une lecture manquait à l'adapter : lue en S2, branchée en S8
+## 4. Le statut réel de chaque ordre : lu en S2, branché et persisté en S8a
 
-**Où l'on en est.** `CoinbaseReader` sait lire, depuis le lot S2, le statut
-réel d'un ordre donné et ses exécutions — `orderStatus` et `orderFills`,
-`docs/coinbase-lecture.md` §10. **`reconcile.ts` ne s'en sert pas encore** :
-`statusOf` rend toujours `INDETERMINABLE` pour un ordre dénoué. **S2 porte la
-lecture, S8 porte le branchement, et E37 n'est clos qu'après les deux.** Sans
-effet en production d'ici là : la table `orders` reste vide jusqu'à S7.
-
-Ce qui suit est le constat d'origine, qui reste celui du code de ce module.
-
-L'étape 2 du §7 est **calculée mais pas persistée**. La raison n'est pas
-l'écriture manquante ; elle est plus profonde.
-
-`CoinbaseReader` n'expose que les ordres **ouverts**. Un ordre `PENDING` que la
-base connaît et que cette liste ne contient pas s'est dénoué — exécuté, annulé ou
-rejeté — et **rien dans ce que le dépôt sait lire ne dit lequel**. Distinguer les
-trois issues demande le statut réel d'un ordre donné, ou ses exécutions ; pas la
-liste des ordres ouverts.
-
-Ce n'est pas une limite de la clé en lecture seule, et la phase 3 ne la lèvera
-pas en gagnant `can_trade` : **c'est une lecture qui manque à l'adapter**. Elle
-doit être comblée avant la phase 3, faute de quoi un ordre partiellement exécuté
-resterait `PENDING` pour toujours dans la base.
-
-En attendant, le statut rendu le dit :
+**Ce qui est lu.** Pour chaque ligne ouverte d'`orders` — `PENDING` ou
+`PARTIAL`, les deux états ouverts du §4 —, la réconciliation lit le statut que
+l'exchange donne de **cet** ordre, `orderStatus` (`docs/coinbase-lecture.md`
+§10), par son `exchange_id` ou, pour la ligne dont le placement n'a pas été écrit,
+par celui de la liste des ordres ouverts. Elle rend :
 
 ```ts
 type ReconciledOrderStatus =
-  | { kind: 'PENDING' }                           // ouvert, rien d'exécuté
-  | { kind: 'PARTIAL'; filled: Quantity }         // ouvert, partiellement exécuté
-  | { kind: 'INDETERMINABLE'; reason: string };   // dénoué, issue inconnue
+  | { kind: 'PENDING'; exchangeId }                 // ouvert, rien d'exécuté
+  | { kind: 'PARTIAL'; exchangeId; filled }         // ouvert, en partie exécuté
+  | { kind: 'SETTLED'; outcome; filled }            // FILLED, CANCELLED, EXPIRED, FAILED
+  | { kind: 'INDETERMINABLE'; reason };             // l'aveu, section suivante
 ```
 
-`INDETERMINABLE` n'est pas une valeur de la colonne `status` du §4 : c'est
-l'aveu que la question n'a pas de réponse avec les données disponibles. Le
-replier sur `CANCELLED` par défaut classerait un ordre exécuté en annulé, ce qui
-est pire que de ne pas le classer. L'union force l'appelant à traiter le cas ;
-supprimer le traitement explicite de l'absence ne laisse pas passer une valeur
-par défaut, cela ne compile plus.
+**`INDETERMINABLE` cesse d'être atteignable pour un ordre que l'exchange
+connaît** (E37). Il reste, et doit rester, dans trois cas : une ligne sans
+`exchange_id` absente des ordres ouverts — l'exchange ne se consulte que par
+l'identifiant qu'il donne, et un placement jamais confirmé (E23) n'en a pas ; une
+lecture qui échoue ou rend un statut que l'adapter ne sait pas interpréter ; un
+identifiant que l'exchange rattache à un autre `client_order_id`. Une lecture en
+échec sur un ordre que la liste des ordres ouverts porte garde la vue de cette
+liste. Dans aucun de ces cas la réconciliation ne lève : un ordre illisible ne
+condamne pas les runs suivants.
 
-En phase 1 la table `orders` est vide par construction, donc ce chemin ne
-s'exécutera jamais en production avant la phase 3. Il est néanmoins testé sur des
-données fabriquées, pas supposé.
+**Ce qui est écrit (E38).** Chaque statut lu rend la ligne à reporter —
+`status`, `filled_qty`, `filled_price`, `fees`, `settled_at`, et l'`exchange_id`
+qui manquait —, et l'étape 2bis de `daily.ts` l'écrit par `recordTransition`,
+avant toute décision. `FILLED` s'écrit `FILLED`, `FAILED` s'écrit `REJECTED`, et
+`EXPIRED` s'écrit `CANCELLED` : le §4 n'a pas de sixième valeur, un ordre
+`limit_limit_gtc` n'expire pas, et les deux issues laissent le même solde — la
+quantité exécutée, conservée, est ce qui compte. Un ordre partiellement exécuté
+puis annulé s'écrit donc `CANCELLED` **avec** sa quantité.
 
-`src/adapters/db.ts` n'a **pas** été étendu d'une écriture de statut : ajouter
-une écriture pour un statut que personne ne sait encore déterminer déplacerait le
-même piège une couche plus bas.
+**Persister est un affinement, pas une réécriture.** Deux moitiés :
+
+- **côté calcul**, un `INDETERMINABLE` ne rend aucune ligne à écrire, donc
+  n'efface rien ;
+- **côté base**, la requête elle-même refuse de réécrire une issue
+  (`status` doit être `PENDING` ou `PARTIAL`) et de faire reculer `filled_qty`,
+  et ne remplace pas un `exchange_id` déjà posé. Aucune lecture préalable :
+  même raisonnement que l'index unique de `decisions`. Une transition refusée
+  rend `UNCHANGED`, qui n'est pas une erreur.
+
+**`settled_at` est l'instant du run qui constate l'issue**, pas celui où
+l'exchange l'a prononcée : une borne supérieure, en retard d'un run au plus.
+L'instant exact de chaque exécution reste lisible par `orderFills` tant que
+l'`exchange_id` est en base ; c'est ce que l'export du PRU (§11, hors
+périmètre) devra lire.
+
+**Ce que la persistance ne ferme pas.** Une ligne sans `exchange_id` dont
+l'ordre a été accepté puis s'est dénoué avant le run suivant — le job mort
+entre le placement et l'écriture de son issue — reste `INDETERMINABLE` : il
+faudrait une lecture par `client_order_id`, que l'adapter n'a pas.
 
 ## 5. La réconciliation précède toute décision
 
@@ -289,7 +298,21 @@ attente, dernier snapshot.
 ## 6. Ce que la réconciliation ne fait pas, et les limites assumées
 
 - **Elle ne persiste rien.** Les deux dépendances sont des `Pick` de lecture
-  seule ; le type dit exactement ce qu'elle touche.
+  seule ; le type dit exactement ce qu'elle touche. Les transitions d'ordres
+  qu'elle rend sont écrites par `daily.ts`.
+- **Le lendemain d'une exécution, le cache ment, et la réconciliation le prend
+  pour un mouvement hors système.** La photo porte les soldes lus **avant** le
+  placement de l'étape 6. Si des ordres s'exécutent avant le run suivant, les
+  soldes réels s'écartent de la photo de la taille du rééquilibrage — bien
+  au-delà de 1 % —, le run se resynchronise et pousse `RECONCILIATION_DRIFT` en
+  `URGENT`, avec un texte qui dit « le portefeuille a bougé hors du système »
+  alors que rien d'anormal ne s'est passé. **S8a ne le ferme pas** : il pose les
+  données qui permettraient de l'expliquer — `filled_qty`, `filled_price` et
+  `fees` par ordre —, pas le calcul. Le fermer demande de comparer les soldes à
+  la photo **plus l'effet des exécutions connues depuis**, au même seuil et avec
+  la même formule d'écart ; c'est la référence de comparaison qui change, donc
+  une décision sur la lecture d'E39, à prendre avant S13 — qui ferait refuser
+  d'exécuter chaque lendemain d'exécution.
 - **Un premier run n'a pas de cache.** Sans snapshot, il n'y a rien à comparer :
   le résultat le dit (`comparedTo: 'NO_INTERNAL_STATE'`) plutôt que d'afficher
   une réconciliation qui n'a rien réconcilié. Une absence de comparaison n'est

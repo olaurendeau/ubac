@@ -1,6 +1,12 @@
 import { Decimal } from 'decimal.js';
 
-import type { AssetBalance, OpenOrder, PortfolioBalances } from '../../src/adapters/coinbase.js';
+import type {
+  AssetBalance,
+  KnownOrderStatus,
+  OpenOrder,
+  OrderStatus,
+  PortfolioBalances,
+} from '../../src/adapters/coinbase.js';
 import type { PendingOrderRecord, SnapshotRecord } from '../../src/adapters/db.js';
 import type { ReconcileInput } from '../../src/jobs/reconcile.js';
 import type { Price, Quantity, UsdcAmount, Weight, Weights } from '../../src/core/types.js';
@@ -60,6 +66,26 @@ export function ordreEnAttente(overrides: Partial<PendingOrderRecord> = {}): Pen
   };
 }
 
+/**
+ * Ce que l'exchange dit d'un ordre qu'il connait. Des grandeurs a huit decimales
+ * que `numeric(20,8)` porte telles quelles et qu'un flottant ne rendrait pas :
+ * `0.1 + 0.2` n'y survivrait pas plus que ces frais.
+ */
+export function statutConnu(overrides: Partial<KnownOrderStatus> = {}): KnownOrderStatus {
+  return {
+    kind: 'FILLED',
+    exchangeId: 'exch-1',
+    clientOrderId: 'coid-1',
+    filled: qty('0.5'),
+    averageFilledPrice: new Decimal('60000.12345678') as Price,
+    fees: new Decimal('75.00015432') as UsdcAmount,
+    ...overrides,
+  };
+}
+
+/** L'instant du run par defaut : le lendemain des ordres fabriques ci-dessus, a la meme heure. */
+export const MAINTENANT = new Date('2026-09-11T07:00:00.000Z');
+
 const POIDS_NEUTRES: Weights = {
   BTC: new Decimal('0.4') as Weight,
   ETH: new Decimal('0.4') as Weight,
@@ -91,6 +117,13 @@ export interface Scenario {
   readonly open?: readonly OpenOrder[];
   readonly pending?: readonly PendingOrderRecord[];
   readonly snapshot?: SnapshotRecord | undefined;
+  /**
+   * Ce que `orderStatus` rend, par identifiant d'exchange ; une `Error` y est
+   * levee. Sans entree : l'ordre ouvert qui porte cet identifiant, vu par sa
+   * propre lecture, et `INDETERMINABLE` pour un identifiant que rien ne porte.
+   */
+  readonly statuts?: Readonly<Record<string, OrderStatus | Error>>;
+  readonly now?: Date;
 }
 
 export interface Harnais {
@@ -117,6 +150,26 @@ export function harnais(scenario: Scenario = {}): Harnais {
           appels.push('openOrders');
           return Promise.resolve(scenario.open ?? []);
         },
+        orderStatus: (exchangeId) => {
+          appels.push('orderStatus');
+          const prevu = scenario.statuts?.[exchangeId];
+          if (prevu instanceof Error) return Promise.reject(prevu);
+          if (prevu !== undefined) return Promise.resolve(prevu);
+          const ouvert = scenario.open?.find((ordre) => ordre.exchangeId === exchangeId);
+          if (ouvert === undefined) {
+            return Promise.resolve({ kind: 'INDETERMINABLE', reason: `${exchangeId} inconnu de l'exchange` });
+          }
+          return Promise.resolve(
+            statutConnu({
+              kind: 'OPEN',
+              exchangeId,
+              clientOrderId: ouvert.clientOrderId,
+              filled: ouvert.filled,
+              averageFilledPrice: ouvert.filled.isZero() ? null : ouvert.limitPrice,
+              fees: new Decimal(0) as UsdcAmount,
+            }),
+          );
+        },
       },
       db: {
         pendingOrders: () => {
@@ -128,6 +181,7 @@ export function harnais(scenario: Scenario = {}): Harnais {
           return Promise.resolve(scenario.snapshot);
         },
       },
+      now: scenario.now ?? MAINTENANT,
     },
   };
 }

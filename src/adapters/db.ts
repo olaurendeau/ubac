@@ -1,5 +1,5 @@
 import type { Decimal } from 'decimal.js';
-import { and, asc, desc, eq, gte, isNull } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import pg from 'pg';
 
@@ -108,6 +108,43 @@ export type PlacementToRecord =
   | { readonly kind: 'PLACED'; readonly clientOrderId: string; readonly exchangeId: string }
   | { readonly kind: 'REJECTED'; readonly clientOrderId: string };
 
+/**
+ * Les cinq valeurs de la colonne `status` du §4. `PENDING` et `PARTIAL` sont
+ * les deux etats **ouverts** — rien d'execute, ou une partie ; les trois autres
+ * sont des issues, et une issue ne se reecrit pas.
+ */
+export type OrderStatusText = 'PENDING' | 'PARTIAL' | 'FILLED' | 'CANCELLED' | 'REJECTED';
+
+/** Les deux etats ouverts, ceux que la reconciliation relit chaque jour. */
+export const OPEN_ORDER_STATUSES = ['PENDING', 'PARTIAL'] as const satisfies readonly OrderStatusText[];
+
+interface TransitionCommune {
+  readonly clientOrderId: string;
+  /** Pose sur une ligne qui n'en a pas : l'ordre place dont l'issue n'a pas ete ecrite (E23). */
+  readonly exchangeId: string;
+  readonly filledQty: Quantity;
+  /** Prix moyen d'execution ; `null` tant que rien n'est execute. */
+  readonly filledPrice: Price | null;
+  /** `total_fees` de l'exchange, en USDC. */
+  readonly fees: UsdcAmount;
+}
+
+/**
+ * Ce que la reconciliation a lu d'un ordre, a reporter sur sa ligne (E38). Le
+ * type lie le statut a `settledAt` : un ordre ouvert n'a pas d'instant de
+ * denouement, une issue en a toujours un.
+ */
+export type TransitionToRecord =
+  | (TransitionCommune & { readonly status: (typeof OPEN_ORDER_STATUSES)[number]; readonly settledAt: null })
+  | (TransitionCommune & { readonly status: 'FILLED' | 'CANCELLED' | 'REJECTED'; readonly settledAt: Date });
+
+/**
+ * `UNCHANGED` n'est pas une erreur : la ligne porte deja une issue, ou une
+ * quantite executee superieure a celle qu'on vient de lire. **Persister est un
+ * affinement**, et c'est la base qui le garantit, pas l'appelant.
+ */
+export type RecordTransitionOutcome = { readonly status: 'RECORDED' } | { readonly status: 'UNCHANGED' };
+
 export interface SnapshotToRecord {
   readonly runDate: IsoDate;
   readonly totalValueUsdc: UsdcAmount;
@@ -147,8 +184,9 @@ export interface SnapshotPoint {
 }
 
 /**
- * Un ordre non encore denoue. `status` n'y figure pas : il vaut `PENDING` par
- * construction, c'est le filtre de la requete et pas une donnee du resultat.
+ * Un ordre non encore denoue, `PENDING` ou `PARTIAL`. `status` n'y figure pas :
+ * c'est le filtre de la requete, et la reconciliation relit l'exchange au lieu
+ * de s'y fier.
  */
 export interface PendingOrderRecord {
   readonly clientOrderId: string;
@@ -187,6 +225,8 @@ export interface UbacDatabase {
   /** L'ordre en `PENDING`, **avant** son placement (E23). */
   recordOrder(input: OrderToRecord): Promise<RecordOrderOutcome>;
   recordPlacement(input: PlacementToRecord): Promise<void>;
+  /** Le statut reel d'un ordre ouvert, lu par la reconciliation (E38). */
+  recordTransition(input: TransitionToRecord): Promise<RecordTransitionOutcome>;
   close(): Promise<void>;
 }
 
@@ -457,7 +497,7 @@ export function openDatabase(secrets: Pick<Secrets, 'databaseUrl'>): UbacDatabas
       const lignes = await db
         .select()
         .from(orders)
-        .where(eq(orders.status, 'PENDING'))
+        .where(inArray(orders.status, OPEN_ORDER_STATUSES))
         .orderBy(asc(orders.createdAt));
       return lignes.map((ligne) => ({
         clientOrderId: ligne.clientOrderId,
@@ -512,6 +552,34 @@ export function openDatabase(secrets: Pick<Secrets, 'databaseUrl'>): UbacDatabas
           `orders : aucune ligne PENDING sans exchange_id pour ${input.clientOrderId}, issue ${input.kind} non ecrite.`,
         );
       }
+    },
+
+    async recordTransition(input: TransitionToRecord): Promise<RecordTransitionOutcome> {
+      const lignes = await db
+        .update(orders)
+        .set({
+          status: input.status,
+          // Un identifiant deja pose ne se remplace pas : seul le manquant se complete.
+          exchangeId: sql`coalesce(${orders.exchangeId}, ${input.exchangeId})`,
+          filledQty: input.filledQty,
+          filledPrice: input.filledPrice,
+          fees: input.fees,
+          settledAt: input.settledAt,
+        })
+        .where(
+          and(
+            eq(orders.clientOrderId, input.clientOrderId),
+            /*
+             * Les deux conditions de l'affinement, dans la requete et non dans un
+             * `select` prealable qui laisserait une fenetre : une issue deja
+             * ecrite ne se reecrit pas, et la quantite executee ne recule pas.
+             */
+            inArray(orders.status, OPEN_ORDER_STATUSES),
+            or(isNull(orders.filledQty), lte(orders.filledQty, input.filledQty)),
+          ),
+        )
+        .returning({ clientOrderId: orders.clientOrderId });
+      return lignes.length === 1 ? { status: 'RECORDED' } : { status: 'UNCHANGED' };
     },
 
     async close(): Promise<void> {
