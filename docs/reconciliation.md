@@ -5,8 +5,8 @@ l'exchange dit, confronté à ce que la base croit**, avant qu'aucune décision 
 soit prise. Ce document dit ce qui est fait, ce qui ne l'est pas, et pourquoi.
 
 Lot Q4a de la phase 1, révisé au lot **Q10** : la divergence ne bloque plus, elle
-rafraîchit ; puis au lot **S8a** de la phase 3 : l'issue de chaque ordre est lue
-et persistée. Le run quotidien qui appelle cette fonction est `src/jobs/daily.ts`.
+rafraîchit ; puis aux lots **S8a** et **S8b** de la phase 3 : l'issue de chaque
+ordre est lue et persistée, et les ordres de plus de 24 h s'annulent. Le run quotidien qui appelle cette fonction est `src/jobs/daily.ts`.
 
 ## 1. Ce que la réconciliation fait
 
@@ -14,7 +14,7 @@ et persistée. Le run quotidien qui appelle cette fonction est `src/jobs/daily.t
 |---|---|
 | 1. Lire les soldes réels et les ordres ouverts | fait |
 | 2. Mettre à jour les `orders` en `PENDING` selon leur statut réel | fait : lu ici, écrit par `daily.ts` — section 4 |
-| 3. Annuler les ordres limit de plus de 24 h | **reporté en phase 3** — section 3 |
+| 3. Annuler les ordres limit de plus de 24 h | fait : décidé ici, appliqué par `execute.ts` — section 3 |
 | 4. Comparer soldes réels et état interne, agir au-delà de 1 % | fait — section 1 bis |
 
 Le résultat porte les soldes validés, les transitions d'ordres, deux
@@ -24,7 +24,8 @@ motif, et elle n'abandonne plus.
 
 Rien n'est corrigé *sur l'exchange*, rien n'est rattrapé : ce module ne place, ne
 retire ni n'annule quoi que ce soit, et ne persiste rien non plus — il **rend**
-les lignes d'`orders` à écrire, et c'est le run qui les écrit. Ce qui se rend
+les lignes d'`orders` à écrire et les ordres à annuler, et c'est le run qui écrit
+et `execute.ts` qui annule. Ce qui se rend
 au-delà du seuil, c'est le **cache**.
 
 ## 1 bis. Au-delà du seuil, le cache se rend — pas le run
@@ -157,28 +158,64 @@ capturé en fixture au lot Q3.
 Les soldes comparés sont `available + hold` : le gelé d'un ordre ouvert reste
 détenu, l'exclure ferait baisser la valeur du portefeuille à chaque ordre en vol.
 
-## 3. L'annulation des ordres de plus de 24 h est reportée en phase 3
+## 3. L'annulation des ordres de plus de 24 h, et le garde de l'étape 6 (S8b)
 
-L'étape 3 du §7 — « annuler tout ordre limit non exécuté datant de plus de 24 h »
-— **n'est pas implémentée, même désarmée**. C'est une décision de l'opérateur
-(D2), pas un oubli.
+**La règle, telle que le §7 l'écrit (E35).** Tout ordre encore ouvert — rien
+d'exécuté, ou une partie : « non exécuté » veut dire « pas entièrement » — dont
+l'âge dépasse **strictement** 24 h est rendu à annuler. 24 h pile reste ouvert.
+L'âge se compte sur `orders.created_at`, que le run écrit avec son instant
+`--at`, contre `now`, l'instant `--at` du run qui réconcilie : deux lectures de
+la même horloge. Jamais sur le `created_time` de l'exchange — deux horloges, et un
+ordre annulé trop tôt.
 
-- En phase 1 aucun ordre n'est jamais placé, donc aucun ordre ne peut avoir plus
-  de 24 h. La branche serait du code mort, non testable sur des données réelles.
-- Écrire un appel d'annulation contredirait le garde-fou de phase : le lint
-  d'`eslint.config.js` refuse dans `src/adapters/` et `src/jobs/` tout nom qui
-  dénote un placement, une annulation ou un retrait.
-- La clé Coinbase est en lecture seule, donc le chemin ne serait de toute façon
-  pas testable de bout en bout.
+**La réconciliation décide, `execute.ts` applique (T4).** `reconcile()` rend des
+`CancellationIntent` et reste une fonction de lecture ; l'appel d'écriture
+appartient au seul `execute.ts` (E11, A23), comme les cessions de la sortie.
+L'étape 2ter de `daily.ts` les passe à `annuler`, **avant toute décision**.
+
+**Une issue par ordre, et « déjà dénoué » est un succès (E36).** L'annulation part
+en un seul envoi et rend `ANNULE`, `DEJA_DENOUE` ou `ECHEC` pour chaque ordre, sans
+replier le lot sur un booléen. Un refus de l'exchange ne dit pas lui-même s'il est
+bénin : `failure_reason` est une énumération que l'API élargit, et le deviner sur
+son texte ferait passer une vraie panne pour de l'idempotence. **Le statut de
+l'ordre, relu, tranche** : dénoué, le refus était sans objet ; encore ouvert ou
+illisible, c'est un échec. Annuler deux fois le même ordre rend donc `ANNULE` puis
+`DEJA_DENOUE`. Un envoi qui lève rend chaque ordre en `ECHEC` sans faire tomber
+le run. Rien d'une annulation n'est écrit en base : le run suivant lit l'issue
+réelle de l'ordre, quantité exécutée comprise, et la persiste (section 4).
+
+**La règle des 24 h ne suffit pas à empêcher l'empilement, et c'est pourquoi un
+garde existe.** Le run démarre à quelques minutes près d'un jour sur l'autre —
+entre 05 h 01 et 05 h 04 UTC constaté chez Scaleway. Un ordre de la veille peut
+donc avoir 23 h 57 au run du lendemain : il ne s'annule pas, l'USDC qu'il gèle
+compte encore comme détenu, le portefeuille reste hors bande, et une seconde
+paire partirait par-dessus la première. Chaque run est plafonné à 8 % ; la somme
+des jours ne l'est pas.
+
+**D'où la propriété tenue par `daily.ts` : aucun run ne place d'ordre tant qu'un
+ordre d'un run précédent est encore ouvert.** Les ordres « en vol » sont ceux que
+la réconciliation a vus ouverts, moins ceux que l'annulation a fermés. S'il en
+reste un, l'étape 6 ne place rien, et le refus **s'écrit** : un marqueur
+`ORDRES_EN_VOL` en tête de la `reason` de la production, avec les identifiants,
+et une ligne de journal. Les trois ombres ne sont pas marquées : elles ne placent
+jamais rien. Le run conclut, écrit ses décisions et sa photo, rapporte et pingue.
+
+La règle du §7 reste tenue à la lettre — l'ordre de 23 h 57 n'est pas annulé, le
+run suivant l'annule. La conséquence est à connaître : **un ordre vit entre 24 et
+48 h** selon les minutes de démarrage, et le rééquilibrage suivant peut attendre
+un jour de plus. Une annulation qui échoue retient l'étape 6 tant que l'ordre
+reste ouvert, et le run réessaie le lendemain.
+
+**En `DRY_RUN`**, l'annulation passe par le port journalisant : elle est dite,
+elle n'atteint pas l'exchange.
 
 **L'horloge est un paramètre de `ReconcileInput`**, `now` — l'instant `--at` du
-run, jamais une lecture. Depuis S8a elle date le dénouement d'un ordre
-(section 4). `src/jobs/` étant hors du glob de pureté d'`eslint.config.js`,
-l'interdit tient par un garde-fou de `test/jobs/` : ni `Date.now()`, ni
-`new Date()` sans argument, ni `Math.random()`, ni `crypto.randomUUID()`, ni
-`performance.now()` dans aucun module de `src/jobs/` (A7). Une sonde de
-`test/jobs/reconcile.test.ts` vérifie que deux instants injectés donnent deux
-dates de dénouement.
+run, jamais une lecture. `src/jobs/` étant hors du glob de pureté
+d'`eslint.config.js`, l'interdit tient par un garde-fou de `test/jobs/` : ni
+`Date.now()`, ni `new Date()` sans argument, ni `Math.random()`, ni
+`crypto.randomUUID()`, ni `performance.now()` dans aucun module de `src/jobs/`
+(A7). Deux sondes de `test/jobs/reconcile.test.ts` vérifient qu'un autre instant
+injecté donne une autre date de dénouement et une autre décision d'annulation.
 
 ## 3 bis. Ce qu'un exécuteur devra faire du marqueur — **à trancher avant la phase 3**
 

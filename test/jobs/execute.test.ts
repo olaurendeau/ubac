@@ -1,10 +1,10 @@
 import { Decimal } from 'decimal.js';
 import { describe, expect, it } from 'vitest';
 
-import type { CancelOutcome, CreateOrderBody, ExecutionPort } from '../../src/adapters/coinbase.js';
+import type { CancelOutcome, CreateOrderBody, ExecutionPort, KnownOrderStatus } from '../../src/adapters/coinbase.js';
 import type { OrderToRecord, PlacementToRecord, RecordOrderOutcome } from '../../src/adapters/db.js';
-import type { Order, Price, Quantity } from '../../src/core/types.js';
-import type { Execution, IssueDeJambe } from '../../src/jobs/execute.js';
+import type { Order, Price, Quantity, UsdcAmount } from '../../src/core/types.js';
+import type { Annulation, Execution, IssueDeJambe } from '../../src/jobs/execute.js';
 import { annuler, auCarnet, ExecutionError, placer } from '../../src/jobs/execute.js';
 
 /**
@@ -187,13 +187,105 @@ describe('execute — les formes qui ne compilent pas (E19, E22)', () => {
   });
 });
 
-describe('execute — annuler', () => {
-  it('annule par identifiant et rend l’issue du port telle quelle', async () => {
-    const { execution, journal } = executionDe();
-    expect(await annuler(execution.port, ['e1', 'e2'])).toEqual([
-      { kind: 'CANCELLED', exchangeId: 'e1' },
-      { kind: 'CANCELLED', exchangeId: 'e2' },
+/**
+ * Un exchange qui se souvient : un ordre annule l'est pour de bon, et une seconde
+ * annulation est refusee comme Coinbase la refuse — `success: false`, avec un
+ * motif. `fermes` : les ordres deja denoues ailleurs, rempli entre la lecture et
+ * l'annulation ; `bloques` : ceux dont l'annulation est refusee et qui restent
+ * ouverts.
+ */
+function exchangeAnnulant(options: { fermes?: readonly string[]; bloques?: readonly string[]; statutIllisible?: true } = {}): {
+  annulation: Annulation;
+  envois: string[][];
+} {
+  const etat = new Map<string, KnownOrderStatus['kind']>((options.fermes ?? []).map((id) => [id, 'FILLED']));
+  const envois: string[][] = [];
+  const port: ExecutionPort = {
+    placeOrder: () => Promise.reject(new Error('aucun placement ici')),
+    cancelOrders(ids: readonly string[]): Promise<readonly CancelOutcome[]> {
+      envois.push([...ids]);
+      return Promise.resolve(
+        ids.map((exchangeId): CancelOutcome => {
+          if (options.bloques?.includes(exchangeId) === true) {
+            return { kind: 'REFUSED', exchangeId, reason: 'COMMANDER_REJECTED_CANCEL_ORDER' };
+          }
+          if (etat.has(exchangeId)) return { kind: 'REFUSED', exchangeId, reason: 'UNKNOWN_CANCEL_ORDER' };
+          etat.set(exchangeId, 'CANCELLED');
+          return { kind: 'CANCELLED', exchangeId };
+        }),
+      );
+    },
+  };
+  return {
+    envois,
+    annulation: {
+      port,
+      exchange: {
+        orderStatus: (exchangeId) =>
+          options.statutIllisible === true
+            ? Promise.reject(new Error('reseau coupe'))
+            : Promise.resolve({
+                kind: etat.get(exchangeId) ?? 'OPEN',
+                exchangeId,
+                clientOrderId: `c-${exchangeId}`,
+                filled: new Decimal('0') as Quantity,
+                averageFilledPrice: null,
+                fees: new Decimal('0') as UsdcAmount,
+              }),
+      },
+    },
+  };
+}
+
+const intention = (exchangeId: string) => ({ clientOrderId: `c-${exchangeId}`, exchangeId, ageMs: 90_000_000 });
+
+describe('execute — annuler (§7 point 3, E36)', () => {
+  /*
+   * **La sonde d'E36.** La meme annulation, demandee deux fois de suite : la
+   * seconde est refusee par l'exchange, et ce refus n'est pas une erreur — l'ordre
+   * est deja denoue, ce que l'annulation voulait.
+   */
+  it('annuler deux fois de suite le meme ordre : la seconde fois est un deja-denoue, pas un echec', async () => {
+    const { annulation, envois } = exchangeAnnulant();
+    const premiere = await annuler(annulation, [intention('e1')]);
+    const seconde = await annuler(annulation, [intention('e1')]);
+
+    expect(premiere).toEqual([{ kind: 'ANNULE', clientOrderId: 'c-e1', exchangeId: 'e1' }]);
+    expect(seconde).toEqual([
+      { kind: 'DEJA_DENOUE', clientOrderId: 'c-e1', exchangeId: 'e1', reason: "UNKNOWN_CANCEL_ORDER ; l'ordre est CANCELLED" },
     ]);
-    expect(journal).toEqual(['annule e1,e2']);
+    expect(envois).toEqual([['e1'], ['e1']]);
+  });
+
+  it('un lot rend une issue par ordre, dans l’ordre recu, sans rien replier', async () => {
+    const { annulation, envois } = exchangeAnnulant({ fermes: ['e2'], bloques: ['e3'] });
+    const issues = await annuler(annulation, [intention('e1'), intention('e2'), intention('e3')]);
+
+    expect(envois).toEqual([['e1', 'e2', 'e3']]);
+    expect(issues.map((issue) => [issue.exchangeId, issue.kind])).toEqual([
+      ['e1', 'ANNULE'],
+      ['e2', 'DEJA_DENOUE'],
+      ['e3', 'ECHEC'],
+    ]);
+    expect(issues[2]?.kind === 'ECHEC' ? issues[2].reason : '').toContain('toujours ouvert');
+  });
+
+  it('un refus dont le statut ne se relit pas est un echec : l’ordre peut etre ouvert', async () => {
+    const { annulation } = exchangeAnnulant({ bloques: ['e1'], statutIllisible: true });
+    const [issue] = await annuler(annulation, [intention('e1')]);
+    expect(issue?.kind).toBe('ECHEC');
+  });
+
+  it('un envoi qui leve rend chaque ordre en echec, sans lever', async () => {
+    const { annulation } = exchangeAnnulant();
+    const enPanne = { ...annulation, port: { ...annulation.port, cancelOrders: () => Promise.reject(new Error('503')) } };
+    const issues = await annuler(enPanne, [intention('e1'), intention('e2')]);
+    expect(issues.map((issue) => issue.kind)).toEqual(['ECHEC', 'ECHEC']);
+  });
+
+  it('rien a annuler n’appelle pas l’exchange', async () => {
+    const { annulation, envois } = exchangeAnnulant();
+    expect(await annuler(annulation, [])).toEqual([]);
+    expect(envois).toEqual([]);
   });
 });

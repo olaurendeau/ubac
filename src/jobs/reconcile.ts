@@ -37,8 +37,10 @@ import type { AllowedAsset, Quantity } from '../core/types.js';
  *    — la lecture de S2, branchee ici en S8, qui clot E37 — et rend la ligne a
  *    ecrire ; c'est `daily.ts` qui l'ecrit.
  * 3. **L'horloge est un parametre, jamais une lecture.** `ReconcileInput.now`
- *    est l'instant du run (E35) : il date le denouement d'un ordre. Ce module
- *    n'en lit aucune autre, et `src/jobs/` etant hors du glob de purete
+ *    est l'instant du run (E35) : il date le denouement d'un ordre, et mesure
+ *    l'age de ceux qui restent ouverts — au-dela de 24 h, ce module rend une
+ *    **intention** d'annulation, que `execute.ts` applique (T4 : E11 garde un
+ *    seul module d'ecriture). Ce module n'en lit aucune autre, et `src/jobs/` etant hors du glob de purete
  *    d'`eslint.config.js`, cet interdit tient par un garde-fou de `test/jobs/`
  *    (A7), pas par le lint.
  *
@@ -184,6 +186,23 @@ export type Resynchronization =
     };
 
 /**
+ * §7, point 3 : tout ordre limit non execute de **plus de 24 h** s'annule (E35).
+ * Strictement plus : un ordre de 24 h pile reste ouvert.
+ */
+export const MAX_ORDER_AGE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Une annulation a appliquer. Ce module la **decide** et ne l'applique pas : la
+ * route d'ecriture appartient a `execute.ts` (E11, T4), comme les cessions de
+ * `liquidate.ts`. `ageMs` est une duree entiere, pas une grandeur de marche.
+ */
+export interface CancellationIntent {
+  readonly clientOrderId: string;
+  readonly exchangeId: string;
+  readonly ageMs: number;
+}
+
+/**
  * Ce que la reconciliation rend. **Il n'y a pas de branche d'abandon**, et c'est
  * le lot : le seul motif que le §7 en donnait — la divergence de solde —
  * rafraichit desormais le cache au lieu de geler le systeme. Une branche
@@ -193,6 +212,8 @@ export type Resynchronization =
 export interface ReconcileResult {
   readonly balances: ReconciledBalances;
   readonly orders: readonly PendingOrderReconciliation[];
+  /** Les ordres encore ouverts de plus de 24 h, dans l'ordre de la base. */
+  readonly cancellations: readonly CancellationIntent[];
   readonly observations: ReconcileObservations;
   readonly resync: Resynchronization;
 }
@@ -401,12 +422,36 @@ async function reconcilierOrdre(
   };
 }
 
+/**
+ * Les ordres a annuler : **encore ouverts** — rien d'execute, ou une partie,
+ * `non execute` voulant dire « pas entierement » — et de plus de 24 h.
+ *
+ * L'age se compte sur `orders.created_at`, que le run ecrit avec son propre
+ * instant, contre `now`, l'instant du run suivant : deux lectures de la meme
+ * horloge. Jamais sur le `created_time` de l'exchange — deux horloges, deux
+ * fuseaux possibles, et un ordre annule une heure trop tot.
+ */
+function annulationsDe(
+  orders: readonly PendingOrderReconciliation[],
+  now: Date,
+): readonly CancellationIntent[] {
+  const intentions: CancellationIntent[] = [];
+  for (const { order, status } of orders) {
+    if (status.kind !== 'PENDING' && status.kind !== 'PARTIAL') continue;
+    const ageMs = now.getTime() - order.createdAt.getTime();
+    if (ageMs > MAX_ORDER_AGE_MS) {
+      intentions.push({ clientOrderId: order.clientOrderId, exchangeId: status.exchangeId, ageMs });
+    }
+  }
+  return intentions;
+}
+
 // --- Reconciliation ---------------------------------------------------------
 
 /**
- * §7, dans l'ordre de la spec : lire, confronter les ordres, confronter les
- * soldes. L'etape 3 — annuler les ordres limit de plus de 24 h — n'est pas
- * encore ecrite ; le motif est dans `docs/reconciliation.md` §3.
+ * §7, dans l'ordre de la spec : lire, confronter les ordres, decider des
+ * annulations, confronter les soldes. L'annulation est rendue, pas appliquee :
+ * `daily.ts` la passe a `execute.ts` (`docs/reconciliation.md` §3).
  *
  * Les lectures de l'exchange sont sequentielles et **ne sont pas atomiques** :
  * un ordre peut se denouer entre les soldes et son statut. La consequence va
@@ -426,6 +471,7 @@ export async function reconcile(input: ReconcileInput): Promise<ReconcileResult>
   for (const order of enAttente) {
     orders.push(await reconcilierOrdre(input.exchange, order, parClientId.get(order.clientOrderId), input.now));
   }
+  const cancellations = annulationsDe(orders, input.now);
 
   const reclames = new Set(enAttente.map((order) => order.clientOrderId));
   const observations: ReconcileObservations = {
@@ -447,6 +493,7 @@ export async function reconcile(input: ReconcileInput): Promise<ReconcileResult>
     return {
       balances: { [RECONCILIE]: true, holdings, comparedTo: 'NO_INTERNAL_STATE' },
       orders,
+      cancellations,
       observations,
       /*
        * Pas de comparaison, donc pas de resynchronisation. `NOT_NEEDED` n'est
@@ -467,6 +514,7 @@ export async function reconcile(input: ReconcileInput): Promise<ReconcileResult>
   return {
     balances: { [RECONCILIE]: true, holdings, comparedTo: 'INTERNAL_SNAPSHOT' },
     orders,
+    cancellations,
     observations,
     resync:
       divergences.length > 0

@@ -343,24 +343,25 @@ et dans cet ordre : les **alertes push** ([alertes.md](alertes.md)), puis le
 le **ping du healthcheck** ([healthcheck.md](healthcheck.md)). Le ping est en
 dernier parce qu'il rapporte le sort des deux autres.
 
-### L'annulation des ordres de plus de 24 h est reportée en phase 3
+### L'annulation des ordres de plus de 24 h, et aucun ordre par-dessus un ordre ouvert (S8b)
 
-L'étape 3 du §7 — « annuler tout ordre limit non exécuté datant de plus de 24 h »
-— **n'est pas implémentée, même désarmée**. C'est une décision de l'opérateur
-(D2), pas un oubli, et elle est détaillée dans
-[reconciliation.md](reconciliation.md) section 3. Le résumé :
+**Étape 2ter**, après la persistance des statuts et avant toute décision : les
+ordres ouverts de **plus de 24 h** — comptées sur `orders.created_at` contre
+`--at` — s'annulent, une ligne de journal par ordre (`ANNULE`, `DEJA_DENOUE`,
+`ECHEC`). « Déjà dénoué » n'est pas une erreur ; un échec non plus, mais l'ordre
+reste ouvert.
 
-- en phase 1 aucun ordre n'est jamais placé, donc aucun ordre ne peut avoir plus
-  de 24 h ; la branche serait du code mort, non testable sur des données réelles ;
-- écrire un appel d'annulation contredisait alors le garde-fou de phase, retiré
-  depuis (B4) ;
-- la clé est en lecture seule, donc le chemin ne serait de toute façon pas
-  testable de bout en bout.
+**Tant qu'un ordre d'un run précédent reste ouvert, l'étape 6 ne place rien** :
+la production porte `ORDRES_EN_VOL` en tête de sa `reason`, et le journal le dit.
+Sans ce garde, un ordre de 23 h 57 — le démarrage varie de quelques minutes —
+échapperait à l'annulation, et une seconde paire s'empilerait sur la première.
+Le motif et la conséquence — un ordre vit entre 24 et 48 h — sont dans
+[reconciliation.md](reconciliation.md) section 3.
 
 Conséquence pour ce point d'entrée : `--at` est l'instant que `ReconcileInput`
-reçoit (`now`, S8a) ; il date le dénouement des ordres que la réconciliation
-constate, et n'est pas encore comparé à leur âge. Le jour où l'étape 3 arrive,
-c'est ce même instant qui sert, jamais une horloge lue dans le module.
+reçoit (`now`) ; il date le dénouement des ordres que la réconciliation constate,
+et c'est contre lui que l'âge d'un ordre se compte. Un rejeu lancé avec un `--at`
+ancien annule donc moins, jamais plus.
 
 ### Les ordres d'un run précédent prennent leur statut réel (S8a)
 

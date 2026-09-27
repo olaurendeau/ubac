@@ -1267,8 +1267,8 @@ describe('A22 — le point d’entree du run ne s’importe de nulle part', () =
  * parler. `execute.ts` **doit** y figurer — un garde-fou qui ne designe
  * personne est vide, et c'est pourquoi S4 livre ce module sans appelant.
  *
- * La sortie propre (S11) et l'annulation des ordres anciens (S8) passeront
- * **par** `execute.ts` : la liste reste a un module, et elle ne s'allonge pas.
+ * L'annulation des ordres anciens (S8b) passe **par** `execute.ts`, et la sortie
+ * propre (S11) y passera : la liste reste a un module, et elle ne s'allonge pas.
  *
  * Les noms ne sont pas recopies : ils viennent d'`EXECUTION_METHODS` et de
  * `WRITE_ROUTES`, que `test/adapters/coinbase.test.ts` enumere (E10). Une
