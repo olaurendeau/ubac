@@ -80,7 +80,7 @@ soldes réels (Coinbase) + prix du jour
 | Tests | Vitest | |
 | Email | Brevo API HTTP `/v3/smtp/email` | pas de SMTP en serverless |
 | Push | ntfy auto-hébergé | alertes uniquement |
-| Hébergement | Scaleway Serverless Jobs (fr-par) | cron UTC |
+| Hébergement | Scaleway Serverless Jobs (fr-par) | cron `0 7 * * *` en `Europe/Paris` (§8) ; `run_date` en jour UTC |
 | CI/CD | GitHub Actions → Scaleway Container Registry | |
 
 ---

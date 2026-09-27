@@ -65,7 +65,8 @@ pour une raison qui ne tient pas au code.
 L'opérateur a levé le report de l'hébergement et de l'ordonnancement le
 2026-09-15, pendant la phase 1 (lot Q9). Le projet Neon tourne, le schéma y est
 appliqué, l'image de production existe, le job Serverless Scaleway tourne avec
-son cron `0 7 * * *` UTC, ses dix variables secrètes et son healthcheck externe.
+son cron `0 7 * * *` (en `Europe/Paris` ; ce plan disait UTC, corrigé le
+2026-09-27), ses dix variables secrètes et son healthcheck externe.
 **Le déploiement se fait à la main**, par `docs/deploiement.md`.
 
 Il reste donc **la seule chaîne d'intégration et de livraison**. Neon, le
@@ -425,10 +426,11 @@ lignes de `decisions` dont le `git_sha` égale le nouveau tag.
    à jour ne modifiant que `image-uri` laisse les autres champs intacts. C'est
    exactement ce que la relecture existe pour constater — et la raison pour
    laquelle elle asserte six réglages et pas seulement le tag.
-3. **La fenêtre de 7 h UTC, qui n'est plus théorique.** Sans approbation
+3. **La fenêtre de 7 h, heure de Paris, qui n'est plus théorique.** Sans approbation
    humaine, un déploiement part quand un tag est posé — y compris à 6 h 58. Un
    déploiement *cassé* juste avant le cron coûte une journée d'observation. Le
-   lot **refuse de déployer entre 06 h 45 et 07 h 15 UTC** et le dit dans son
+   lot **refuse de déployer entre 06 h 45 et 07 h 15 à l'heure du déclencheur**
+   (`Europe/Paris` ; ce plan disait UTC, voir `docs/integration-continue.md`) et le dit dans son
    journal, plutôt que de tenter sa chance. Quinze minutes d'attente ne coûtent
    rien ; une journée d'observation, si.
 4. **« Environnement protégé » sans relecteur.** D7 = 2 satisfait le §10 par la
