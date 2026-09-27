@@ -214,6 +214,117 @@ describe.skipIf(URL_DE_TEST === undefined)('adapter de base, contre un Postgres 
   });
 
   /**
+   * E38 : le statut reel d'un ordre, reporte sur sa ligne. **Persister est un
+   * affinement** : la requete elle-meme refuse de reecrire une issue et de faire
+   * reculer une quantite executee — aucune lecture prealable, meme motif que
+   * l'index unique de `decisions`.
+   */
+  describe('les transitions d’ordres (E38)', () => {
+    const ORDRE = {
+      clientOrderId: 'ubac-transition',
+      asset: 'BTC',
+      quote: 'USDC',
+      side: 'BUY',
+      quantity: new Decimal('0.5') as Quantity,
+      limitPrice: new Decimal('59940.06') as Price,
+    } as const;
+    const DENOUE_LE = new Date('2026-09-11T05:03:00.000Z');
+    const commune = {
+      clientOrderId: ORDRE.clientOrderId,
+      exchangeId: 'ex-lu',
+      filledPrice: new Decimal('59940.06000001') as Price,
+      fees: new Decimal('74.92507500') as UsdcAmount,
+    };
+
+    async function ligne(): Promise<Record<string, unknown> | undefined> {
+      const lignes = await brut.query(`
+        SELECT status, exchange_id, filled_qty, filled_price, fees, settled_at
+        FROM orders WHERE client_order_id = $1`, [ORDRE.clientOrderId]);
+      return lignes.rows[0] as Record<string, unknown> | undefined;
+    }
+
+    beforeEach(async () => {
+      const decision = await db.recordDecision({
+        intent: intention(),
+        isShadow: false,
+        verdict: { status: 'ACCEPTED', orders: [ORDRE], ignored: [] },
+        gitSha: 'abc1234',
+        createdAt: CREE_LE,
+      });
+      if (decision.status !== 'RECORDED') throw new Error('decision non ecrite');
+      await db.recordOrder({ order: ORDRE, decisionId: decision.id, createdAt: CREE_LE });
+    });
+
+    it('ecrit les cinq colonnes, et complete l’identifiant d’un placement non ecrit', async () => {
+      const ecrit = await db.recordTransition({
+        ...commune,
+        status: 'FILLED',
+        filledQty: new Decimal('0.5') as Quantity,
+        settledAt: DENOUE_LE,
+      });
+
+      expect(ecrit).toEqual({ status: 'RECORDED' });
+      expect(await ligne()).toEqual({
+        status: 'FILLED',
+        exchange_id: 'ex-lu',
+        filled_qty: '0.50000000',
+        filled_price: '59940.06000001',
+        fees: '74.92507500',
+        settled_at: DENOUE_LE,
+      });
+      // Une issue sort de la reconciliation : elle n'est plus relue.
+      expect(await db.pendingOrders()).toEqual([]);
+    });
+
+    it('une ligne PARTIAL reste ouverte, et la reconciliation la relit', async () => {
+      await db.recordTransition({
+        ...commune,
+        status: 'PARTIAL',
+        filledQty: new Decimal('0.2') as Quantity,
+        settledAt: null,
+      });
+      expect(await ligne()).toMatchObject({ status: 'PARTIAL', filled_qty: '0.20000000', settled_at: null });
+      expect((await db.pendingOrders()).map((o) => o.clientOrderId)).toEqual([ORDRE.clientOrderId]);
+    });
+
+    it('n’ecrase jamais une issue deja ecrite, et ne fait pas reculer la quantite executee', async () => {
+      await db.recordTransition({ ...commune, status: 'FILLED', filledQty: new Decimal('0.5') as Quantity, settledAt: DENOUE_LE });
+      const apres = await ligne();
+
+      // Une lecture ulterieure, ouverte ou annulee : la ligne ne bouge pas d'un octet.
+      for (const status of ['PENDING', 'PARTIAL'] as const) {
+        expect(
+          await db.recordTransition({ ...commune, exchangeId: 'ex-autre', status, filledQty: new Decimal('0') as Quantity, filledPrice: null, settledAt: null }),
+        ).toEqual({ status: 'UNCHANGED' });
+      }
+      expect(
+        await db.recordTransition({ ...commune, status: 'CANCELLED', filledQty: new Decimal('0.5') as Quantity, settledAt: new Date() }),
+      ).toEqual({ status: 'UNCHANGED' });
+      expect(await ligne()).toEqual(apres);
+    });
+
+    it('une quantite executee plus petite que celle deja ecrite est refusee', async () => {
+      await db.recordTransition({ ...commune, status: 'PARTIAL', filledQty: new Decimal('0.3') as Quantity, settledAt: null });
+      expect(
+        await db.recordTransition({ ...commune, status: 'PARTIAL', filledQty: new Decimal('0.1') as Quantity, settledAt: null }),
+      ).toEqual({ status: 'UNCHANGED' });
+      expect(await ligne()).toMatchObject({ filled_qty: '0.30000000' });
+    });
+
+    it('garde l’identifiant d’exchange deja pose, et ecrit un prix nul tant que rien n’est execute', async () => {
+      await db.recordPlacement({ kind: 'PLACED', clientOrderId: ORDRE.clientOrderId, exchangeId: 'ex-place' });
+      await db.recordTransition({
+        ...commune,
+        status: 'CANCELLED',
+        filledQty: new Decimal('0') as Quantity,
+        filledPrice: null,
+        settledAt: DENOUE_LE,
+      });
+      expect(await ligne()).toMatchObject({ status: 'CANCELLED', exchange_id: 'ex-place', filled_price: null });
+    });
+  });
+
+  /**
    * E32, relu dans la colonne elle-meme : `risk_verdict` ne porte que le code,
    * et avant ce lot `reason` ne portait que le motif de l'intention. Le texte
    * quantifie du refus n'existait que dans l'alerte, qui ne se relit pas.
@@ -474,13 +585,15 @@ describe.skipIf(URL_DE_TEST === undefined)('adapter de base, contre un Postgres 
       expect(flux[0]?.id).toMatch(/^[0-9a-f-]{36}$/);
     });
 
-    it('pendingOrders ne rend que les ordres en attente', async () => {
+    it('pendingOrders ne rend que les ordres ouverts, PENDING et PARTIAL', async () => {
       await brut.query(`
         INSERT INTO orders
           (client_order_id, side, asset, requested_qty, limit_price, status, created_at) VALUES
-          ('ubac-2', 'SELL', 'ETH', '2.50000000', '3210.12345678', 'PENDING', '2026-09-10T07:01:00Z'),
+          ('ubac-2', 'SELL', 'ETH', '2.50000000', '3210.12345678', 'PARTIAL', '2026-09-10T07:01:00Z'),
           ('ubac-1', 'BUY', 'BTC', '0.01234567', '64321.09876543', 'PENDING', '2026-09-10T07:00:00Z'),
-          ('ubac-3', 'BUY', 'BTC', '0.5', '60000', 'FILLED', '2026-09-09T07:00:00Z')`);
+          ('ubac-3', 'BUY', 'BTC', '0.5', '60000', 'FILLED', '2026-09-09T07:00:00Z'),
+          ('ubac-4', 'BUY', 'BTC', '0.5', '60000', 'CANCELLED', '2026-09-09T07:00:00Z'),
+          ('ubac-5', 'BUY', 'BTC', '0.5', '60000', 'REJECTED', '2026-09-09T07:00:00Z')`);
 
       const attente = await db.pendingOrders();
 

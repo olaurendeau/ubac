@@ -51,6 +51,7 @@ function baseComptee(): { readonly db: UbacDatabase; readonly appels: string[] }
     pendingOrders: () => vu('pendingOrders', []),
     recordOrder: () => vu('recordOrder', { status: 'RECORDED' }),
     recordPlacement: () => vu('recordPlacement', undefined),
+    recordTransition: () => vu('recordTransition', { status: 'RECORDED' }),
     close: () => vu('close', undefined),
   };
   return { db, appels };
@@ -59,10 +60,10 @@ function baseComptee(): { readonly db: UbacDatabase; readonly appels: string[] }
 describe('la base inerte : les lectures passent, les ecritures se retiennent', () => {
   /*
    * L'enumeration est le garde-fou : une operation ajoutee a `UbacDatabase` —
-   * `recordOrder` et `recordPlacement` en S7 — doit etre classee ici, lecture ou ecriture, et la
-   * liste des ecritures retenues ne s'allonge pas sans que ce test le dise.
+   * `recordOrder` et `recordPlacement` en S7, `recordTransition` en S8 — doit etre classee ici,
+   * lecture ou ecriture, et la liste des ecritures retenues ne s'allonge pas sans que ce test le dise.
    */
-  it('chaque methode est appelee : seules les quatre ecritures n’atteignent pas la vraie base', async () => {
+  it('chaque methode est appelee : seules les cinq ecritures n’atteignent pas la vraie base', async () => {
     const { db, appels } = baseComptee();
     const inerte = baseSansEcriture(db, () => undefined);
     const methodes = Object.keys(inerte).sort();
@@ -75,6 +76,7 @@ describe('la base inerte : les lectures passent, les ecritures se retiennent', (
         order: { clientOrderId: 'ubac-x' },
         kind: 'PLACED',
         clientOrderId: 'ubac-x',
+        status: 'FILLED',
       });
     }
 
@@ -84,6 +86,7 @@ describe('la base inerte : les lectures passent, les ecritures se retiennent', (
       'recordOrder',
       'recordPlacement',
       'recordSnapshot',
+      'recordTransition',
     ]);
   });
 

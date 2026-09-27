@@ -8,7 +8,9 @@ import type {
   PlacementToRecord,
   RecordDecisionOutcome,
   RecordOrderOutcome,
+  RecordTransitionOutcome,
   SnapshotToRecord,
+  TransitionToRecord,
   UbacDatabase,
 } from './db.js';
 import type { Healthcheck, PingOutcome, RunPulse } from './healthcheck.js';
@@ -27,7 +29,7 @@ import { alertKey } from './notifier.js';
  *
  * 1. **Lire reste reel, ecrire ne l'est plus.** La base inerte garde les
  *    lectures de la vraie : un run sur une photo absente et sans flux ne
- *    rejouerait rien de la journee. Ses deux ecritures, elles, ne partent pas.
+ *    rejouerait rien de la journee. Ses ecritures, elles, ne partent pas.
  * 2. **Une reponse nominale, jamais degradee.** Chaque port rend ce que le vrai
  *    rendrait un jour sans panne — `RECORDED`, `SENT`, `PINGED`. Un `FAILED`
  *    ferait sortir le run en 1 et le pulse en `NON_RENDU` pour une raison qui
@@ -103,6 +105,10 @@ export function baseSansEcriture(db: UbacDatabase, log: Journal): UbacDatabase {
     recordPlacement(input: PlacementToRecord): Promise<void> {
       log(`base inerte : issue ${input.kind} de ${input.clientOrderId} non ecrite`);
       return Promise.resolve();
+    },
+    recordTransition(input: TransitionToRecord): Promise<RecordTransitionOutcome> {
+      log(`base inerte : transition ${input.status} de ${input.clientOrderId} non ecrite`);
+      return Promise.resolve({ status: 'RECORDED' });
     },
     // Fermer la connexion des lectures : ce n'est pas une ecriture.
     close: () => db.close(),

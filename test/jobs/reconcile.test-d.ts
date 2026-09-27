@@ -1,3 +1,4 @@
+import type { TransitionToRecord } from '../../src/adapters/db.js';
 import type { Holdings } from '../../src/core/portfolio.js';
 import type { ReconciledBalances, ReconcileResult } from '../../src/jobs/reconcile.js';
 
@@ -45,3 +46,17 @@ if (result.resync.status === 'RESYNCHRONIZED') {
 // ne peut pas affirmer qu'un etat s'est resynchronise.
 // @ts-expect-error
 void result.resync.reason;
+
+// La ligne a ecrire lie le statut a son instant (E38) : un ordre ouvert n'a pas
+// d'instant de denouement, et une issue en a toujours un.
+declare const commune: Omit<TransitionToRecord, 'status' | 'settledAt'>;
+declare const instant: Date;
+const ouverte: TransitionToRecord = { ...commune, status: 'PARTIAL', settledAt: null };
+const issue: TransitionToRecord = { ...commune, status: 'FILLED', settledAt: instant };
+// @ts-expect-error
+const ouverteDatee: TransitionToRecord = { ...commune, status: 'PENDING', settledAt: instant };
+// @ts-expect-error
+const issueSansDate: TransitionToRecord = { ...commune, status: 'CANCELLED', settledAt: null };
+// @ts-expect-error — `EXPIRED` n'est pas une valeur du §4 : il s'ecrit `CANCELLED`.
+const horsDuPara4: TransitionToRecord = { ...commune, status: 'EXPIRED', settledAt: instant };
+void [ouverte, issue, ouverteDatee, issueSansDate, horsDuPara4];

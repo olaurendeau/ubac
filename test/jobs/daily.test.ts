@@ -5,6 +5,7 @@ import type {
   AssetBalance,
   CreateOrderBody,
   KeyPermissions,
+  OpenOrder,
   OrderStatus,
   PortfolioBalances,
 } from '../../src/adapters/coinbase.js';
@@ -12,8 +13,10 @@ import { openCoinbaseExecution } from '../../src/adapters/coinbase.js';
 import type {
   CashFlowRecord,
   DecisionToRecord,
+  PendingOrderRecord,
   RecordDecisionOutcome,
   SnapshotRecord,
+  TransitionToRecord,
 } from '../../src/adapters/db.js';
 import { PORTFOLIO_KEYS, SUSPENSION_MARKER } from '../../src/jobs/snapshot.js';
 import type { DailyCandle, DailyWindow } from '../../src/adapters/market.js';
@@ -137,6 +140,10 @@ interface Scenario {
   readonly journalEnPanne?: string;
   /** Variables d'environnement ajoutees a `ENV` avant `loadConfig`. */
   readonly env?: Readonly<Record<string, string>>;
+  /** Les lignes ouvertes d'`orders` au demarrage : les ordres d'un run precedent. */
+  readonly enAttente?: readonly PendingOrderRecord[];
+  /** Les ordres ouverts sur l'exchange au demarrage. */
+  readonly ouverts?: readonly OpenOrder[];
 }
 
 /** Ce que leve le port en panne. Reconnaissable, et sans rapport avec le metier. */
@@ -171,6 +178,8 @@ interface Harnais {
   readonly corps: CreateOrderBody[];
   /** La table `orders`, par cle primaire : `PENDING <decision>`, `PLACED <exchange_id>` ou `REJECTED`. */
   readonly lignesOrdres: Map<string, string>;
+  /** Les transitions reportees sur `orders` par l'etape 2bis, dans l'ordre. */
+  readonly transitions: TransitionToRecord[];
 }
 
 /**
@@ -247,6 +256,7 @@ function harnais(scenario: Scenario = {}): Harnais {
   const pings: { url: string; body: string }[] = [];
   const corps: CreateOrderBody[] = [];
   const lignesOrdres = new Map<string, string>();
+  const transitions: TransitionToRecord[] = [];
   if (scenario.snapshot !== undefined) photos.set(scenario.snapshot.runDate, scenario.snapshot);
   const runDate = scenario.runDate ?? RUN_DATE;
   const closes = scenario.closes ?? { BTC: BTC_CLOSE, ETH: ETH_CLOSE };
@@ -293,7 +303,7 @@ function harnais(scenario: Scenario = {}): Harnais {
     },
     openOrders: () => {
       appels.push('openOrders');
-      return Promise.resolve([]);
+      return Promise.resolve(scenario.ouverts ?? []);
     },
     orderStatus: (exchangeId) => {
       appels.push('orderStatus');
@@ -323,6 +333,7 @@ function harnais(scenario: Scenario = {}): Harnais {
     pings,
     corps,
     lignesOrdres,
+    transitions,
     gitSha: GIT_SHA,
     clock: { today: () => runDate, instant: () => new Date(`${runDate}T07:00:00.000Z`) },
     config,
@@ -346,7 +357,7 @@ function harnais(scenario: Scenario = {}): Harnais {
       db: {
         pendingOrders: () => {
           appels.push('pendingOrders');
-          return Promise.resolve([]);
+          return Promise.resolve(scenario.enAttente ?? []);
         },
         latestSnapshot: () => {
           appels.push('latestSnapshot');
@@ -399,6 +410,11 @@ function harnais(scenario: Scenario = {}): Harnais {
           }
           lignesOrdres.set(issue.clientOrderId, issue.kind === 'PLACED' ? `PLACED ${issue.exchangeId}` : 'REJECTED');
           return Promise.resolve();
+        },
+        recordTransition: (transition) => {
+          appels.push('recordTransition');
+          transitions.push(transition);
+          return Promise.resolve({ status: 'RECORDED' as const });
         },
       },
       notifier: openNotifier(config.secrets, transport),
@@ -2325,6 +2341,61 @@ describe('E27 et E28 — ce qui est parti se dit, sur l’alerte et dans le rapp
   });
 });
 
+/** Une ligne ouverte laissee par le run de la veille, placee et confirmee. */
+function ligneDeLaVeille(overrides: Partial<PendingOrderRecord> = {}): PendingOrderRecord {
+  const clientOrderId = overrides.clientOrderId ?? 'ubac-veille';
+  return {
+    clientOrderId,
+    decisionId: 'decision-veille',
+    exchangeId: `ex-${clientOrderId}`,
+    side: 'SELL',
+    asset: 'BTC',
+    requestedQty: qty('0.14'),
+    limitPrice: price('50050'),
+    createdAt: new Date(`${PRICED_ON}T07:00:00.000Z`),
+    ...overrides,
+  };
+}
+
+describe('§7 point 2 — les ordres d’un run precedent prennent leur statut reel (E37, E38)', () => {
+  it('ecrit l’issue lue avant toute decision, cinq colonnes et instant du run compris', async () => {
+    const h = harnais({ balances: DANS_LA_BANDE, enAttente: [ligneDeLaVeille()], statut: 'FILLED' });
+    await lance(h);
+
+    expect(h.transitions).toEqual([
+      {
+        clientOrderId: 'ubac-veille',
+        exchangeId: 'ex-ubac-veille',
+        status: 'FILLED',
+        filledQty: qty('0.14'),
+        filledPrice: price('50050'),
+        fees: new Decimal('1.2345'),
+        settledAt: new Date(`${RUN_DATE}T07:00:00.000Z`),
+      },
+    ]);
+    const ecrit = h.appels.indexOf('recordTransition');
+    expect(h.appels.indexOf('orderStatus')).toBeLessThan(ecrit);
+    expect(ecrit).toBeLessThan(h.appels.indexOf('dailyCandles:BTC'));
+    expect(ecrit).toBeLessThan(h.appels.indexOf('recordDecision'));
+    expect(h.lignes).toContain('ordre ubac-veille : FILLED, 0.14 execute — RECORDED');
+  });
+
+  it('un ordre encore ouvert s’ecrit ouvert, sans instant de denouement', async () => {
+    const h = harnais({ balances: DANS_LA_BANDE, enAttente: [ligneDeLaVeille()], statut: 'PARTIEL' });
+    await lance(h);
+    expect(h.transitions.map((t) => [t.status, t.filledQty.toFixed(), t.settledAt])).toEqual([['PARTIAL', '0.05', null]]);
+  });
+
+  it('un statut illisible n’ecrit rien, se dit, et ne fait pas tomber le run', async () => {
+    const h = harnais({ balances: DANS_LA_BANDE, enAttente: [ligneDeLaVeille()], statut: 'PANNE' });
+    const result = await lance(h);
+
+    expect(result.status).toBe('COMPLETED');
+    expect(h.appels).not.toContain('recordTransition');
+    expect(h.lignes.some((l) => l.startsWith("ordre ubac-veille : INDETERMINABLE, rien d'ecrit"))).toBe(true);
+  });
+});
+
 /**
  * Les neuf effets comptes : cinq ecritures — decision, photo, ligne d'ordre, son
  * issue, placement —, trois envois, et l'ouverture du port reel, qui n'a pas
@@ -2423,6 +2494,15 @@ describe('DRY_RUN — des ports inertes a la place des vrais (E14, E15, E16)', (
           `ordre non place (port journalisant) : client_order_id=${o.clientOrderId} paire=BTC-USDC cote=SELL quantite=0.14 prix_limite=50050 post_only=true`,
       ),
     );
+  });
+
+  it('lit le statut des ordres de la veille, et n’en ecrit aucune transition', async () => {
+    const essai = harnais({ ...JOURNEE, enAttente: [ligneDeLaVeille()], statut: 'FILLED' });
+    await enDryRun(essai);
+
+    expect(essai.appels).toContain('orderStatus');
+    expect(essai.appels).not.toContain('recordTransition');
+    expect(essai.lignes).toContain('base inerte : transition FILLED de ubac-veille non ecrite');
   });
 
   /* L'identifiant du portefeuille n'est pas un secret : E8 le journalise a chaque run. */

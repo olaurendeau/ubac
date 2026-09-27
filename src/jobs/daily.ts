@@ -200,6 +200,7 @@ export interface DailyPorts {
     | 'pendingOrders'
     | 'recordOrder'
     | 'recordPlacement'
+    | 'recordTransition'
   >;
   /** §9 : le canal court. Il ne rejette jamais, donc il n'est jamais entoure d'un `try`. */
   readonly notifier: Notifier;
@@ -669,11 +670,28 @@ async function executeRun(run: DailyRun, parti: ExecutionDeStrategie[]): Promise
    * indulgence, c'est la sortie de l'impasse — un abandon ne posait aucune photo,
    * donc le run suivant relisait la meme photo perimee et abandonnait de nouveau.
    */
-  const reconciled = await reconcile({ exchange: ports.exchange, db: ports.db });
+  const reconciled = await reconcile({ exchange: ports.exchange, db: ports.db, now: clock.instant() });
   const { resync } = reconciled;
   const { holdings } = reconciled.balances;
   log(`soldes reconcilies (${reconciled.balances.comparedTo})`);
   if (resync.status === 'RESYNCHRONIZED') log(resync.reason);
+
+  /*
+   * 2bis. Le §7, point 2 : les ordres ouverts en base prennent leur statut reel
+   * (E38), avant toute decision. La reconciliation a lu et rendu la ligne ; ici,
+   * on l'ecrit. Un ordre illisible n'ecrit rien et se dit : `INDETERMINABLE`
+   * n'efface jamais une issue, et la base refuse de toute facon de reecrire une
+   * issue ou de faire reculer une quantite executee.
+   */
+  for (const { order, status, transition } of reconciled.orders) {
+    if (transition === null) {
+      const motif = status.kind === 'INDETERMINABLE' ? status.reason : 'statut non relu';
+      log(`ordre ${order.clientOrderId} : ${status.kind}, rien d'ecrit — ${motif}`);
+      continue;
+    }
+    const ecrit = await ports.db.recordTransition(transition);
+    log(`ordre ${order.clientOrderId} : ${transition.status}, ${transition.filledQty.toFixed()} execute — ${ecrit.status}`);
+  }
 
   // 3. Soldes reels — ci-dessus — et prix du dernier jour clos.
   const pricedOn = shiftDay(runDate, -1, 'run_date');

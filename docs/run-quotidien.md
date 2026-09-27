@@ -357,11 +357,20 @@ L'étape 3 du §7 — « annuler tout ordre limit non exécuté datant de plus d
 - la clé est en lecture seule, donc le chemin ne serait de toute façon pas
   testable de bout en bout.
 
-Conséquence pour ce point d'entrée : **rien ici ne dépend d'une durée**. `--at`
-n'est pas comparé à l'âge d'un ordre, et la réconciliation n'a pas d'horloge du
-tout. Le jour où l'étape 3 arrive, c'est `ReconcileInput` qui reçoit une horloge
-injectée ; l'ajouter aujourd'hui donnerait un paramètre que le prochain lecteur
-croirait utile.
+Conséquence pour ce point d'entrée : `--at` est l'instant que `ReconcileInput`
+reçoit (`now`, S8a) ; il date le dénouement des ordres que la réconciliation
+constate, et n'est pas encore comparé à leur âge. Le jour où l'étape 3 arrive,
+c'est ce même instant qui sert, jamais une horloge lue dans le module.
+
+### Les ordres d'un run précédent prennent leur statut réel (S8a)
+
+Juste après la réconciliation, **étape 2bis**, chaque ligne ouverte d'`orders`
+reçoit le statut que l'exchange donne de son ordre — `status`, `filled_qty`,
+`filled_price`, `fees`, `settled_at` (E38) —, une ligne de journal par ordre.
+Un ordre dont le statut ne se lit pas n'écrit rien et le journal dit pourquoi ;
+la base, elle, refuse de réécrire une issue ou de faire reculer une quantité
+exécutée. En `DRY_RUN`, le statut est lu et rien n'est écrit. Le détail est dans
+[reconciliation.md](reconciliation.md) section 4.
 
 ## 5. Pourquoi le job n'a pas d'horloge
 

@@ -1,7 +1,13 @@
 import { Decimal } from 'decimal.js';
 
-import type { AssetBalance, CoinbaseReader, OpenOrder } from '../adapters/coinbase.js';
-import type { PendingOrderRecord, UbacDatabase } from '../adapters/db.js';
+import type {
+  AssetBalance,
+  CoinbaseReader,
+  KnownOrderStatus,
+  OpenOrder,
+  OrderStatus,
+} from '../adapters/coinbase.js';
+import type { PendingOrderRecord, TransitionToRecord, UbacDatabase } from '../adapters/db.js';
 import type { Holdings } from '../core/portfolio.js';
 import { ASSETS } from '../core/portfolio.js';
 import { RECONCILIATION_DRIFT_PCT } from '../core/risk.js';
@@ -26,17 +32,15 @@ import type { AllowedAsset, Quantity } from '../core/types.js';
  * 2. **Ce module ne persiste rien.** Il lit et il rend un resultat — y compris
  *    quand ce resultat dit que le cache doit se rendre : le rafraichissement est
  *    l'ecriture de la photo du jour, a l'etape 7 de `daily.ts`, sur les soldes
- *    que ce module vient de rendre. Voir la section « ordres » ci-dessous et
- *    `docs/reconciliation.md` : l'ecriture manque, et la *lecture* du statut
- *    d'un ordre denoue, que l'adapter sait faire depuis S2, n'est pas encore
- *    branchee ici. **S2 porte la lecture, S8 porte le branchement, et E37 n'est
- *    clos qu'apres les deux.**
- * 3. **Aucune horloge.** Ni systeme, ni injectee : aucune decision de ce module
- *    ne depend du temps. La seule regle du §7 qui en dependait, l'annulation des
- *    ordres de plus de 24 h, est reportee en phase 3. Le jour ou elle arrive,
- *    l'horloge devient un parametre de `ReconcileInput` ; elle ne se lit pas
- *    ici. `src/jobs/` etant hors du glob de purete d'`eslint.config.js`, cet
- *    interdit tient par un garde-fou de `test/jobs/`, pas par le lint.
+ *    que ce module vient de rendre. Les transitions d'ordres suivent la meme
+ *    regle (E38) : ce module lit le statut reel de chaque ordre ouvert en base
+ *    — la lecture de S2, branchee ici en S8, qui clot E37 — et rend la ligne a
+ *    ecrire ; c'est `daily.ts` qui l'ecrit.
+ * 3. **L'horloge est un parametre, jamais une lecture.** `ReconcileInput.now`
+ *    est l'instant du run (E35) : il date le denouement d'un ordre. Ce module
+ *    n'en lit aucune autre, et `src/jobs/` etant hors du glob de purete
+ *    d'`eslint.config.js`, cet interdit tient par un garde-fou de `test/jobs/`
+ *    (A7), pas par le lint.
  *
  * `docs/reconciliation.md` porte les motifs : le choix de la base de comparaison
  * du seuil, le report de D2, et la lecture que ce module n'utilise pas encore.
@@ -74,30 +78,43 @@ export interface ReconciledBalances {
   readonly comparedTo: 'INTERNAL_SNAPSHOT' | 'NO_INTERNAL_STATE';
 }
 
-// --- Ordres : ce que la phase 1 sait lire, et ce qu'elle ne sait pas ---------
+// --- Ordres : le statut reel, lu ordre par ordre -----------------------------
 
 /**
- * Le statut reel d'un ordre `PENDING`, pour ce que le depot **sait lire**.
+ * Le statut reel d'un ordre ouvert en base, tel que ce module l'a lu (E37).
  *
- * `PENDING` et `PARTIAL` reprennent les valeurs de la colonne `status` du §4.
- * `INDETERMINABLE` n'en est pas une : ce module ne lit que les ordres
- * **ouverts**, donc un `PENDING` absent de cette liste s'est denoue — execute,
- * annule ou rejete — et rien de ce qu'il lit ne dit lequel. L'adapter sait le
- * lire depuis S2 (`orderStatus`, `orderFills`) ; le brancher ici est S8.
- * `docs/reconciliation.md` §4 l'argumente.
+ * `PENDING` et `PARTIAL` reprennent les deux etats ouverts de la colonne
+ * `status` du §4. `SETTLED` porte l'issue d'un ordre denoue — execute, annule,
+ * expire ou rejete —, que `orderStatus` distingue depuis S2 et que ce module lit
+ * depuis S8.
  *
- * L'union force l'appelant a traiter le troisieme cas. Le replier sur une valeur
- * par defaut classerait un ordre execute en annule, ce qui est pire que de ne
- * pas le classer.
+ * **`INDETERMINABLE` cesse d'etre atteignable pour un ordre que l'exchange
+ * connait**, et reste l'aveu de deux cas : une ligne sans `exchange_id` absente
+ * des ordres ouverts — un placement jamais confirme, qu'E23 rend possible, et
+ * que l'exchange ne laisse consulter que par l'identifiant qu'il donne —, et une
+ * lecture qui ne dit rien d'interpretable. L'union force l'appelant a traiter ce
+ * cas : le replier sur `CANCELLED` classerait un ordre execute en annule, ce qui
+ * est pire que de ne pas le classer (`docs/reconciliation.md` §4).
  */
 export type ReconciledOrderStatus =
-  | { readonly kind: 'PENDING' }
-  | { readonly kind: 'PARTIAL'; readonly filled: Quantity }
+  | { readonly kind: 'PENDING'; readonly exchangeId: string }
+  | { readonly kind: 'PARTIAL'; readonly exchangeId: string; readonly filled: Quantity }
+  | {
+      readonly kind: 'SETTLED';
+      readonly outcome: Exclude<KnownOrderStatus['kind'], 'OPEN'>;
+      readonly filled: Quantity;
+    }
   | { readonly kind: 'INDETERMINABLE'; readonly reason: string };
 
 export interface PendingOrderReconciliation {
   readonly order: PendingOrderRecord;
   readonly status: ReconciledOrderStatus;
+  /**
+   * La ligne que `daily.ts` ecrit (E38), ou `null` quand rien de lu ne l'affine.
+   * **Un `INDETERMINABLE` n'ecrit rien**, donc n'efface rien : persister est un
+   * affinement, et la base le garantit a son tour (`recordTransition`).
+   */
+  readonly transition: TransitionToRecord | null;
 }
 
 // --- Divergences ------------------------------------------------------------
@@ -186,8 +203,10 @@ export interface ReconcileResult {
  * possede leur cycle de vie —, et elle n'ecrit nulle part.
  */
 export interface ReconcileInput {
-  readonly exchange: Pick<CoinbaseReader, 'balances' | 'openOrders'>;
+  readonly exchange: Pick<CoinbaseReader, 'balances' | 'openOrders' | 'orderStatus'>;
   readonly db: Pick<UbacDatabase, 'pendingOrders' | 'latestSnapshot'>;
+  /** L'instant du run, injecte (E35) : le seul temps que ce module connaisse. */
+  readonly now: Date;
 }
 
 // --- Comparaison ------------------------------------------------------------
@@ -285,32 +304,115 @@ function resyncReason(divergences: readonly BalanceDivergence[]): string {
 
 // --- Ordres -----------------------------------------------------------------
 
-function statusOf(surExchange: OpenOrder | undefined, order: PendingOrderRecord): ReconciledOrderStatus {
-  if (surExchange === undefined) {
+function texte(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Un ordre encore ouvert, rien d'execute ou une partie : la quantite executee est
+ * la seule chose qui distingue `PARTIAL` de `PENDING`.
+ */
+function ouvertDe(exchangeId: string, filled: Quantity): ReconciledOrderStatus {
+  return filled.isZero() ? { kind: 'PENDING', exchangeId } : { kind: 'PARTIAL', exchangeId, filled };
+}
+
+/**
+ * La ligne a ecrire, lue sur ce que l'exchange a dit. `FAILED` est l'ordre
+ * rejete. `EXPIRED` s'ecrit `CANCELLED` : le §4 n'a pas de sixieme valeur, un
+ * ordre `limit_limit_gtc` n'expire pas, et les deux issues laissent le meme
+ * solde — c'est la quantite executee, conservee, qui compte.
+ *
+ * `settledAt` est l'instant du run qui **constate** l'issue, pas celui ou
+ * l'exchange l'a prononcee : une borne superieure, en retard d'un run au plus.
+ * L'instant exact de chaque execution reste lisible par `orderFills`.
+ */
+function transitionDe(lu: KnownOrderStatus, now: Date): TransitionToRecord {
+  const commune = {
+    clientOrderId: lu.clientOrderId,
+    exchangeId: lu.exchangeId,
+    filledQty: lu.filled,
+    filledPrice: lu.averageFilledPrice,
+    fees: lu.fees,
+  };
+  if (lu.kind === 'OPEN') {
+    return { ...commune, status: lu.filled.isZero() ? 'PENDING' : 'PARTIAL', settledAt: null };
+  }
+  const status = lu.kind === 'FILLED' ? 'FILLED' : lu.kind === 'FAILED' ? 'REJECTED' : 'CANCELLED';
+  return { ...commune, status, settledAt: now };
+}
+
+/**
+ * Le statut d'un ordre ouvert en base, **lu sur l'exchange** par son
+ * identifiant — celui de la base, ou a defaut celui de la liste des ordres
+ * ouverts, pour la ligne dont le placement n'a pas ete ecrit.
+ *
+ * Une lecture qui echoue ne fait pas tomber la reconciliation : l'ordre est dit
+ * `INDETERMINABLE` avec son motif, ou garde la vue de la liste des ordres
+ * ouverts s'il y figure, et rien n'est ecrit. Un seul ordre illisible ne doit
+ * pas condamner tous les runs suivants — c'est l'impasse que Q10 a fermee.
+ */
+async function reconcilierOrdre(
+  exchange: Pick<CoinbaseReader, 'orderStatus'>,
+  order: PendingOrderRecord,
+  ouvert: OpenOrder | undefined,
+  now: Date,
+): Promise<PendingOrderReconciliation> {
+  const exchangeId = order.exchangeId ?? ouvert?.exchangeId;
+  if (exchangeId === undefined) {
     return {
-      kind: 'INDETERMINABLE',
-      reason: `ordre ${order.clientOrderId} absent des ordres ouverts : il s'est denoue, mais la reconciliation ne dit pas encore comment. Determiner l'issue demande le statut d'un ordre donne ou ses executions, que l'adapter lit mais que ce module n'utilise pas encore.`,
+      order,
+      status: {
+        kind: 'INDETERMINABLE',
+        reason: `ordre ${order.clientOrderId} sans exchange_id et absent des ordres ouverts : son placement n'a jamais ete confirme, et l'exchange ne se consulte que par l'identifiant qu'il donne.`,
+      },
+      transition: null,
     };
   }
-  // Un ordre encore ouvert et partiellement execute reste ouvert chez Coinbase :
-  // la quantite executee est la seule chose qui distingue PARTIAL de PENDING.
-  if (surExchange.filled.isZero()) return { kind: 'PENDING' };
-  return { kind: 'PARTIAL', filled: surExchange.filled };
+  let lu: OrderStatus;
+  try {
+    lu = await exchange.orderStatus(exchangeId);
+  } catch (error) {
+    lu = { kind: 'INDETERMINABLE', reason: `lecture en echec — ${texte(error)}` };
+  }
+  // L'identifiant de la base designe un autre ordre : rien de ce qu'il dit n'est a nous.
+  if (lu.kind !== 'INDETERMINABLE' && lu.clientOrderId !== order.clientOrderId) {
+    lu = { kind: 'INDETERMINABLE', reason: `l'exchange rattache ${exchangeId} a ${lu.clientOrderId}` };
+  }
+  if (lu.kind === 'INDETERMINABLE') {
+    return {
+      order,
+      status:
+        ouvert === undefined
+          ? {
+              kind: 'INDETERMINABLE',
+              reason: `ordre ${order.clientOrderId} absent des ordres ouverts, statut illisible : ${lu.reason}. Son issue ne se devine pas.`,
+            }
+          : ouvertDe(ouvert.exchangeId, ouvert.filled),
+      transition: null,
+    };
+  }
+  return {
+    order,
+    status:
+      lu.kind === 'OPEN'
+        ? ouvertDe(exchangeId, lu.filled)
+        : { kind: 'SETTLED', outcome: lu.kind, filled: lu.filled },
+    transition: transitionDe(lu, now),
+  };
 }
 
 // --- Reconciliation ---------------------------------------------------------
 
 /**
  * §7, dans l'ordre de la spec : lire, confronter les ordres, confronter les
- * soldes. L'etape 3 — annuler les ordres limit de plus de 24 h — est reportee en
- * phase 3 ; le motif est dans `docs/reconciliation.md` et ce n'est pas un oubli.
+ * soldes. L'etape 3 — annuler les ordres limit de plus de 24 h — n'est pas
+ * encore ecrite ; le motif est dans `docs/reconciliation.md` §3.
  *
- * Les deux lectures de l'exchange sont sequentielles et **ne sont pas
- * atomiques** : un ordre peut se denouer entre les deux. La consequence va
- * toujours dans le sens de la verite de l'exchange — soit la ligne apparait
- * `INDETERMINABLE`, soit les soldes divergent du cache et la divergence est
- * declaree —, jamais dans celui d'un etat perime accepte en silence. En phase 1
- * la fenetre est theorique : aucun ordre n'est place.
+ * Les lectures de l'exchange sont sequentielles et **ne sont pas atomiques** :
+ * un ordre peut se denouer entre les soldes et son statut. La consequence va
+ * toujours dans le sens de la verite de l'exchange — le statut lu est le plus
+ * recent, et un solde qui ne l'a pas encore vu diverge du cache et se declare —,
+ * jamais dans celui d'un etat perime accepte en silence.
  */
 export async function reconcile(input: ReconcileInput): Promise<ReconcileResult> {
   const portfolio = await input.exchange.balances();
@@ -319,10 +421,11 @@ export async function reconcile(input: ReconcileInput): Promise<ReconcileResult>
 
   const enAttente = await input.db.pendingOrders();
   const parClientId = new Map(ouverts.map((ordre) => [ordre.clientOrderId, ordre]));
-  const orders = enAttente.map((order) => ({
-    order,
-    status: statusOf(parClientId.get(order.clientOrderId), order),
-  }));
+  const orders: PendingOrderReconciliation[] = [];
+  // Un ordre a la fois, dans l'ordre de la base : le journal les dit dans cet ordre.
+  for (const order of enAttente) {
+    orders.push(await reconcilierOrdre(input.exchange, order, parClientId.get(order.clientOrderId), input.now));
+  }
 
   const reclames = new Set(enAttente.map((order) => order.clientOrderId));
   const observations: ReconcileObservations = {
