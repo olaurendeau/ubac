@@ -20,7 +20,7 @@ import { afterAll, describe, expect, it } from 'vitest';
  */
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
-const DEFINITION = 'dbb497b2-382f-4930-83fd-2e3a21797e73';
+const DEFINITION = 'de0f0000-0000-4000-8000-000000000001';
 const PRECEDENTE = `rg.fr-par.scw.cloud/ubac/ubac:${'a'.repeat(40)}`;
 const NOUVELLE = `rg.fr-par.scw.cloud/ubac/ubac:${'b'.repeat(40)}`;
 const LOIN_DU_RUN = '2026-09-28T12:00:00Z';
@@ -47,7 +47,7 @@ interface Etat {
 
 function declencheur(schedule: string, timezone: string, name = 'daily'): Json {
   return {
-    id: 'f3e071da-2e6c-4a3a-a6c7-5e8ad67538a0',
+    id: 'd0c10000-0000-4000-8000-000000000002',
     job_definition_id: DEFINITION,
     name,
     created_at: '2026-09-15T18:00:00Z',
@@ -62,7 +62,7 @@ function production(): Etat {
     definition: {
       id: DEFINITION,
       name: 'ubac-daily',
-      project_id: '012b9d08-2c67-498f-be42-c7d169128186',
+      project_id: '0b0e0000-0000-4000-8000-000000000003',
       created_at: '2026-09-15T18:00:00Z',
       updated_at: '2026-09-26T19:00:00Z',
       cpu_limit: 140,
