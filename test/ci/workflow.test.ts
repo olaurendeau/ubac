@@ -51,6 +51,24 @@ const SI_ABSENTE = "steps.registre.outputs.existe == 'non'";
 /** Ce que le job ne refait pas : construire autrement, ou recopier les controles des scripts. */
 const SECONDE_DEFINITION = /docker\s+(?:buildx\s+)?build\b|--push\b|docker\s+(?:image\s+)?inspect\b|docker\s+tag\b|UBAC_GIT_SHA/;
 
+/** Le job qui repointe la definition Scaleway (lot R3). */
+const JOB_DEPLOI = 'deploy';
+
+/** La rampe de R3 a R4 : un tag v*, jamais main. R4, qui livre la barriere de migration, ouvrira main. */
+const SI_TAG = "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')";
+
+/** Les etapes de deploy, dans cet ordre, aucune sautee : rien ne s'ecrit sans controle ni ne finit sans relecture. */
+const ETAPES_DEPLOI = ['main', 'cli', 'avant', 'controles', 'mise-a-jour', 'apres', 'relecture'];
+
+/** La seule ecriture admise chez Scaleway : l'image. Des environment-variables remplaceraient toute la table. */
+const MISE_A_JOUR = 'scw jobs definition update "$DEFINITION" image-uri="$UBAC_REFERENCE" region=fr-par -o json > /dev/null';
+
+/** Les seules lectures admises, chacune dans un fichier : la definition porte ses variables en clair. */
+const LECTURE = /^scw jobs (?:definition get "\$DEFINITION"|(?:trigger|secret) list job-definition-id="\$DEFINITION") region=fr-par -o json > "\$RUNNER_TEMP\/(?:avant|apres)-\w+\.json"$/;
+
+/** Ou vivent les variables que l'image exige au demarrage. */
+const ENV = 'src/config/env.ts';
+
 /**
  * Ce que la porte execute, dans l'ordre. La couverture et non `npm test` : elle
  * rejoue toute la suite et fait respecter les 100 % de `src/core/risk.ts`.
@@ -87,6 +105,7 @@ function depotReel(): Depot {
       .filter((nom) => /\.ya?ml$/.test(nom))
       .map((nom) => `${WORKFLOWS}/${nom}`),
     'package.json',
+    ENV,
     ...NODE_DES_DOCKERFILES.map((d) => d.fichier),
   ];
   return {
@@ -134,6 +153,15 @@ function jobImage(depot: Depot): Objet | undefined {
   return estObjet(job) ? job : undefined;
 }
 
+function jobDeploi(depot: Depot): Objet | undefined {
+  const job = jobs(porte(depot), PORTE)[JOB_DEPLOI];
+  return estObjet(job) ? job : undefined;
+}
+
+function etape(job: Objet | undefined, id: string): Objet | undefined {
+  return steps(job ?? {}).find((s) => s['id'] === id);
+}
+
 function steps(job: Objet): readonly Objet[] {
   const liste = job['steps'];
   return Array.isArray(liste) ? liste.filter(estObjet) : [];
@@ -145,14 +173,26 @@ function besoins(job: unknown): readonly string[] {
   return Array.isArray(needs) ? needs.filter((n): n is string => typeof n === 'string') : [];
 }
 
-/** Les commandes des `run:` d'un job, une par ligne et par enchainement. */
-function commandes(job: Objet): readonly string[] {
-  return steps(job)
-    .map((step) => step['run'])
-    .filter((run): run is string => typeof run === 'string')
-    .flatMap((run) => run.split(/\n|&&|\|\||;/))
+/** Les commandes d'un script `run:`, une par ligne et par enchainement. */
+function commandesDe(run: unknown): readonly string[] {
+  return (typeof run === 'string' ? run : '')
+    .split(/\n|&&|\|\||;/)
     .map((ligne) => ligne.trim())
     .filter((ligne) => ligne !== '' && !ligne.startsWith('#'));
+}
+
+/** Les commandes des `run:` d'un job. */
+function commandes(job: Objet): readonly string[] {
+  return steps(job).flatMap((step) => commandesDe(step['run']));
+}
+
+/** Les variables que l'image exige au demarrage : le schema de env.ts, hors UBAC_*, qui ont un defaut. */
+function variablesExigees(depot: Depot): readonly string[] {
+  const schema = /^const schema = z\.object\(\{\n([\s\S]*?)^\}\);/m.exec(texte(depot, ENV))?.[1];
+  if (schema === undefined) throw new Error(`${ENV} : schema introuvable`);
+  return [...schema.matchAll(/^ {2}([A-Z][A-Z0-9_]*):/gm)]
+    .map((m) => m[1] ?? '')
+    .filter((nom) => !nom.startsWith('UBAC_'));
 }
 
 function manifeste(depot: Depot): Objet {
@@ -439,17 +479,21 @@ const REGLES = {
     },
   },
   connexion: {
-    nom: 'la cle secrete n entre que par l entree standard du seul docker login',
+    nom: 'la cle secrete n entre que par l entree standard du docker login ou dans l env des seules etapes scw',
     verifier: (depot) => {
       const motifs = lignes(depot, /set\s+-\S*x|xtrace/).map((l) => `${l} : une trace recopie les secrets`);
       const parcourir = (valeur: unknown, ou: readonly string[], step: Objet | undefined): void => {
-        if (typeof valeur === 'string' && valeur.includes('secrets.')) {
+        // Une expression qui lit le contexte secrets, et non un fichier avant-secrets.json.
+        if (typeof valeur === 'string' && /\$\{\{[^}]*\bsecrets\b/.test(valeur)) {
           const run = String(step?.['run'] ?? '');
           const dansEnvDeStep = ou.length >= 2 && ou[ou.length - 2] === 'env' && step !== undefined;
           const parStdin =
             /^printf '%s' "\$\w+" \| docker login "\$REGISTRE" --username nologin --password-stdin$/.test(run.trim());
-          if (!dansEnvDeStep || !parStdin) {
-            motifs.push(`${ou.join(' > ')} : un secret ne vit que dans l'env d'un docker login --password-stdin`);
+          // Le CLI lit sa cle dans l'environnement : une etape qui ne fait que l'appeler.
+          const scw = commandesDe(run);
+          const seulementScw = scw.length > 0 && scw.every((c) => c.startsWith('scw '));
+          if (!dansEnvDeStep || !(parStdin || seulementScw)) {
+            motifs.push(`${ou.join(' > ')} : un secret ne vit que dans l'env d'un docker login --password-stdin ou d'une etape scw`);
           }
         }
         if (Array.isArray(valeur)) valeur.forEach((v, i) => parcourir(v, [...ou, String(i)], step));
@@ -459,6 +503,96 @@ const REGLES = {
       };
       for (const [chemin, contenu] of workflows(depot)) parcourir(load(contenu), [chemin], undefined);
       return motifs;
+    },
+  },
+  rampe: {
+    nom: 'deploy ne part que d un tag v*, jamais d un push sur main ni d une PR',
+    verifier: (depot) => {
+      const si = jobDeploi(depot)?.['if'];
+      return si === SI_TAG
+        ? []
+        : [`job ${JOB_DEPLOI} : if ${JSON.stringify(si)}, attendu « ${SI_TAG} » : main n'ouvre le deploiement qu'en R4`];
+    },
+  },
+  deploiement: {
+    nom: 'deploy lit, controle, ecrit l image, relit, dans cet ordre et sans rien sauter',
+    verifier: (depot) => {
+      const job = jobDeploi(depot);
+      if (job === undefined) return [`aucun job « ${JOB_DEPLOI} » : l'image ne se deploie plus`];
+      const motifs: string[] = [];
+      if (job['environment'] !== 'production') motifs.push(`environment ${JSON.stringify(job['environment'])}, attendu production`);
+      const vus = steps(job).flatMap((s) => (ETAPES_DEPLOI.includes(String(s['id'])) ? [String(s['id'])] : []));
+      if (!isDeepStrictEqual(vus, ETAPES_DEPLOI)) {
+        motifs.push(`etapes ${JSON.stringify(vus)}, attendu ${JSON.stringify(ETAPES_DEPLOI)}`);
+      }
+      for (const bloc of [job, ...ETAPES_DEPLOI.map((id) => etape(job, id) ?? {})]) {
+        const ou = bloc === job ? `job ${JOB_DEPLOI}` : `etape ${String(bloc['id'])}`;
+        if (bloc !== job && 'if' in bloc) motifs.push(`${ou} : un if la saute`);
+        if (bloc['continue-on-error'] !== undefined) motifs.push(`${ou} : continue-on-error avale l'echec`);
+      }
+      const [avant, apres] = [etape(job, 'avant')?.['run'], etape(job, 'apres')?.['run']];
+      if (typeof avant !== 'string' || apres !== avant.replaceAll('avant-', 'apres-')) {
+        motifs.push('la lecture apres ne relit pas exactement ce que la lecture avant a lu');
+      }
+      const file = job['concurrency'];
+      if (!estObjet(file) || file['group'] !== JOB_DEPLOI || file['cancel-in-progress'] !== false) {
+        motifs.push(`concurrency ${JSON.stringify(file)}, attendu un seul deploiement a la fois, jamais annule`);
+      }
+      return motifs;
+    },
+  },
+  provenance: {
+    nom: 'deploy ne deploie qu un commit de main, avec un CLI scw a empreinte epinglee et sans action tierce',
+    verifier: (depot) => {
+      const job = jobDeploi(depot) ?? {};
+      const motifs: string[] = [];
+      const checkout = steps(job).find((s) => String(s['uses']).startsWith('actions/checkout@'));
+      const avec = estObjet(checkout?.['with']) ? checkout['with'] : {};
+      if (avec['fetch-depth'] !== 0 || avec['persist-credentials'] !== false) {
+        motifs.push(`checkout ${JSON.stringify(avec)} : l'historique de main est requis, le jeton ne reste pas`);
+      }
+      if (etape(job, 'main')?.['run'] !== 'git merge-base --is-ancestor HEAD origin/main') {
+        motifs.push("aucune etape « main » : un tag pose hors de main se deploierait");
+      }
+      const cli = etape(job, 'cli');
+      const env = estObjet(cli?.['env']) ? cli['env'] : {};
+      if (!/^[0-9a-f]{64}$/.test(String(env['SCW_SHA256'])) || !String(cli?.['run']).includes('sha256sum --check --strict')) {
+        motifs.push("etape « cli » : le binaire scw n'est pas verifie contre son empreinte epinglee");
+      }
+      for (const step of steps(job).filter((s) => s['uses'] !== undefined && s !== checkout)) {
+        motifs.push(`« uses: ${String(step['uses'])} » : aucune action tierce ne tourne a cote de la cle Scaleway`);
+      }
+      return motifs;
+    },
+  },
+  ecriture: {
+    nom: 'chez Scaleway, la chaine ne lit que vers des fichiers et n ecrit que l image',
+    verifier: (depot) => {
+      const motifs: string[] = [];
+      let ecritures = 0;
+      for (const [chemin, contenu] of workflows(depot)) {
+        for (const [nomJob, job] of Object.entries(jobs(objet(load(contenu), chemin), chemin))) {
+          for (const commande of commandes(objet(job, nomJob)).filter((c) => /^scw\s/.test(c))) {
+            if (commande === MISE_A_JOUR && nomJob === JOB_DEPLOI) ecritures += 1;
+            else if (!LECTURE.test(commande)) {
+              motifs.push(`${chemin} > ${nomJob} : « ${commande} » n'est ni une lecture vers un fichier, ni la mise a jour de l'image seule`);
+            }
+          }
+        }
+      }
+      if (ecritures !== 1) motifs.push(`${ecritures} mise(s) a jour « ${MISE_A_JOUR} », attendu une`);
+      return motifs;
+    },
+  },
+  variables: {
+    nom: 'deploy exige les variables sans defaut de src/config/env.ts, ni plus ni moins',
+    verifier: (depot) => {
+      const env = etape(jobDeploi(depot), 'controles')?.['env'];
+      const lues = String((estObjet(env) ? env['VARIABLES'] : undefined) ?? '').split(/\s+/).filter((v) => v !== '');
+      const exigees = variablesExigees(depot);
+      return isDeepStrictEqual([...lues].sort(), [...exigees].sort())
+        ? []
+        : [`controles : VARIABLES ${JSON.stringify(lues)}, ${ENV} exige ${JSON.stringify(exigees)}`];
     },
   },
   rafale: {
@@ -498,35 +632,6 @@ function dansLaPorte(depot: Depot, yaml: string): Depot {
   return muter(depot, PORTE, '    timeout-minutes: 15\n', `    timeout-minutes: 15\n${yaml}\n`);
 }
 
-/**
- * La chaine complete du §10, telle que R2 et R3 la livreront. Un job que le
- * workflow reel porte deja n'est pas rajoute : a partir de R2, les sondes de
- * `needs` mordent sur le vrai `build`, pas sur une copie.
- */
-const CHAINE = {
-  build: `
-  build:
-    needs: test
-    runs-on: ubuntu-24.04
-    steps:
-      - run: ./scripts/build-image.sh
-`,
-  deploy: `
-  deploy:
-    needs: build
-    runs-on: ubuntu-24.04
-    environment: production
-    steps:
-      - run: ./scripts/verifier-image.sh
-`,
-};
-
-function avecChaine(depot: Depot): Depot {
-  const presents = jobs(porte(depot), PORTE);
-  const manquants = Object.entries(CHAINE).filter(([job]) => !(job in presents));
-  return ajouterJobs(depot, manquants.map(([, yaml]) => yaml).join(''));
-}
-
 interface Sonde {
   readonly regle: keyof typeof REGLES;
   readonly mutation: string;
@@ -540,24 +645,36 @@ const VERIFIER = `      - if: ${SI_ABSENTE}\n        run: ./scripts/verifier-ima
 const CONNEXION = `printf '%s' "$SCW_SECRET_KEY" | docker login "$REGISTRE" --username nologin --password-stdin`;
 const COUVRIR = '- run: npm run test:coverage';
 const INSTALLER = '- run: npm ci\n';
+const SI_DEPLOI = `    if: ${SI_TAG}\n`;
+const LIRE_AVANT = 'scw jobs definition get "$DEFINITION" region=fr-par -o json > "$RUNNER_TEMP/avant-definition.json"';
+const CLE_SCW = '          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}\n';
+
+/** Retire une etape entiere de deploy, de son `- name:` a l'etape ou au commentaire suivant. */
+function retirerEtape(depot: Depot, nom: string): Depot {
+  const contenu = texte(depot, PORTE);
+  const debut = contenu.indexOf(`      - name: ${nom}\n`);
+  if (debut === -1) throw new Error(`${PORTE} : etape « ${nom} » introuvable`);
+  const suite = contenu.slice(debut + 1).search(/^ {6}[-#]/m);
+  return avecFichier(depot, PORTE, contenu.slice(0, debut) + (suite === -1 ? '' : contenu.slice(debut + 1 + suite)));
+}
 
 const SONDES: readonly Sonde[] = [
   {
     regle: 'needs',
     mutation: 'retirer needs: test du job build',
-    appliquer: (d) => muter(avecChaine(d), PORTE, '    needs: test\n', ''),
+    appliquer: (d) => muter(d, PORTE, '    needs: test\n', ''),
     motif: 'job build sans « needs: test »',
   },
   {
     regle: 'needs',
     mutation: 'retirer needs: build du job deploy',
-    appliquer: (d) => muter(avecChaine(d), PORTE, '    needs: build\n', ''),
+    appliquer: (d) => muter(d, PORTE, '    needs: build\n', ''),
     motif: 'job deploy sans « needs: build »',
   },
   {
     regle: 'needs',
     mutation: 'un job build renomme, qui ne passe plus par test',
-    appliquer: (d) => muter(avecChaine(d), PORTE, '  build:\n    needs: test\n', '  image:\n'),
+    appliquer: (d) => muter(d, PORTE, '  build:\n    needs: test\n', '  image:\n'),
     motif: 'job image ne depend pas de test',
   },
   {
@@ -807,6 +924,125 @@ const SONDES: readonly Sonde[] = [
       muter(d, PORTE, "cancel-in-progress: ${{ github.event_name == 'pull_request' }}", 'cancel-in-progress: true'),
     motif: 'main serait interrompu',
   },
+  {
+    regle: 'rampe',
+    mutation: 'ajouter push main aux declencheurs de deploy',
+    appliquer: (d) =>
+      muter(d, PORTE, SI_DEPLOI, "    if: github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main')\n"),
+    motif: "main n'ouvre le deploiement qu'en R4",
+  },
+  {
+    regle: 'rampe',
+    mutation: 'retirer la condition du job deploy',
+    appliquer: (d) => muter(d, PORTE, SI_DEPLOI, ''),
+    motif: 'deploy : if undefined',
+  },
+  {
+    regle: 'deploiement',
+    mutation: 'retirer la relecture',
+    appliquer: (d) => retirerEtape(d, 'relecture'),
+    motif: '"apres"], attendu',
+  },
+  {
+    regle: 'deploiement',
+    mutation: 'sauter la relecture par un if',
+    appliquer: (d) => muter(d, PORTE, '        id: relecture\n', '        id: relecture\n        if: false\n'),
+    motif: 'etape relecture : un if la saute',
+  },
+  {
+    regle: 'deploiement',
+    mutation: 'avaler l echec des controles avant',
+    appliquer: (d) => muter(d, PORTE, '        id: controles\n', '        id: controles\n        continue-on-error: true\n'),
+    motif: 'etape controles : continue-on-error',
+  },
+  {
+    regle: 'deploiement',
+    mutation: 'ecrire avant d avoir controle',
+    appliquer: (d) => {
+      const echange = muter(muter(d, PORTE, '        id: controles\n', '        id: X\n'), PORTE, '        id: mise-a-jour\n', '        id: controles\n');
+      return muter(echange, PORTE, '        id: X\n', '        id: mise-a-jour\n');
+    },
+    motif: '"avant","mise-a-jour","controles"',
+  },
+  {
+    regle: 'deploiement',
+    mutation: 'une lecture apres qui ne relit plus les secrets',
+    appliquer: (d) => muter(d, PORTE, '\n          scw jobs secret list job-definition-id="$DEFINITION" region=fr-par -o json > "$RUNNER_TEMP/apres-secrets.json"', ''),
+    motif: 'la lecture apres ne relit pas exactement',
+  },
+  {
+    regle: 'deploiement',
+    mutation: 'annuler un deploiement en cours',
+    appliquer: (d) => muter(d, PORTE, '      group: deploy\n      cancel-in-progress: false\n', '      group: deploy\n      cancel-in-progress: true\n'),
+    motif: 'un seul deploiement a la fois',
+  },
+  {
+    regle: 'deploiement',
+    mutation: 'deployer hors de l environnement production',
+    appliquer: (d) => muter(d, PORTE, '    environment: production\n', ''),
+    motif: 'environment undefined',
+  },
+  {
+    regle: 'provenance',
+    mutation: 'deployer un tag pose hors de main',
+    appliquer: (d) => muter(d, PORTE, '        run: git merge-base --is-ancestor HEAD origin/main\n', '        run: git log -1\n'),
+    motif: 'un tag pose hors de main se deploierait',
+  },
+  {
+    regle: 'provenance',
+    mutation: 'un CLI scw sans controle d empreinte',
+    appliquer: (d) => muter(d, PORTE, '          echo "$SCW_SHA256  $RUNNER_TEMP/bin/scw" | sha256sum --check --strict\n', ''),
+    motif: 'empreinte epinglee',
+  },
+  {
+    regle: 'provenance',
+    mutation: 'une action tierce dans deploy',
+    appliquer: (d) => muter(d, PORTE, '      - name: CLI scw\n', '      - uses: scaleway/action-scw@v0\n      - name: CLI scw\n'),
+    motif: '« uses: scaleway/action-scw@v0 »',
+  },
+  {
+    regle: 'ecriture',
+    mutation: 'faire passer les variables d environnement dans la mise a jour',
+    appliquer: (d) =>
+      muter(d, PORTE, 'image-uri="$UBAC_REFERENCE" region=fr-par', 'image-uri="$UBAC_REFERENCE" environment-variables.NTFY_URL="$NTFY_URL" region=fr-par'),
+    motif: "ni la mise a jour de l'image seule",
+  },
+  {
+    regle: 'ecriture',
+    mutation: 'une lecture qui ecrit la definition dans le journal',
+    appliquer: (d) => muter(d, PORTE, LIRE_AVANT, 'scw jobs definition get "$DEFINITION" region=fr-par -o json'),
+    motif: 'n\'est ni une lecture vers un fichier',
+  },
+  {
+    regle: 'ecriture',
+    mutation: 'deplacer le declencheur depuis la chaine',
+    appliquer: (d) => muter(d, PORTE, `${LIRE_AVANT}\n`, `${LIRE_AVANT}\n          scw jobs trigger update "$ID" cron-config.schedule="0 8 * * *"\n`),
+    motif: '« scw jobs trigger update',
+  },
+  {
+    regle: 'variables',
+    mutation: 'oublier une variable exigee',
+    appliquer: (d) => muter(d, PORTE, '\n            HEALTHCHECK_URL\n', '\n'),
+    motif: 'env.ts exige',
+  },
+  {
+    regle: 'variables',
+    mutation: 'une variable exigee de plus dans env.ts',
+    appliquer: (d) => muter(d, ENV, 'const schema = z.object({\n', "const schema = z.object({\n  NOUVELLE_CLE: secret('NOUVELLE_CLE'),\n"),
+    motif: '"NOUVELLE_CLE"',
+  },
+  {
+    regle: 'connexion',
+    mutation: 'la cle Scaleway confiee aux controles, qui ne sont pas du scw',
+    appliquer: (d) => muter(d, PORTE, "          CPU_MVCPU: '140'\n", `          CPU_MVCPU: '140'\n${CLE_SCW}`),
+    motif: 'deploy > steps > 4 > env > SCW_SECRET_KEY',
+  },
+  {
+    regle: 'connexion',
+    mutation: 'la cle Scaleway exposee a tout le job deploy',
+    appliquer: (d) => muter(d, PORTE, '      DEFINITION: ${{ vars.SCW_JOB_DEFINITION_ID }}\n', `      DEFINITION: \${{ vars.SCW_JOB_DEFINITION_ID }}\n${CLE_SCW.slice(4)}`),
+    motif: 'deploy > env > SCW_SECRET_KEY',
+  },
 ];
 
 // --- Les tests --------------------------------------------------------------------
@@ -816,10 +1052,6 @@ describe('la porte du depot, telle que les workflows la disent', () => {
 
   it.each(Object.values(REGLES).map((r) => [r.nom, r] as const))('%s', (_, regle) => {
     expect(regle.verifier(reel)).toEqual([]);
-  });
-
-  it('la chaine test -> build -> deploy du §10 passe toutes les regles', () => {
-    expect(Object.values(REGLES).flatMap((r) => r.verifier(avecChaine(reel)))).toEqual([]);
   });
 });
 

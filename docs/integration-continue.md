@@ -1,14 +1,14 @@
 # Intégration continue
 
 La porte du dépôt et l'image de production, exécutées par GitHub Actions.
-Spec §10, sous-section GitHub Actions ; lots **R1** et **R2** de la phase 2
+Spec §10, sous-section GitHub Actions ; lots **R1** à **R3** de la phase 2
 (`docs/plans/ubac-phase-2.md`). Ce document dit ce que la chaîne fait, ce que
 l'opérateur doit cocher dans la console pour qu'elle bloque réellement, et ce
 qu'elle **ne** garantit **pas**.
 
-À ce stade, la chaîne a deux jobs : `test`, puis `build` qui pousse l'image
-(§7). `deploy` (R3) n'existe pas encore : **rien ne change en production**, qui
-tourne toujours sur l'image déployée à la main (`docs/deploiement.md`).
+La chaîne a trois jobs : `test`, `build` qui pousse l'image (§7), et `deploy`
+qui repointe le job Scaleway sur elle (§8) — **sur un tag `v*` seulement** : un
+merge sur `main` construit l'image, il ne la déploie pas.
 
 ## 1. Ce que la porte exécute
 
@@ -78,7 +78,8 @@ divergence rougit **sur le poste**, pas six mois plus tard.
 ## 3. Le garde-fou : `test/ci/workflow.test.ts`
 
 Il fait partie de `make test`. Il lit les workflows, `package.json`, les deux
-`Dockerfile` et les seuils de `vitest.config.ts`, et tient dix-sept règles :
+`Dockerfile`, `src/config/env.ts` et les seuils de `vitest.config.ts`, et tient
+vingt-deux règles :
 
 | Règle | Ce qu'elle refuse |
 |---|---|
@@ -97,19 +98,27 @@ Il fait partie de `make test`. Il lit les workflows, `package.json`, les deux
 | Image par les scripts | un `build` sans `./scripts/build-image.sh`, puis `./scripts/verifier-image.sh`, puis `docker push`, dans cet ordre ; ou qui construit, inspecte ou retague lui-même (`docker buildx build`, `--push`, `docker image inspect`, `docker tag`, `UBAC_GIT_SHA`) |
 | Jamais une PR | un `build` dont le `if` n'est pas exactement `github.event_name == 'push'` (§7) |
 | Aucune réécriture | une construction, une vérification ou une poussée non conditionnée par l'absence constatée dans le registre ; une étape `registre` qui prendrait toute erreur pour une absence ; un `build` sans file par `github.sha` |
-| Connexion | un `secrets.` ailleurs que dans l'`env` d'une étape dont le script est exactement `printf '%s' "$…" \| docker login "$REGISTRE" --username nologin --password-stdin` ; un `set -x` ou `xtrace` sur n'importe quelle ligne |
+| Connexion | un `${{ secrets… }}` ailleurs que dans l'`env` d'une étape dont le script est exactement `printf '%s' "$…" \| docker login "$REGISTRE" --username nologin --password-stdin`, ou dont chaque commande est `scw` ; un `set -x` ou `xtrace` sur n'importe quelle ligne |
+| Rampe | un `deploy` dont le `if` n'est pas exactement `github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')` : `main` n'ouvre le déploiement qu'en R4 |
+| Déploiement | un `deploy` hors de l'environnement `production` ; des étapes `main`, `cli`, `avant`, `controles`, `mise-a-jour`, `apres`, `relecture` absentes, dans un autre ordre, sautées par un `if` ou avalées par `continue-on-error` ; une lecture après qui ne relit pas la lecture avant ; deux déploiements simultanés ou un déploiement annulé |
+| Provenance | un checkout sans l'historique de `main` ; un tag déployé sans `git merge-base --is-ancestor HEAD origin/main` ; un CLI `scw` non vérifié contre son empreinte ; toute action autre que `actions/checkout` |
+| Écriture | toute commande `scw` autre que les trois lectures vers un fichier de `$RUNNER_TEMP` et **la** mise à jour de la seule image |
+| Variables | une liste `VARIABLES` des contrôles différente des variables sans défaut de `src/config/env.ts` |
 | Concurrence | un groupe sans `github.ref`, ou une annulation inconditionnelle qui interromprait `main` |
 
 Chaque règle a au moins une **sonde** : une mutation du dépôt réel, appliquée
-en mémoire, qui doit la faire rougir. Quarante-trois sondes, dont les quatre
+en mémoire, qui doit la faire rougir. Soixante-deux sondes, dont les quatre
 mutations exigées par le plan — retirer `needs: test`, remplacer la couverture
 par `npm test`, écrire `drizzle-kit` dans un workflow, faire diverger la version
-de Node. `build` et `deploy` n'existant pas encore, les sondes de `needs`
-ajoutent au workflow réel ceux des jobs du §10 qu'il n'a pas, puis cassent la
-chaîne ; un test constate qu'intacte, elle passe toutes les règles. Depuis R2,
-elles mordent sur le vrai `build`. Les seize sondes de R2 comprennent les trois
-mutations exigées par son plan : `pull_request` ajouté aux déclencheurs de
-`build`, `latest` écrit dans un tag, l'appel à `verifier-image.sh` retiré.
+de Node. Les seize sondes de R2 comprennent les trois mutations exigées par son
+plan : `pull_request` ajouté aux déclencheurs de `build`, `latest` écrit dans un
+tag, l'appel à `verifier-image.sh` retiré. Les dix-neuf de R3, les trois du
+sien : `push` sur `main` ajouté aux déclencheurs de `deploy`, la relecture
+retirée, les variables d'environnement passées dans la mise à jour.
+
+Le garde-fou prouve que les étapes de `deploy` sont là ; `test/ci/deploiement.test.ts`
+prouve qu'elles mordent : il **exécute** les contrôles et la relecture tels que
+le YAML les écrit, sur des lectures Scaleway fabriquées (§8).
 
 Le garde-fou lit **ce que les fichiers disent**, pas ce que GitHub exécute : voir
 les limites.
@@ -218,7 +227,7 @@ merge.
   référence, jamais dans celui de `main`. `actions/setup-node` recommande
   pourtant de s'en passer dans un job à privilèges : `build` (R2) ne l'utilise
   pas — il n'exécute ni `setup-node` ni `npm` hors de la construction de
-  l'image, qui ne voit pas le cache. R3 devra reposer la question.
+  l'image, qui ne voit pas le cache. `deploy` (R3) non plus.
 - **Une PR venue d'un fork fait tourner son code** sur le runner : le dépôt est
   public. Elle le fait avec le jeton en lecture et sans aucun secret, ce que
   `pull_request` garantit et que `pull_request_target` ne garantirait pas — d'où
@@ -279,8 +288,7 @@ ne pose donc pas `--provenance=false`, et `docs/deploiement.md` §5 est précis�
 `SCW_SECRET_KEY`, les variables `SCW_DEFAULT_ORGANIZATION_ID`,
 `SCW_DEFAULT_PROJECT_ID` et `SCW_REGISTRY_NAMESPACE` (`ubac`). Présence
 constatée par `gh secret list` et `gh variable list` ; aucune valeur n'est
-écrite ici. `build` n'utilise que `SCW_SECRET_KEY` et `SCW_REGISTRY_NAMESPACE` :
-la clé d'accès et les identifiants d'organisation et de projet servent à R3.
+écrite ici. `build` n'utilise que `SCW_SECRET_KEY` et `SCW_REGISTRY_NAMESPACE`.
 
 **Ce que `build` ne garantit pas.**
 
@@ -291,3 +299,74 @@ la clé d'accès et les identifiants d'organisation et de projet servent à R3.
   connexion sont les deux scripts du dépôt, `docker` et `jq`.
 - **Une image présente n'est pas revérifiée.** Elle l'a été au moment où elle a
   été poussée ; seul son manifeste est relu.
+
+## 8. Le déploiement : le job `deploy`
+
+Lot **R3**, décision **D7 = 2**. Un tag `v*` posé sur un commit de `main`
+repointe la définition du job Scaleway sur l'image de ce commit — celle que
+`build` vient de vérifier ou de trouver —, la **relit**, et ne touche à rien
+d'autre. L'image déployée place des ordres réels : la relecture est le seul
+contrôle entre ce job et le run de 7 h, et personne ne regarde derrière elle.
+
+**La rampe.** `deploy` ne part que d'un tag `v*`. Poser un tag est un geste
+délibéré : c'est l'humain replacé dans la boucle tant que la barrière de
+migration (R4) n'existe pas. Un `push` sur `main` construit et s'arrête là ;
+R4, et lui seul, ouvrira `main`.
+
+| Étape | Ce qu'elle fait |
+|---|---|
+| `main` | `git merge-base --is-ancestor HEAD origin/main` : un tag posé hors de `main` ne se déploie pas. C'est la restriction à `main` de D7, que l'environnement ne sait pas dire d'un tag |
+| `cli` | `scw` 2.62.0, vérifié contre son empreinte SHA-256 épinglée (relevée le 2026-09-27) : aucune action tierce ne voit la clé |
+| `avant` | la définition, ses déclencheurs, ses secrets, lus **dans des fichiers** de `$RUNNER_TEMP` : la définition porte ses variables ordinaires en clair, et le journal est public |
+| `controles` | masque les variables ordinaires ; écrit **le tag précédent** et la commande de retour en arrière, au journal et au résumé du run ; puis refuse, **sans rien modifier**, si cpu ≠ 140, mémoire ≠ 256, délai ≠ 300 s, tentatives ≠ 0, si la définition porte un cron, si une variable exigée manque, ou si le déclencheur n'est pas le seul `daily` ; et à 15 min ou moins du run |
+| `mise-a-jour` | `scw jobs definition update … image-uri=…`, **et rien d'autre** : des `environment-variables` remplaceraient la table entière chez Scaleway |
+| `apres` | les trois mêmes lectures |
+| `relecture` | l'image relue est la nouvelle, et **tout le reste est identique à avant** : réglages, variables, déclencheur, secrets. Un écart se nomme par sa clé, jamais par sa valeur |
+
+**L'égalité, et non la documentation.** La relecture compare à ce que la
+production portait avant, que les contrôles ont épinglé avant d'écrire. Constaté
+le 2026-09-27 : `cpu-limit` vaut 140 là où `docs/deploiement.md` §6 disait 100.
+Une relecture calée sur la documentation aurait fait échouer le premier
+déploiement ; le coordinateur a retenu 140.
+
+**La fenêtre du run** se lit dans le déclencheur, dans **son** fuseau : `0 7 * * *`
+en `Europe/Paris`, soit 05:00 UTC l'été et 06:00 UTC après le 25 octobre 2026.
+Aucune heure n'est figée ici. Un refus se relance plus tard (*Re-run jobs*).
+
+**Une relecture rouge** veut dire que la production a changé pendant le
+déploiement : la nouvelle image est en place, le reste est à restaurer à la main
+d'après le motif, et la commande de retour en arrière est au résumé du run.
+
+### Ce que l'opérateur pose, avant le premier tag
+
+| Geste | Où | Vérification |
+|---|---|---|
+| Environnement `production`, sans relecteur ; *Deployment branches and tags* : **Selected**, une règle de **tag** `v*` | *Settings → Environments* | `gh api repos/olaurendeau/ubac/environments/production/deployment-branch-policies --jq '[.branch_policies[] \| {name, type}]'` → `[{"name":"v*","type":"tag"}]` |
+| Variable de dépôt `SCW_JOB_DEFINITION_ID` : l'identifiant de la définition du job | *Settings → Secrets and variables → Actions* | `gh variable list` |
+
+Sans environnement créé à la main, le premier run le créerait **sans aucune
+règle**. R4 ajoutera `main` à la règle. `deploy` utilise les secrets
+`SCW_ACCESS_KEY` et `SCW_SECRET_KEY` (D5), dans l'`env` des seules étapes qui
+n'exécutent que `scw` ; les identifiants d'organisation et de projet ne servent
+pas.
+
+### Ce que `deploy` ne garantit pas
+
+- **« Protégé » ne veut pas dire qu'un humain regarde.** Aucun relecteur (D7) :
+  la protection est la restriction aux tags `v*`, plus le geste de poser un
+  tag. Elle ne vaut que sur un dépôt **public** : passé en privé sans forfait
+  payant, les règles d'environnement cessent de s'appliquer sans que le workflow
+  change d'une ligne.
+- **La relecture lit ce que Scaleway répond** ; elle ne prouve pas que le run du
+  lendemain conclut. updown en `UP` avec `RUN_CONCLU`, et des `decisions` dont
+  le `git_sha` égale le tag, restent à constater après le premier déploiement.
+- **Les formes JSON viennent du SDK** (`scaleway-sdk-go`, `api/jobs/v1alpha2`) et
+  des lectures fabriquées du test, pas encore d'une réponse réelle : le premier
+  tag est la première lecture réelle. Une forme inattendue fait échouer les
+  contrôles **avant** toute écriture.
+- **Aucune migration** : `deploy` ne touche pas la base ; R4 rendra ce silence
+  vérifiable.
+- **Les secrets sont de portée dépôt** : un autre job du dépôt pourrait les lire.
+  Les déplacer dans l'environnement `production` est un geste de console.
+- **Le test exécute les étapes avec le jq du poste** (1.6, `Dockerfile`), le
+  runner avec le sien (1.7).

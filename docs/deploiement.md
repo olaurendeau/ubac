@@ -45,6 +45,13 @@ requiert **onze**. Quatre écarts sont motivés dans
 | `NTFY_TOKEN` | un jeton porteur, **ou** la sentinelle ci-dessous |
 | `HEALTHCHECK_URL` | URL `https://` |
 
+**Constaté le 2026-09-27 sur la définition déployée** : sept sont des variables
+**ordinaires** — `BREVO_RECIPIENT`, `BREVO_SENDER`, `COINBASE_PORTFOLIO_UUID`,
+`HEALTHCHECK_URL`, `NTFY_TOKEN`, `NTFY_TOPIC`, `NTFY_URL` — et quatre seulement
+sont secrètes. La section 6 les veut toutes secrètes : l'écart est connu. Le job
+`deploy` n'en touche aucune et relit qu'elles sont toutes encore là
+([integration-continue.md](integration-continue.md) §8).
+
 Une manquante arrête le démarrage, et le message **nomme la variable sans jamais
 citer sa valeur**. Elles sortent toutes du même appel : onze variables fautives
 donnent onze lignes, pas onze redémarrages.
@@ -224,16 +231,18 @@ journée d'observation.
 
 ## 6. Créer le job
 
-Valeurs du §10, sans marge de manœuvre.
+Valeurs du §10, sauf deux écarts constatés le 2026-09-27 sur la définition
+déployée, signalés et non corrigés : changer la production ou la spec est une
+décision de l'opérateur.
 
 | Réglage | Valeur | Motif |
 |---|---|---|
 | Image | `…/ubac:<sha>` | jamais `latest` (section 3) |
 | Mémoire | 256 Mo | |
-| vCPU | 0,1 | |
+| vCPU | **140 mvCPU** | la spec dit 0,1 vCPU (100) ; 140 tourne depuis la création, et c'est la valeur que `deploy` relit. Hypothèse non vérifiée : 256 Mo et 140 mvCPU forment l'une des paires imposées aux Serverless Functions, peut-être aussi aux Jobs |
 | Timeout | 5 min | |
 | **Tentatives max** | **0** | un retry après un timeout partiel pourrait doubler une jambe ; `client_order_id` protège, mais on ne dépend pas d'une seule ligne de défense |
-| Cron | `0 7 * * *`, **UTC** | les bougies daily closent à 00:00 UTC : pas de changement d'heure |
+| Cron | déclencheur `daily`, `0 7 * * *` en **`Europe/Paris`** | un déclencheur séparé : la définition ne porte aucun cron. La spec (§8) et cette section disaient UTC, pour que les bougies daily, closes à 00:00 UTC, ne voient pas de changement d'heure ; le réel en a un — 05:00 UTC l'été, 06:00 UTC l'hiver |
 | Variables **secrètes** | les onze de la section 1 | secrètes, pas ordinaires : la console masque alors leur valeur |
 
 **Aucun argument n'est à ajouter à la commande du job** : le point d'entrée de
@@ -249,8 +258,9 @@ peuvent donc pas diverger.
 ```sh
 scw jobs definition create name=ubac-daily \
   image-uri=rg.fr-par.scw.cloud/<namespace>/ubac:<sha> \
-  cpu-limit=100 memory-limit=256 job-timeout=5m \
-  cron.schedule="0 7 * * *" cron.timezone=UTC
+  cpu-limit=140 memory-limit=256 job-timeout=300s retry-policy.max-retries=0
+scw jobs trigger create job-definition-id=<id> name=daily \
+  cron-config.schedule="0 7 * * *" cron-config.timezone=Europe/Paris
 ```
 
 ## 7. Le premier run, déclenché à la main
@@ -285,19 +295,30 @@ vérification, push, définition du job pointée sur le nouveau tag.
 
 **Le retour en arrière est gratuit, et c'est ce que le tag par SHA achète** :
 repointer la définition sur le tag précédent suffit, l'image n'ayant jamais été
-écrasée. Avec `latest`, il aurait fallu reconstruire depuis un commit qu'on ne
+écrasée.
+
+Depuis le lot R3, la mise à jour passe par la chaîne : un tag `v*` posé sur un
+commit de `main` ([integration-continue.md](integration-continue.md) §8). Le
+journal de chaque déploiement, et le résumé de son run, portent **le tag
+précédent** et la commande qui y revient, à exécuter depuis le poste :
+
+```sh
+scw jobs definition update <id-de-la-definition> image-uri=<tag précédent> region=fr-par
+```
+
+C'est le seul endroit où le tag précédent reste écrit. Avec `latest`, il aurait fallu reconstruire depuis un commit qu'on ne
 saurait plus nommer.
 
 ## 9. Ce que ce lot ne fait pas
 
-- **Aucun déploiement par la chaîne** : depuis le lot R2 de la phase 2, `build`
-  construit, vérifie et pousse l'image de chaque commit de `main` et de chaque
-  tag `v*` ([integration-continue.md](integration-continue.md) §7), sans jamais
-  réécrire une image déjà poussée ; les sections 3 à 5 restent le chemin
-  manuel. `deploy` viendra en R3, `workflow_dispatch` et son `DRY_RUN` en
-  phase 3.
-- **Aucun déploiement automatique** : pousser et déployer sont des gestes de
-  l'opérateur.
+- **Un déploiement par la chaîne sur tag seulement** : depuis R2, `build`
+  pousse l'image de chaque commit de `main` et de chaque tag `v*`, sans jamais
+  réécrire une image déjà poussée ; depuis R3, `deploy` repointe le job sur celle
+  d'un tag `v*` ([integration-continue.md](integration-continue.md) §7 et §8).
+  Les sections 3 à 5 restent le chemin manuel ; `workflow_dispatch` et son
+  `DRY_RUN` viendront en phase 3.
+- **Aucun déploiement automatique** : poser un tag est le geste de l'opérateur.
+  R4, qui livre la barrière de migration, ouvrira le `push` sur `main`.
 - **Aucune exécution d'ordre** ([phase-1-frontieres.md](phase-1-frontieres.md)),
   et **aucune migration depuis le job** (section 2).
 
