@@ -103,18 +103,22 @@ vingt-deux règles :
 | Déploiement | un `deploy` hors de l'environnement `production` ; des étapes `main`, `cli`, `avant`, `controles`, `mise-a-jour`, `apres`, `relecture` absentes, dans un autre ordre, sautées par un `if` ou avalées par `continue-on-error` ; une lecture après qui ne relit pas la lecture avant ; deux déploiements simultanés ou un déploiement annulé |
 | Provenance | un checkout sans l'historique de `main` ; un tag déployé sans `git merge-base --is-ancestor HEAD origin/main` ; un CLI `scw` non vérifié contre son empreinte ; toute action autre que `actions/checkout` |
 | Écriture | toute commande `scw` autre que les trois lectures vers un fichier de `$RUNNER_TEMP` et **la** mise à jour de la seule image |
+| Configuration du CLI | une étape qui appelle `scw` sans `SCW_DEFAULT_ORGANIZATION_ID` et `SCW_DEFAULT_PROJECT_ID` valant exactement `${{ vars.… }}` du même nom, dans l'`env` du workflow, du job ou de l'étape — sans organisation, le CLI refuse toute commande |
 | Variables | une liste `VARIABLES` des contrôles différente des variables sans défaut de `src/config/env.ts` |
 | Concurrence | un groupe sans `github.ref`, ou une annulation inconditionnelle qui interromprait `main` |
 
 Chaque règle a au moins une **sonde** : une mutation du dépôt réel, appliquée
-en mémoire, qui doit la faire rougir. Soixante-deux sondes, dont les quatre
+en mémoire, qui doit la faire rougir. Soixante-six sondes, dont les quatre
 mutations exigées par le plan — retirer `needs: test`, remplacer la couverture
 par `npm test`, écrire `drizzle-kit` dans un workflow, faire diverger la version
 de Node. Les seize sondes de R2 comprennent les trois mutations exigées par son
 plan : `pull_request` ajouté aux déclencheurs de `build`, `latest` écrit dans un
 tag, l'appel à `verifier-image.sh` retiré. Les dix-neuf de R3, les trois du
 sien : `push` sur `main` ajouté aux déclencheurs de `deploy`, la relecture
-retirée, les variables d'environnement passées dans la mise à jour.
+retirée, les variables d'environnement passées dans la mise à jour. Les quatre
+du correctif de v0.3.0 : l'organisation retirée, le projet retiré,
+l'organisation passée par un secret, la configuration posée sur la seule
+lecture avant.
 
 Le garde-fou prouve que les étapes de `deploy` sont là ; `test/ci/deploiement.test.ts`
 prouve qu'elles mordent : il **exécute** les contrôles et la relecture tels que
@@ -347,8 +351,14 @@ d'après le motif, et la commande de retour en arrière est au résumé du run.
 Sans environnement créé à la main, le premier run le créerait **sans aucune
 règle**. R4 ajoutera `main` à la règle. `deploy` utilise les secrets
 `SCW_ACCESS_KEY` et `SCW_SECRET_KEY` (D5), dans l'`env` des seules étapes qui
-n'exécutent que `scw` ; les identifiants d'organisation et de projet ne servent
-pas.
+n'exécutent que `scw`, et les **variables** `SCW_DEFAULT_ORGANIZATION_ID` et
+`SCW_DEFAULT_PROJECT_ID` dans l'`env` du job entier. Sans organisation, le CLI
+refuse toute commande avant le moindre appel (« organization ID is required ») :
+c'est l'échec du premier tag, `v0.3.0` (run 36350460669), à la lecture avant et
+donc sans rien écrire. Constaté le 2026-09-27 avec `scw` 2.62.0 hors réseau et
+des clés factices : avec l'organisation, les quatre commandes du job passent la
+validation locale et partent vers l'API ; le projet n'est pas exigé, il est
+fourni pour que les défauts du CLI soient ceux du compte.
 
 ### Ce que `deploy` ne garantit pas
 
