@@ -205,8 +205,11 @@ describe('les trois envois du §9, retenus avec une issue RETENU (D10)', () => {
 
 /**
  * `daily.ts` compte `RETENU` comme rendu (`toutParti`) : un vrai adapter qui le
- * rendrait ferait passer un envoi manque pour un envoi reussi. Seul
- * `inertes.ts` le construit ; les autres ne le nomment que dans leurs types.
+ * rendrait ferait passer un envoi manque pour un envoi reussi. L'interdiction
+ * est dans les types — chaque fabrique reelle declare une issue sans `RETENU`,
+ * et `ports-reels.test-d.ts` fait echouer `make typecheck` si l'une s'elargit.
+ * Cette sonde-ci n'est que le filet d'un adapter **nouveau**, que ce test de
+ * types ne connait pas encore : seul `inertes.ts` construit `RETENU`.
  */
 describe('RETENU n’est rendu que par les ports inertes', () => {
   it('aucun autre adapter ne construit une issue RETENU', () => {

@@ -472,7 +472,13 @@ ni variable d'environnement — et que `force` ou `bypass` le soient où que ce 
 (E17).
 
 **Chaque port inerte rend une issue `RETENU`**, variante que les vrais ports ne
-rendent jamais, et dit sur sa propre ligne ce qu'il a retenu. `daily.ts`
+peuvent pas rendre, et dit sur sa propre ligne ce qu'il a retenu. L'interdiction
+est une erreur de compilation, pas une convention : chaque fabrique réelle
+(`openMailer`, `openNotifier`, `openHealthcheck`, `openDatabase`,
+`openCoinbaseExecution`) déclare un type de retour étroit (`MailerReel`, …) dont
+les issues excluent `RETENU`, et `test/adapters/ports-reels.test-d.ts` fait
+échouer `make typecheck` si l'un d'eux s'élargit. `daily.ts` consomme toujours le
+type large du port. `daily.ts`
 journalise selon l'issue reçue, sans savoir dans quel mode il tourne : le
 journal d'un essai dit « retenu », jamais « parti » ni « pingué ».
 

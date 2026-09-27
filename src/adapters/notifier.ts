@@ -190,13 +190,9 @@ function lireAlerte(alert: Alert): AlerteLue | undefined {
  * l'appelant — c'est-a-dire de faire ressortir l'objet meme qu'on a refuse de
  * lire. Un sort qui ne dit pas de quelle alerte il parle est moins bon qu'un
  * sort qui le dit ; il vaut mieux que les deux autres options.
- *
- * `RETENU` n'est rendu que par le port inerte (`inertes.ts`) : l'alerte n'est
- * pas partie, et le journal ne doit pas dire qu'elle l'est.
  */
-export type AlertOutcome =
+export type AlertOutcomeReel =
   | { readonly status: 'SENT'; readonly event: AlertEvent; readonly key: string }
-  | { readonly status: 'RETENU'; readonly event: AlertEvent; readonly key: string }
   | {
       readonly status: 'FAILED';
       readonly event: AlertEvent;
@@ -205,9 +201,27 @@ export type AlertOutcome =
     }
   | { readonly status: 'UNREADABLE'; readonly reason: string };
 
+/**
+ * Le sort que lit l'appelant du port. `RETENU` n'est rendu que par le port
+ * inerte (`inertes.ts`) : l'alerte n'est pas partie, et le journal ne doit pas
+ * dire qu'elle l'est.
+ */
+export type AlertOutcome =
+  | AlertOutcomeReel
+  | { readonly status: 'RETENU'; readonly event: AlertEvent; readonly key: string };
+
 export interface Notifier {
   /** Rend le sort de l'alerte. **Ne rejette jamais.** */
   notify(alert: Alert): Promise<AlertOutcome>;
+}
+
+/**
+ * Le notifier ntfy, dont l'issue **exclut** `RETENU` : `daily.ts` le compte
+ * comme rendu. Le rendre ici est une erreur de compilation, et elargir ce type
+ * fait echouer `test/adapters/ports-reels.test-d.ts`.
+ */
+export interface NotifierReel extends Notifier {
+  notify(alert: Alert): Promise<AlertOutcomeReel>;
 }
 
 type NtfySecrets = Pick<Secrets, 'ntfyUrl' | 'ntfyTopic' | 'ntfyToken'>;
@@ -290,7 +304,7 @@ export function alertKey(alert: Alert): string {
  * notre cote. C'est la seule lecture du module qui ne soit pas sous filet, et
  * c'est assume — voir l'en-tete, « ce qui reste hors du filet ».
  */
-export function openNotifier(secrets: NtfySecrets, send: HttpSend): Notifier {
+export function openNotifier(secrets: NtfySecrets, send: HttpSend): NotifierReel {
   const url = new URL(secrets.ntfyUrl).toString();
   const topic = secrets.ntfyTopic;
   /*
@@ -310,7 +324,7 @@ export function openNotifier(secrets: NtfySecrets, send: HttpSend): Notifier {
       ? { 'Content-Type': 'application/json' }
       : { 'Content-Type': 'application/json', Authorization: `Bearer ${secrets.ntfyToken}` };
   return {
-    async notify(alert: Alert): Promise<AlertOutcome> {
+    async notify(alert: Alert): Promise<AlertOutcomeReel> {
       /*
        * Avant tout le reste, et **une seule fois**. Ce qui suit ne touche plus a
        * l'objet de l'appelant : ni la cle, ni le corps publie, ni aucun des

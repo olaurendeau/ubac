@@ -917,26 +917,33 @@ export function openCoinbase(transport: CoinbaseTransport, attendue: ExpectedKey
  * L'issue d'un placement. `PLACED` : l'exchange a accepte l'ordre, sous
  * l'identifiant qu'il lui a donne. `REJECTED` : il l'a refuse — un post-only qui
  * croiserait le carnet, typiquement —, et le §7 refuse d'en faire une erreur.
- * `reason` est le code de l'API tel quel. `RETENU` n'est rendu que par le port
+ * `reason` est le code de l'API tel quel.
+ */
+export type PlacementOutcomeReel =
+  | { readonly kind: 'PLACED'; readonly exchangeId: string; readonly clientOrderId: string }
+  | { readonly kind: 'REJECTED'; readonly clientOrderId: string; readonly reason: string };
+
+/**
+ * L'issue que lit l'appelant du port. `RETENU` n'est rendu que par le port
  * journalisant (`inertes.ts`) : rien n'est parti, et `exchangeId` n'est celui
  * d'aucun ordre.
  */
 export type PlacementOutcome =
-  | { readonly kind: 'PLACED'; readonly exchangeId: string; readonly clientOrderId: string }
-  | { readonly kind: 'RETENU'; readonly exchangeId: string; readonly clientOrderId: string }
-  | { readonly kind: 'REJECTED'; readonly clientOrderId: string; readonly reason: string };
+  | PlacementOutcomeReel
+  | { readonly kind: 'RETENU'; readonly exchangeId: string; readonly clientOrderId: string };
 
 /**
  * L'issue d'une annulation, **ordre par ordre** : un lot ne se replie pas sur un
  * booleen, sinon un refus pour une vraie raison passerait pour un ordre deja
  * denoue. `reason` est le `failure_reason` de l'API tel quel ; « deja denoue »
  * ne se lit pas sur ce texte : `annuler` (`src/jobs/execute.ts`) relit le statut.
- * `RETENU`, du seul port journalisant : l'annulation n'est pas partie.
  */
-export type CancelOutcome =
+export type CancelOutcomeReel =
   | { readonly kind: 'CANCELLED'; readonly exchangeId: string }
-  | { readonly kind: 'RETENU'; readonly exchangeId: string }
   | { readonly kind: 'REFUSED'; readonly exchangeId: string; readonly reason: string };
+
+/** L'issue que lit l'appelant du port ; `RETENU`, du seul port journalisant : l'annulation n'est pas partie. */
+export type CancelOutcome = CancelOutcomeReel | { readonly kind: 'RETENU'; readonly exchangeId: string };
 
 /**
  * Le port d'execution : deux methodes, et rien d'autre — ni mode, ni drapeau,
@@ -947,6 +954,17 @@ export type CancelOutcome =
 export interface ExecutionPort {
   placeOrder(order: Order): Promise<PlacementOutcome>;
   cancelOrders(exchangeIds: readonly string[]): Promise<readonly CancelOutcome[]>;
+}
+
+/**
+ * Le port Coinbase, dont les issues **excluent** `RETENU` : `execute.ts` compte
+ * une annulation retenue comme un ordre ferme. Le rendre ici est une erreur de
+ * compilation, et elargir ce type fait echouer
+ * `test/adapters/ports-reels.test-d.ts`.
+ */
+export interface ExecutionPortReel extends ExecutionPort {
+  placeOrder(order: Order): Promise<PlacementOutcomeReel>;
+  cancelOrders(exchangeIds: readonly string[]): Promise<readonly CancelOutcomeReel[]>;
 }
 
 /** Les deux methodes ci-dessus, enumerables a l'execution pour E10 et A23. */
@@ -999,7 +1017,7 @@ export function createOrderBody(order: Order): CreateOrderBody {
  * l'ordre existant au lieu d'en creer un, dit la documentation de l'API, que
  * rien n'a encore mesure —, et c'est donc lui qui se verifie.
  */
-function placedFrom(raw: unknown, clientOrderId: string): PlacementOutcome {
+function placedFrom(raw: unknown, clientOrderId: string): PlacementOutcomeReel {
   const contexte = `create_order[${clientOrderId}]`;
   const reponse = asRecord(raw, contexte);
   if (reponse['success'] === false) {
@@ -1030,9 +1048,9 @@ function placedFrom(raw: unknown, clientOrderId: string): PlacementOutcome {
  * Une issue par ordre demande, et aucune autre : une issue qui manque ne se
  * devine pas, et une issue en trop dit que la reponse ne porte pas sur ce lot.
  */
-function cancelledFrom(raw: unknown, exchangeIds: readonly string[]): readonly CancelOutcome[] {
+function cancelledFrom(raw: unknown, exchangeIds: readonly string[]): readonly CancelOutcomeReel[] {
   const resultats = asList(asRecord(raw, 'cancel_orders')['results'], 'cancel_orders.results');
-  const issues = resultats.map((brut): CancelOutcome => {
+  const issues = resultats.map((brut): CancelOutcomeReel => {
     const record = asRecord(brut, 'cancel_orders.results[]');
     const exchangeId = asText(record['order_id'], 'cancel_orders.results[].order_id');
     const contexte = `cancel_orders[${exchangeId}]`;
@@ -1068,7 +1086,7 @@ function cancelledFrom(raw: unknown, exchangeIds: readonly string[]): readonly C
 export async function openCoinbaseExecution(
   transport: CoinbaseWriteTransport,
   reader: Pick<CoinbaseReader, 'keyPermissions'>,
-): Promise<ExecutionPort> {
+): Promise<ExecutionPortReel> {
   const { canTrade, portfolioUuid } = await reader.keyPermissions();
   if (!canTrade) {
     throw new CoinbaseFrontierError(
@@ -1076,14 +1094,14 @@ export async function openCoinbaseExecution(
     );
   }
   return {
-    async placeOrder(order: Order): Promise<PlacementOutcome> {
+    async placeOrder(order: Order): Promise<PlacementOutcomeReel> {
       const body = createOrderBody(order);
       const reponse = await transport.write({ kind: 'create_order', body });
       return placedFrom(reponse, order.clientOrderId);
     },
 
     // Une liste vide n'appelle pas l'exchange : `order_ids: []` est une requete invalide.
-    async cancelOrders(exchangeIds: readonly string[]): Promise<readonly CancelOutcome[]> {
+    async cancelOrders(exchangeIds: readonly string[]): Promise<readonly CancelOutcomeReel[]> {
       if (exchangeIds.length === 0) return [];
       const reponse = await transport.write({ kind: 'cancel_orders', exchangeIds });
       return cancelledFrom(reponse, exchangeIds);

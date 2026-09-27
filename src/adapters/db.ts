@@ -74,14 +74,18 @@ export interface DecisionToRecord {
  * prealable — une lecture prealable laisserait une fenetre entre le `select` et
  * l'`insert`, et c'est exactement la fenetre par laquelle une double decision
  * passerait.
- *
- * `RETENU`, comme sur les deux autres ecritures a issue, n'est rendu que par la
- * base inerte (`inertes.ts`) : rien n'est ecrit, et `id` est l'UUID nul.
  */
-export type RecordDecisionOutcome =
+export type RecordDecisionOutcomeReel =
   | { readonly status: 'RECORDED'; readonly id: string }
-  | { readonly status: 'RETENU'; readonly id: string }
   | { readonly status: 'ALREADY_RECORDED' };
+
+/**
+ * Le sort que lit l'appelant du port. `RETENU`, comme sur les deux autres
+ * ecritures a issue, n'est rendu que par la base inerte (`inertes.ts`) : rien
+ * n'est ecrit, et `id` est l'UUID nul. La vraie base ne peut pas le rendre :
+ * voir `UbacDatabaseReelle`.
+ */
+export type RecordDecisionOutcome = RecordDecisionOutcomeReel | { readonly status: 'RETENU'; readonly id: string };
 
 /**
  * Un ordre **avant** son placement (E23). `decisionId` est obligatoire : c'est
@@ -99,10 +103,10 @@ export interface OrderToRecord {
  * `client_order_id` refuse la ligne d'un ordre deja ecrit, et l'appelant ne le
  * place pas une seconde fois.
  */
-export type RecordOrderOutcome =
-  | { readonly status: 'RECORDED' }
-  | { readonly status: 'RETENU' }
-  | { readonly status: 'ALREADY_RECORDED' };
+export type RecordOrderOutcomeReel = { readonly status: 'RECORDED' } | { readonly status: 'ALREADY_RECORDED' };
+
+/** Le sort que lit l'appelant du port ; `RETENU` : base inerte seulement. */
+export type RecordOrderOutcome = RecordOrderOutcomeReel | { readonly status: 'RETENU' };
 
 /**
  * L'issue d'un placement, sur une ligne encore `PENDING` et sans `exchange_id`.
@@ -150,10 +154,10 @@ export type TransitionToRecord =
  * quantite executee superieure a celle qu'on vient de lire. **Persister est un
  * affinement**, et c'est la base qui le garantit, pas l'appelant.
  */
-export type RecordTransitionOutcome =
-  | { readonly status: 'RECORDED' }
-  | { readonly status: 'RETENU' }
-  | { readonly status: 'UNCHANGED' };
+export type RecordTransitionOutcomeReel = { readonly status: 'RECORDED' } | { readonly status: 'UNCHANGED' };
+
+/** Le sort que lit l'appelant du port ; `RETENU` : base inerte seulement. */
+export type RecordTransitionOutcome = RecordTransitionOutcomeReel | { readonly status: 'RETENU' };
 
 export interface SnapshotToRecord {
   readonly runDate: IsoDate;
@@ -238,6 +242,19 @@ export interface UbacDatabase {
   /** Le statut reel d'un ordre ouvert, lu par la reconciliation (E38). */
   recordTransition(input: TransitionToRecord): Promise<RecordTransitionOutcome>;
   close(): Promise<void>;
+}
+
+/**
+ * La vraie base, dont les trois ecritures a issue **excluent** `RETENU` : une
+ * decision retenue passe comme une decision ecrite (`daily.ts`), et une vraie
+ * ecriture qui le rendrait ferait passer une ligne absente pour une ligne
+ * ecrite. Le rendre ici est une erreur de compilation, et elargir ce type fait
+ * echouer `test/adapters/ports-reels.test-d.ts`.
+ */
+export interface UbacDatabaseReelle extends UbacDatabase {
+  recordDecision(input: DecisionToRecord): Promise<RecordDecisionOutcomeReel>;
+  recordOrder(input: OrderToRecord): Promise<RecordOrderOutcomeReel>;
+  recordTransition(input: TransitionToRecord): Promise<RecordTransitionOutcomeReel>;
 }
 
 // --- Serialisation ----------------------------------------------------------
@@ -385,7 +402,7 @@ function isUniqueViolation(error: unknown, constraint: string): boolean {
  * la valeur doit venir. Le job passe `config.secrets`, deja valide ; personne
  * ne fabrique une chaine ici.
  */
-export function openDatabase(secrets: Pick<Secrets, 'databaseUrl'>): UbacDatabase {
+export function openDatabase(secrets: Pick<Secrets, 'databaseUrl'>): UbacDatabaseReelle {
   /*
    * Deux connexions suffisent : le job est sequentiel et tourne cinq minutes au
    * plus. Un pool large sur une base serverless ne sert qu'a en laisser ouvertes.
@@ -394,7 +411,7 @@ export function openDatabase(secrets: Pick<Secrets, 'databaseUrl'>): UbacDatabas
   const db = drizzle(pool);
 
   return {
-    async recordDecision(input: DecisionToRecord): Promise<RecordDecisionOutcome> {
+    async recordDecision(input: DecisionToRecord): Promise<RecordDecisionOutcomeReel> {
       const { intent } = input;
       try {
         const lignes = await db
@@ -521,7 +538,7 @@ export function openDatabase(secrets: Pick<Secrets, 'databaseUrl'>): UbacDatabas
       }));
     },
 
-    async recordOrder(input: OrderToRecord): Promise<RecordOrderOutcome> {
+    async recordOrder(input: OrderToRecord): Promise<RecordOrderOutcomeReel> {
       const { order } = input;
       try {
         await db.insert(orders).values({
@@ -564,7 +581,7 @@ export function openDatabase(secrets: Pick<Secrets, 'databaseUrl'>): UbacDatabas
       }
     },
 
-    async recordTransition(input: TransitionToRecord): Promise<RecordTransitionOutcome> {
+    async recordTransition(input: TransitionToRecord): Promise<RecordTransitionOutcomeReel> {
       const lignes = await db
         .update(orders)
         .set({
