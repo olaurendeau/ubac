@@ -1,10 +1,11 @@
 import { Decimal } from 'decimal.js';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type {
   AssetBalance,
   CreateOrderBody,
   KeyPermissions,
+  OrderStatus,
   PortfolioBalances,
 } from '../../src/adapters/coinbase.js';
 import { openCoinbaseExecution } from '../../src/adapters/coinbase.js';
@@ -129,14 +130,19 @@ interface Scenario {
   /**
    * Ce que l'exchange dit d'un ordre place quand le run le relit. Par defaut :
    * ouvert, rien d'execute — un limit post-only au repos. `PANNE` : la lecture leve.
+   * `MALFORME` : un statut sans quantite, que `suivre` ne sait pas classer — il leve.
    */
-  readonly statut?: 'FILLED' | 'PARTIEL' | 'PANNE';
+  readonly statut?: 'FILLED' | 'PARTIEL' | 'PANNE' | 'MALFORME';
+  /** `log` leve sur toute ligne qui contient ce texte, avec `JOURNAL_HS`. */
+  readonly journalEnPanne?: string;
   /** Variables d'environnement ajoutees a `ENV` avant `loadConfig`. */
   readonly env?: Readonly<Record<string, string>>;
 }
 
 /** Ce que leve le port en panne. Reconnaissable, et sans rapport avec le metier. */
 const PANNE = 'panne simulee';
+/** Ce que leve le journal en panne : distinct de `PANNE`, pour savoir laquelle remonte. */
+const JOURNAL_HS = 'journal hors service';
 
 interface Harnais {
   readonly ports: DailyPorts;
@@ -292,6 +298,7 @@ function harnais(scenario: Scenario = {}): Harnais {
     orderStatus: (exchangeId) => {
       appels.push('orderStatus');
       if (scenario.statut === 'PANNE') return Promise.reject(new Error(PANNE));
+      if (scenario.statut === 'MALFORME') return Promise.resolve({ kind: 'OPEN', exchangeId } as unknown as OrderStatus);
       const rempli = scenario.statut === 'FILLED' ? '0.14' : scenario.statut === 'PARTIEL' ? '0.05' : '0';
       return Promise.resolve({
         kind: scenario.statut === 'FILLED' ? 'FILLED' : 'OPEN',
@@ -319,7 +326,10 @@ function harnais(scenario: Scenario = {}): Harnais {
     gitSha: GIT_SHA,
     clock: { today: () => runDate, instant: () => new Date(`${runDate}T07:00:00.000Z`) },
     config,
-    log: (line) => lignes.push(line),
+    log: (line) => {
+      if (scenario.journalEnPanne !== undefined && line.includes(scenario.journalEnPanne)) throw new Error(JOURNAL_HS);
+      lignes.push(line);
+    },
     ports: {
       exchange,
       market: {
@@ -434,6 +444,15 @@ const evenements = (h: Harnais): AlertEvent[] => h.pushes.map((push) => push.pay
 const CLE = expect.stringMatching(/^cle-[0-9a-f]{12}$/) as unknown as string;
 
 const lance = (h: Harnais): Promise<DailyRunResult> => runDaily(h);
+
+/** L'issue d'un run et ce qu'il a ecrit sur stderr : le seul temoin de ce que le `finally` de l'etape 6 avale. */
+async function avecStderr(h: Harnais): Promise<{ issue: PromiseSettledResult<unknown>; stderr: string }> {
+  const espion = vi.spyOn(process.stderr, 'write').mockReturnValue(true);
+  const [issue] = await Promise.allSettled([lance(h)]);
+  const stderr = espion.mock.calls.map(([chunk]) => String(chunk)).join('');
+  espion.mockRestore();
+  return { issue, stderr };
+}
 
 function complete(result: DailyRunResult): Extract<DailyRunResult, { status: 'COMPLETED' }> {
   if (result.status !== 'COMPLETED') {
@@ -2260,6 +2279,41 @@ describe('E27 et E28 — ce qui est parti se dit, sur l’alerte et dans le rapp
     expect(pousse(h, 'REBALANCE_EXECUTED')).toContain('2 ordre(s) place(s), 0 execute(s)');
     // Le suivi a lu les deux ordres : l'exchange a ete interroge sur chacun.
     expect(h.appels.filter((a) => a === 'orderStatus')).toHaveLength(2);
+  });
+
+  /*
+   * Le `finally` de l'etape 6 ne leve jamais : une levee y remplacerait
+   * l'exception d'origine et laisserait hors de `parti` des jambes deja parties.
+   * Ce qu'il avale part sur stderr, et le statut qu'il n'a pas lu se dit non lu.
+   */
+  it('un suivi qui leve apres un placement reussi : le run conclut, l’ordre part en alerte, dit non lu', async () => {
+    const h = harnais({ ...JOUR, statut: 'MALFORME' });
+    const { issue, stderr } = await avecStderr(h);
+
+    expect(issue.status).toBe('fulfilled');
+    expect(evenements(h)).toEqual(['REBALANCE_EXECUTED']);
+    expect(pousse(h, 'REBALANCE_EXECUTED')).toContain('1 ordre(s) place(s), 0 execute(s)');
+    expect(courrier(h).htmlContent).toMatch(/>Statut non lu<\/td><td[^>]*>1</);
+    expect(stderr).toContain('suivi interrompu');
+  });
+
+  it('un suivi qui leve apres une issue non ecrite : l’exception d’origine remonte, les deux jambes partent', async () => {
+    const h = harnais({ balances: DEUX_JAMBES, runDate: '2026-10-01', panne: 'recordPlacement', statut: 'MALFORME' });
+    const { issue } = await avecStderr(h);
+
+    expect(issue).toMatchObject({ status: 'rejected', reason: { message: PANNE } });
+    expect(evenements(h)).toEqual(['REBALANCE_EXECUTED', 'JOB_FAILED']);
+    expect(pousse(h, 'REBALANCE_EXECUTED')).toContain('2 ordre(s) place(s), 0 execute(s)');
+  });
+
+  it('un journal qui leve dans le finally : l’exception du placement remonte, pas celle du journal', async () => {
+    const h = harnais({ balances: DEUX_JAMBES, runDate: '2026-10-01', panne: 'recordPlacement', journalEnPanne: ' PLACED' });
+    const { issue, stderr } = await avecStderr(h);
+
+    expect(issue).toMatchObject({ status: 'rejected', reason: { message: PANNE } });
+    expect(pousse(h, 'JOB_FAILED')).toContain(PANNE);
+    expect(pousse(h, 'REBALANCE_EXECUTED')).toContain('2 ordre(s) place(s), 0 execute(s)');
+    expect(stderr).toContain(JOURNAL_HS);
   });
 
   it('un run sans ordre n’emet pas REBALANCE_EXECUTED, et son rapport dit que rien n’est parti', async () => {

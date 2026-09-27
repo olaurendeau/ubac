@@ -29,6 +29,7 @@ import type {
   Clock,
   Intent,
   IsoDate,
+  Order,
   StrategyName,
   UsdcAmount,
   Verdict,
@@ -596,6 +597,49 @@ function decideAll(
 // --- Le run -----------------------------------------------------------------
 
 /**
+ * Ce que le `finally` de l'etape 6 remet a `parti`. **Ne leve jamais** : une
+ * levee dans un `finally` remplacerait l'exception du `try`, qui doit remonter
+ * intacte en `JOB_FAILED`, et laisserait hors de `parti` des jambes parties.
+ * Un journal qui leve passe sur stderr ; un suivi qui leve rend quand meme
+ * chaque jambe, ses ordres dits non lus, et le dit sur stderr. Le repli ne lit
+ * ni ne journalise rien : il ne reste que le classement de `suivre`, pur.
+ */
+async function recueillir(
+  exchange: Pick<CoinbaseReader, 'orderStatus'>,
+  strategy: StrategyName,
+  ordres: readonly Order[],
+  issues: readonly IssueDeJambe[],
+  log: RunLogger,
+): Promise<ExecutionDeStrategie> {
+  const sur: RunLogger = (line) => {
+    try {
+      log(line);
+    } catch (error) {
+      signaler(`journal en panne, ligne perdue : ${line}`, error);
+    }
+  };
+  for (const issue of issues) {
+    sur(`${strategy} : ${issue.clientOrderId} ${issue.kind}${issue.kind === 'REJECTED' ? ` (${issue.reason})` : ''}`);
+  }
+  try {
+    return await suivre(exchange, strategy, ordres, issues, sur);
+  } catch (error) {
+    signaler(`${strategy} : suivi interrompu, ordres dits non lus`, error);
+    const illisible = { orderStatus: () => Promise.resolve({ kind: 'INDETERMINABLE', reason: 'suivi interrompu' } as const) };
+    return suivre(illisible, strategy, ordres, issues, () => undefined);
+  }
+}
+
+/** stderr, puisque le journal peut etre ce qui a leve. Ne leve pas non plus : apres stderr, plus personne a qui le dire. */
+function signaler(contexte: string, error: unknown): void {
+  try {
+    process.stderr.write(`${contexte} — ${texte(error)}\n`);
+  } catch {
+    // Le `finally` de l'etape 6 passe avant sa propre trace.
+  }
+}
+
+/**
  * §8, etapes 1 a 7. Rend un resultat ; ne leve que sur une entree qui ne
  * ressemble pas a ce que le type promet — une serie de bougies qui ne finit pas
  * ou l'on a demande, par exemple. **N'alerte pas** : c'est `runDaily` qui le
@@ -769,19 +813,16 @@ async function executeRun(run: DailyRun, parti: ExecutionDeStrategie[]): Promise
      * Le tampon est ici, et le `finally` le lit **meme si `placer` leve** : une
      * issue non ecrite a la deuxieme jambe ne doit pas taire la premiere, deja
      * partie. L'exception n'est pas avalee — elle remonte vers `runDaily`, qui
-     * pousse `JOB_FAILED` avec ce que `parti` a recu. `suivre` ne leve pas.
+     * pousse `JOB_FAILED` avec ce que `parti` a recu. Le `finally` ne leve
+     * jamais : c'est le contrat de `recueillir`.
      */
     const issues: IssueDeJambe[] = [];
     try {
       await placer(execution, { decisionId: recorded.id, createdAt, ordres }, issues);
     } finally {
-      for (const issue of issues) {
-        const detail = issue.kind === 'REJECTED' ? ` (${issue.reason})` : '';
-        log(`${strategy} : ${issue.clientOrderId} ${issue.kind}${detail}`);
-      }
       placements.push(...issues);
       // Rien de parti — un lot refuse avant toute ecriture — ne fait pas une execution.
-      if (issues.length > 0) parti.push(await suivre(ports.exchange, strategy, ordres, issues, log));
+      if (issues.length > 0) parti.push(await recueillir(ports.exchange, strategy, ordres, issues, log));
     }
   }
 
