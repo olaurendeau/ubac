@@ -1,3 +1,7 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { Decimal } from 'decimal.js';
 import { describe, expect, it } from 'vitest';
 
@@ -6,7 +10,6 @@ import type { CoinbaseWriteRoute } from '../../src/adapters/coinbase.js';
 import type { DecisionToRecord, SnapshotToRecord, UbacDatabase } from '../../src/adapters/db.js';
 import type { RunPulse } from '../../src/adapters/healthcheck.js';
 import {
-  AUCUN_ECHANGE_HTTP,
   baseSansEcriture,
   DECISION_NON_ECRITE,
   executionJournalisee,
@@ -22,8 +25,8 @@ import type { Order, Price, Quantity } from '../../src/core/types.js';
 /**
  * Les ports inertes, un par un. Le run complet en `DRY_RUN` — ce qu'aucun
  * d'eux n'ecrit ni n'envoie, compte par une sonde — est dans
- * `test/jobs/daily.test.ts` ; ici, ce que chacun **rend** : une reponse
- * nominale, jamais degradee, et une ligne qui dit ce qui a ete retenu.
+ * `test/jobs/daily.test.ts` ; ici, ce que chacun **rend** : une issue
+ * `RETENU`, ni succes ni echec, et une ligne qui dit ce qui a ete retenu.
  */
 
 const ORDRE: Order = {
@@ -90,7 +93,7 @@ describe('la base inerte : les lectures passent, les ecritures se retiennent', (
     ]);
   });
 
-  it('rend RECORDED avec l’UUID nul, et dit ce qu’elle n’a pas ecrit', async () => {
+  it('rend RETENU avec l’UUID nul, et dit ce qu’elle n’a pas ecrit', async () => {
     const lignes: string[] = [];
     const inerte = baseSansEcriture(baseComptee().db, (l) => lignes.push(l));
 
@@ -100,7 +103,7 @@ describe('la base inerte : les lectures passent, les ecritures se retiennent', (
     } as DecisionToRecord);
     await inerte.recordSnapshot({ runDate: '2026-09-12' } as SnapshotToRecord);
 
-    expect(rendu).toEqual({ status: 'RECORDED', id: DECISION_NON_ECRITE });
+    expect(rendu).toEqual({ status: 'RETENU', id: DECISION_NON_ECRITE });
     expect(lignes).toEqual([
       'base inerte : decision rebalance_ab (shadow) du 2026-09-12 non ecrite',
       'base inerte : photo du 2026-09-12 non ecrite',
@@ -139,7 +142,7 @@ describe('le port journalisant : ce qui serait parti, et rien d’autre (E14)', 
     ]);
     expect(lignes[0]).toContain('paire=BTC-USDC cote=SELL quantite=0.14 prix_limite=50000.5 post_only=true');
     expect(place).toEqual({
-      kind: 'PLACED',
+      kind: 'RETENU',
       exchangeId: `${ORDRE_NON_PLACE}${ORDRE.clientOrderId}`,
       clientOrderId: ORDRE.clientOrderId,
     });
@@ -158,15 +161,15 @@ describe('le port journalisant : ce qui serait parti, et rien d’autre (E14)', 
     expect(await port.cancelOrders([])).toEqual([]);
     expect(lignes).toEqual([]);
     expect(await port.cancelOrders(['a', 'b'])).toEqual([
-      { kind: 'CANCELLED', exchangeId: 'a' },
-      { kind: 'CANCELLED', exchangeId: 'b' },
+      { kind: 'RETENU', exchangeId: 'a' },
+      { kind: 'RETENU', exchangeId: 'b' },
     ]);
     expect(lignes).toHaveLength(2);
   });
 });
 
-describe('les trois envois du §9, retenus avec une reponse nominale (D10)', () => {
-  it('ntfy, Brevo et le ping rendent SENT, SENT et PINGED, chacun avec sa ligne', async () => {
+describe('les trois envois du §9, retenus avec une issue RETENU (D10)', () => {
+  it('ntfy, Brevo et le ping rendent RETENU, chacun avec sa ligne', async () => {
     const lignes: string[] = [];
     const log = (l: string): number => lignes.push(l);
     const alerte: Alert = {
@@ -182,21 +185,36 @@ describe('les trois envois du §9, retenus avec une reponse nominale (D10)', () 
         : { runDate: '2026-09-12', gitSha: 'sha', ending: { kind, step: 'VALUATION', code: 'X' } };
 
     expect(await notifierInerte(log).notify(alerte)).toEqual({
-      status: 'SENT',
+      status: 'RETENU',
       event: 'RECONCILIATION_DRIFT',
       key: alertKey(alerte),
     });
     expect(await mailerInerte(log).sendReport({ subject: 'ubac 2026-09-12', html: '', tags: [] })).toEqual({
-      status: 'SENT',
-      httpStatus: AUCUN_ECHANGE_HTTP,
+      status: 'RETENU',
     });
-    expect(await healthcheckInerte(log).ping(pulse('CONCLU'))).toEqual({ status: 'PINGED', marked: true });
-    expect(await healthcheckInerte(log).ping(pulse('ABANDONNE'))).toEqual({ status: 'PINGED', marked: false });
+    expect(await healthcheckInerte(log).ping(pulse('CONCLU'))).toEqual({ status: 'RETENU', marked: true });
+    expect(await healthcheckInerte(log).ping(pulse('ABANDONNE'))).toEqual({ status: 'RETENU', marked: false });
     expect(lignes).toEqual([
       'ntfy inerte : alerte RECONCILIATION_DRIFT retenue, non envoyee — ecart de reconciliation',
       'brevo inerte : rapport retenu, non envoye — ubac 2026-09-12',
       'healthcheck inerte : ping retenu, non envoye (CONCLU)',
       'healthcheck inerte : ping retenu, non envoye (ABANDONNE)',
     ]);
+  });
+});
+
+/**
+ * `daily.ts` compte `RETENU` comme rendu (`toutParti`) : un vrai adapter qui le
+ * rendrait ferait passer un envoi manque pour un envoi reussi. Seul
+ * `inertes.ts` le construit ; les autres ne le nomment que dans leurs types.
+ */
+describe('RETENU n’est rendu que par les ports inertes', () => {
+  it('aucun autre adapter ne construit une issue RETENU', () => {
+    const dossier = fileURLToPath(new URL('../../src/adapters/', import.meta.url));
+    const construisent = readdirSync(dossier)
+      .filter((f) => /(?<!readonly )(?:status|kind): 'RETENU'/.test(readFileSync(join(dossier, f), 'utf8')))
+      .sort();
+
+    expect(construisent).toEqual(['inertes.ts']);
   });
 });

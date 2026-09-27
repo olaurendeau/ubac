@@ -134,9 +134,13 @@ export interface RunPulse {
  * corps qu'il transportait. La distinction compte pour le journal — « le run a
  * abouti mais la surveillance ne l'a pas su » et « le run a abandonne » ne sont
  * pas le meme incident.
+ *
+ * `RETENU` n'est rendu que par le port inerte (`inertes.ts`) : aucun ping n'est
+ * parti, et `marked` dit ce que le corps aurait porte.
  */
 export type PingOutcome =
   | { readonly status: 'PINGED'; readonly marked: boolean }
+  | { readonly status: 'RETENU'; readonly marked: boolean }
   | { readonly status: 'FAILED'; readonly marked: boolean; readonly reason: string };
 
 export interface Healthcheck {

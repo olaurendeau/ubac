@@ -66,11 +66,13 @@ export const BREVO_ENDPOINT = 'https://api.brevo.com/v3/smtp/email';
 /**
  * Deux sorts, et aucun texte libre. `httpStatus` est le nombre borne que rend
  * `http.ts` ; `reason` ne peut venir que de `motifDe` ou de la constante du
- * filet.
+ * filet. `RETENU` n'est rendu que par le port inerte (`inertes.ts`) : aucun
+ * echange n'a eu lieu, donc aucun statut HTTP a porter.
  */
 export type MailOutcome =
   | { readonly status: 'SENT'; readonly httpStatus: number }
-  | { readonly status: 'FAILED'; readonly reason: string };
+  | { readonly status: 'FAILED'; readonly reason: string }
+  | { readonly status: 'RETENU' };
 
 export interface Mailer {
   /** Rend le sort du courrier. **Ne rejette jamais.** */

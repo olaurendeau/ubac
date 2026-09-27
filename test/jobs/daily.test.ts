@@ -2571,9 +2571,9 @@ describe('DRY_RUN — des ports inertes a la place des vrais (E14, E15, E16)', (
     expect(essai.pushes).toEqual([]);
     expect(essai.courriers).toEqual([]);
     expect(essai.pings).toEqual([]);
-    // Des reponses nominales : le code de sortie est celui d'une journee sans panne.
+    // Des reponses RETENU, comptees comme rendues : le code de sortie est celui d'une journee sans panne.
     expect(reported(result)).toBe(true);
-    expect(result.report.ping).toEqual({ status: 'PINGED', marked: true });
+    expect(result.report.ping).toEqual({ status: 'RETENU', marked: true });
   });
 
   /*
@@ -2590,7 +2590,7 @@ describe('DRY_RUN — des ports inertes a la place des vrais (E14, E15, E16)', (
     expect(result.previousSnapshot?.runDate).toBe(PRICED_ON);
     expect(result.resync.status).toBe('RESYNCHRONIZED');
     expect(result.outcomes.map((o) => o.recorded)).toEqual(
-      LES_QUATRE.map(() => ({ status: 'RECORDED', id: DECISION_NON_ECRITE })),
+      LES_QUATRE.map(() => ({ status: 'RETENU', id: DECISION_NON_ECRITE })),
     );
   });
 
@@ -2627,6 +2627,93 @@ describe('DRY_RUN — des ports inertes a la place des vrais (E14, E15, E16)', (
 
     for (const [nom, valeur] of Object.entries(ENV)) {
       if (nom !== 'COINBASE_PORTFOLIO_UUID') expect(journal, nom).not.toContain(valeur);
+    }
+  });
+});
+
+/**
+ * **Le journal d'un `DRY_RUN` est sa seule preuve** : le coordinateur rejoue
+ * l'image en local et le lit. Chaque port inerte rend une issue `RETENU`, que
+ * `daily.ts` journalise pour ce qu'elle est — sans savoir dans quel mode il
+ * tourne (E15). Deux journees couvrent les sept ports a issue : l'une annule
+ * l'ordre de l'avant-veille puis place, l'autre ecrit la transition d'un ordre
+ * rempli.
+ */
+describe('DRY_RUN — le journal dit « retenu », jamais « parti » (E15, E16)', () => {
+  const photoDeLaVeille = cache({ BTC: qty('0.9'), ETH: qty('12'), USDC: qty('30000') }, '100000');
+  const ANNULE_PUIS_PLACE: Scenario = {
+    balances: JUSTE_HORS_BANDE,
+    snapshot: photoDeLaVeille,
+    enAttente: [ligneDeLaVeille({ createdAt: new Date('2026-09-10T07:00:00.000Z') })],
+    ouverts: [AU_CARNET],
+  };
+  const REMPLI: Scenario = {
+    balances: JUSTE_HORS_BANDE,
+    snapshot: photoDeLaVeille,
+    enAttente: [ligneDeLaVeille()],
+    statut: 'FILLED',
+  };
+  const ORDRE = clientOrderId({ runDate: RUN_DATE, asset: 'BTC', side: 'SELL', legIndex: 0 });
+  const RAPPORT = 'Ubac 2026-09-12 — 100000.00 USDC — CASH_BAND, 2 jambe(s)';
+
+  /** Ce qu'une ligne ne doit jamais dire d'un effet retenu : un envoi parti, ou le statut d'un vrai succes. */
+  const SUCCES = [/\bpartie?\b/i, /pingue/i, /\b(?:SENT|PINGED|RECORDED|PLACED|CANCELLED|ANNULE)\b/];
+  const affirmeUnSucces = (ligne: string): boolean => SUCCES.some((motif) => motif.test(ligne));
+
+  /** Les lignes ou `daily.ts` rapporte l'issue d'un port. */
+  const issues = (h: Harnais): readonly string[] =>
+    h.lignes.filter((l) => /^(?:alerte |rapport quotidien : |healthcheck : |annulation ubac-veille |ordre ubac-veille )|— \w+$| (?:PLACED|RETENU)$/.test(l));
+
+  it('aucune ligne ne dit « parti », « pingue » ni un statut de succes, et chaque port dit RETENU', async () => {
+    const annule = harnais(ANNULE_PUIS_PLACE);
+    const rempli = harnais(REMPLI);
+    const resultats = [await enDryRun(annule), await enDryRun(rempli)];
+
+    expect([...annule.lignes, ...rempli.lignes].filter(affirmeUnSucces)).toEqual([]);
+    expect(issues(annule)).toEqual([
+      'ordre ubac-veille : PENDING, 0 execute — RETENU',
+      'annulation ubac-veille : RETENU',
+      'rebalance : CASH_BAND, 2 jambe(s), risque ACCEPTED — RETENU',
+      'rebalance_ab (shadow) : CASH_BAND, 2 jambe(s), risque ACCEPTED — RETENU',
+      'ladder (shadow) : NONE, 0 jambe(s), risque ACCEPTED — RETENU',
+      'dca (shadow) : NONE, 0 jambe(s), risque ACCEPTED — RETENU',
+      `rebalance : ${ORDRE} RETENU`,
+      'alerte REBALANCE_EXECUTED : retenue, non envoyee (cle-facf1f2eb92f)',
+      'alerte RECONCILIATION_DRIFT : retenue, non envoyee (cle-265248ae2ee3)',
+      `rapport quotidien : retenu, non envoye — ${RAPPORT}`,
+      'healthcheck : retenu, non envoye (CONCLU)',
+    ]);
+    expect(rempli.lignes).toContain('ordre ubac-veille : FILLED, 0.14 execute — RETENU');
+    // RETENU compte comme rendu : le code de sortie et le marqueur sont ceux d'une journee sans panne.
+    for (const result of resultats) {
+      expect(reported(result)).toBe(true);
+      expect(result.report.ping).toEqual({ status: 'RETENU', marked: true });
+    }
+  });
+
+  /* La moitie normale : ces lignes sont exactement celles d'avant l'issue RETENU. */
+  it('en run normal, les lignes d’issue sont inchangees', async () => {
+    const annule = harnais(ANNULE_PUIS_PLACE);
+    const rempli = harnais(REMPLI);
+    const resultats = [await lance(annule), await lance(rempli)];
+
+    expect(issues(annule)).toEqual([
+      'ordre ubac-veille : PENDING, 0 execute — RECORDED',
+      'annulation ubac-veille : ANNULE',
+      'rebalance : CASH_BAND, 2 jambe(s), risque ACCEPTED — RECORDED',
+      'rebalance_ab (shadow) : CASH_BAND, 2 jambe(s), risque ACCEPTED — RECORDED',
+      'ladder (shadow) : NONE, 0 jambe(s), risque ACCEPTED — RECORDED',
+      'dca (shadow) : NONE, 0 jambe(s), risque ACCEPTED — RECORDED',
+      `rebalance : ${ORDRE} PLACED`,
+      'alerte REBALANCE_EXECUTED : partie (cle-facf1f2eb92f)',
+      'alerte RECONCILIATION_DRIFT : partie (cle-265248ae2ee3)',
+      `rapport quotidien : parti (HTTP 201) — ${RAPPORT}`,
+      'healthcheck : pingue (CONCLU)',
+    ]);
+    expect(rempli.lignes).toContain('ordre ubac-veille : FILLED, 0.14 execute — RECORDED');
+    for (const result of resultats) {
+      expect(reported(result)).toBe(true);
+      expect(result.report.ping).toEqual({ status: 'PINGED', marked: true });
     }
   });
 });

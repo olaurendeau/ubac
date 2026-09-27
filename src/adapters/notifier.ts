@@ -190,9 +190,13 @@ function lireAlerte(alert: Alert): AlerteLue | undefined {
  * l'appelant — c'est-a-dire de faire ressortir l'objet meme qu'on a refuse de
  * lire. Un sort qui ne dit pas de quelle alerte il parle est moins bon qu'un
  * sort qui le dit ; il vaut mieux que les deux autres options.
+ *
+ * `RETENU` n'est rendu que par le port inerte (`inertes.ts`) : l'alerte n'est
+ * pas partie, et le journal ne doit pas dire qu'elle l'est.
  */
 export type AlertOutcome =
   | { readonly status: 'SENT'; readonly event: AlertEvent; readonly key: string }
+  | { readonly status: 'RETENU'; readonly event: AlertEvent; readonly key: string }
   | {
       readonly status: 'FAILED';
       readonly event: AlertEvent;

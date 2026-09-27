@@ -917,10 +917,13 @@ export function openCoinbase(transport: CoinbaseTransport, attendue: ExpectedKey
  * L'issue d'un placement. `PLACED` : l'exchange a accepte l'ordre, sous
  * l'identifiant qu'il lui a donne. `REJECTED` : il l'a refuse — un post-only qui
  * croiserait le carnet, typiquement —, et le §7 refuse d'en faire une erreur.
- * `reason` est le code de l'API tel quel.
+ * `reason` est le code de l'API tel quel. `RETENU` n'est rendu que par le port
+ * journalisant (`inertes.ts`) : rien n'est parti, et `exchangeId` n'est celui
+ * d'aucun ordre.
  */
 export type PlacementOutcome =
   | { readonly kind: 'PLACED'; readonly exchangeId: string; readonly clientOrderId: string }
+  | { readonly kind: 'RETENU'; readonly exchangeId: string; readonly clientOrderId: string }
   | { readonly kind: 'REJECTED'; readonly clientOrderId: string; readonly reason: string };
 
 /**
@@ -928,9 +931,11 @@ export type PlacementOutcome =
  * booleen, sinon un refus pour une vraie raison passerait pour un ordre deja
  * denoue. `reason` est le `failure_reason` de l'API tel quel ; « deja denoue »
  * ne se lit pas sur ce texte : `annuler` (`src/jobs/execute.ts`) relit le statut.
+ * `RETENU`, du seul port journalisant : l'annulation n'est pas partie.
  */
 export type CancelOutcome =
   | { readonly kind: 'CANCELLED'; readonly exchangeId: string }
+  | { readonly kind: 'RETENU'; readonly exchangeId: string }
   | { readonly kind: 'REFUSED'; readonly exchangeId: string; readonly reason: string };
 
 /**

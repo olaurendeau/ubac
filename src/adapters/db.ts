@@ -74,9 +74,13 @@ export interface DecisionToRecord {
  * prealable — une lecture prealable laisserait une fenetre entre le `select` et
  * l'`insert`, et c'est exactement la fenetre par laquelle une double decision
  * passerait.
+ *
+ * `RETENU`, comme sur les deux autres ecritures a issue, n'est rendu que par la
+ * base inerte (`inertes.ts`) : rien n'est ecrit, et `id` est l'UUID nul.
  */
 export type RecordDecisionOutcome =
   | { readonly status: 'RECORDED'; readonly id: string }
+  | { readonly status: 'RETENU'; readonly id: string }
   | { readonly status: 'ALREADY_RECORDED' };
 
 /**
@@ -95,7 +99,10 @@ export interface OrderToRecord {
  * `client_order_id` refuse la ligne d'un ordre deja ecrit, et l'appelant ne le
  * place pas une seconde fois.
  */
-export type RecordOrderOutcome = { readonly status: 'RECORDED' } | { readonly status: 'ALREADY_RECORDED' };
+export type RecordOrderOutcome =
+  | { readonly status: 'RECORDED' }
+  | { readonly status: 'RETENU' }
+  | { readonly status: 'ALREADY_RECORDED' };
 
 /**
  * L'issue d'un placement, sur une ligne encore `PENDING` et sans `exchange_id`.
@@ -143,7 +150,10 @@ export type TransitionToRecord =
  * quantite executee superieure a celle qu'on vient de lire. **Persister est un
  * affinement**, et c'est la base qui le garantit, pas l'appelant.
  */
-export type RecordTransitionOutcome = { readonly status: 'RECORDED' } | { readonly status: 'UNCHANGED' };
+export type RecordTransitionOutcome =
+  | { readonly status: 'RECORDED' }
+  | { readonly status: 'RETENU' }
+  | { readonly status: 'UNCHANGED' };
 
 export interface SnapshotToRecord {
   readonly runDate: IsoDate;
