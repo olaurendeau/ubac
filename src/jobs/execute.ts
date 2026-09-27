@@ -141,7 +141,8 @@ export async function placer(
     const issue = await execution.port.placeOrder(order);
     // Partie : connue de l'appelant avant que son ecriture puisse lever.
     issues.push(issue);
-    await execution.db.recordPlacement(issue);
+    // Un placement retenu n'a pas eu lieu : il n'y a pas d'issue a ecrire.
+    if (issue.kind !== 'RETENU') await execution.db.recordPlacement(issue);
   }
   return issues;
 }
@@ -150,10 +151,11 @@ export async function placer(
  * L'issue d'une annulation, **ordre par ordre** (E36). `DEJA_DENOUE` est un
  * succes : l'ordre n'est plus ouvert, c'est ce que l'annulation voulait. `ECHEC`
  * n'est pas une erreur du run non plus, mais l'ordre **reste ouvert**, et c'est
- * ce que l'appelant doit en retenir.
+ * ce que l'appelant doit en retenir. `RETENU` : le port n'a rien envoye ; l'ordre
+ * compte comme ferme, pour que la suite du run soit celle d'une annulation reussie.
  */
 export type IssueDAnnulation =
-  | { readonly kind: 'ANNULE'; readonly clientOrderId: string; readonly exchangeId: string }
+  | { readonly kind: 'ANNULE' | 'RETENU'; readonly clientOrderId: string; readonly exchangeId: string }
   | { readonly kind: 'DEJA_DENOUE' | 'ECHEC'; readonly clientOrderId: string; readonly exchangeId: string; readonly reason: string };
 
 /** Ce qu'il faut pour annuler : l'exchange qui ecrit, et celui qui relit un refus. */
@@ -224,8 +226,9 @@ export async function annuler(
   const issues: IssueDAnnulation[] = [];
   for (const intention of intentions) {
     const rendue = parId.get(intention.exchangeId);
-    if (rendue?.kind === 'CANCELLED') {
-      issues.push({ kind: 'ANNULE', clientOrderId: intention.clientOrderId, exchangeId: intention.exchangeId });
+    if (rendue?.kind === 'CANCELLED' || rendue?.kind === 'RETENU') {
+      const kind = rendue.kind === 'CANCELLED' ? 'ANNULE' : 'RETENU';
+      issues.push({ kind, clientOrderId: intention.clientOrderId, exchangeId: intention.exchangeId });
       continue;
     }
     issues.push(await classerLeRefus(annulation.exchange, intention, rendue?.reason ?? 'aucune issue rendue'));

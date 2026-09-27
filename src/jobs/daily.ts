@@ -741,7 +741,7 @@ async function executeRun(run: DailyRun, parti: ExecutionDeStrategie[]): Promise
    */
   const annulations = await annuler({ port: execution.port, exchange: ports.exchange }, reconciled.cancellations);
   for (const issue of annulations) {
-    log(`annulation ${issue.clientOrderId} : ${issue.kind}${issue.kind === 'ANNULE' ? '' : ` — ${issue.reason}`}`);
+    log(`annulation ${issue.clientOrderId} : ${issue.kind}${'reason' in issue ? ` — ${issue.reason}` : ''}`);
   }
   const enVol = ordresEnVol(reconciled.orders, annulations);
   const suspendue = enVol.length === 0 ? undefined : motifEnVol(enVol);
@@ -873,12 +873,14 @@ async function executeRun(run: DailyRun, parti: ExecutionDeStrategie[]): Promise
    * **Premiere ligne de defense d'E24** : une decision `ALREADY_RECORDED` est
    * celle d'un run du jour deja passe, et rien n'est transmis. La seconde, la
    * cle primaire d'`orders`, est dans `execute.ts`. Le `decisionId` rattache
-   * chaque ordre a son run, par `decisions.run_date` : S9 en depend.
+   * chaque ordre a son run, par `decisions.run_date` : S9 en depend. Une
+   * decision `RETENU` passe comme une `RECORDED` : l'etape 6 se deroule, et
+   * c'est le port d'execution qui dira, par son issue, ce qu'il en a fait.
    */
   const placements: IssueDeJambe[] = [];
   for (const { strategy, isShadow, verdict, recorded } of outcomes) {
     if (isShadow || verdict.status !== 'ACCEPTED' || verdict.orders.length === 0) continue;
-    if (recorded.status !== 'RECORDED') {
+    if (recorded.status === 'ALREADY_RECORDED') {
       log(`${strategy} : decision du jour deja enregistree, aucun ordre transmis`);
       continue;
     }
@@ -1035,7 +1037,9 @@ async function announce(run: DailyRun, input: AlertInput): Promise<readonly Aler
     run.log(
       sent.status === 'SENT'
         ? `alerte ${alert.event} : partie (${sent.key})`
-        : `alerte ${alert.event} : NON PARTIE — ${sent.reason}`,
+        : sent.status === 'RETENU'
+          ? `alerte ${alert.event} : retenue, non envoyee (${sent.key})`
+          : `alerte ${alert.event} : NON PARTIE — ${sent.reason}`,
     );
     outcomes.push(sent);
   }
@@ -1116,12 +1120,19 @@ async function deliverReport(run: DailyRun, outcome: DailyOutcome): Promise<Repo
   run.log(
     sent.status === 'SENT'
       ? `rapport quotidien : parti (HTTP ${String(sent.httpStatus)}) — ${mail.subject}`
-      : `rapport quotidien : NON PARTI — ${sent.reason}`,
+      : sent.status === 'RETENU'
+        ? `rapport quotidien : retenu, non envoye — ${mail.subject}`
+        : `rapport quotidien : NON PARTI — ${sent.reason}`,
   );
   return sent;
 }
 
 // --- Ce que le run a fait savoir --------------------------------------------
+
+/** Un envoi parti, ou retenu par un port inerte : voir `toutParti`. */
+function rendu(status: AlertOutcome['status'] | ReportDelivery['status']): boolean {
+  return status === 'SENT' || status === 'RETENU';
+}
 
 /**
  * **Le compte rendu du run est-il entierement parti** — ses alertes et son
@@ -1145,9 +1156,16 @@ async function deliverReport(run: DailyRun, outcome: DailyOutcome): Promise<Repo
  * ici — `reported` exige `COMPLETED`, `pulseOf` rend `ABANDONNE` d'abord. Un
  * `SKIPPED` qui rendrait vrai serait pire : il ferait dire « tout est parti » a
  * un run qui n'a rien envoye.
+ *
+ * **`RETENU` rend vrai, comme `SENT`**, et le sens du predicat ne change pas.
+ * Seuls les ports inertes le rendent : le compte rendu a atteint le port que la
+ * composition lui donnait, et ce port l'a garde **par construction**, non par
+ * panne. Le compter comme un echec ferait sortir l'essai en 1 et son pulse en
+ * `NON_RENDU` pour une raison qui n'est pas la sienne. Un run normal ne
+ * rencontre jamais `RETENU` : son code de sortie est inchange.
  */
 function toutParti(alerts: readonly AlertOutcome[], mail: ReportDelivery): boolean {
-  return alerts.every((a) => a.status === 'SENT') && mail.status === 'SENT';
+  return alerts.every((a) => rendu(a.status)) && rendu(mail.status);
 }
 
 /**
@@ -1234,13 +1252,13 @@ function pulseOf(
     };
   }
   if (!toutParti(alerts, mail)) {
-    const nonParties = alerts.filter((a) => a.status !== 'SENT').length;
+    const nonParties = alerts.filter((a) => !rendu(a.status)).length;
     return {
       ...entete,
       ending: {
         kind: 'NON_RENDU',
         alertsFailed: nonParties,
-        reportFailed: mail.status !== 'SENT',
+        reportFailed: !rendu(mail.status),
       },
     };
   }
@@ -1269,7 +1287,9 @@ async function signal(run: DailyRun, pulse: RunPulse): Promise<PingOutcome> {
   run.log(
     sent.status === 'PINGED'
       ? `healthcheck : pingue (${pulse.ending.kind})`
-      : `healthcheck : NON PINGUE — ${sent.reason}`,
+      : sent.status === 'RETENU'
+        ? `healthcheck : retenu, non envoye (${pulse.ending.kind})`
+        : `healthcheck : NON PINGUE — ${sent.reason}`,
   );
   return sent;
 }

@@ -66,15 +66,32 @@ export const BREVO_ENDPOINT = 'https://api.brevo.com/v3/smtp/email';
 /**
  * Deux sorts, et aucun texte libre. `httpStatus` est le nombre borne que rend
  * `http.ts` ; `reason` ne peut venir que de `motifDe` ou de la constante du
- * filet.
+ * filet. Ce sont les seuls que Brevo puisse rendre : `RETENU` n'en est pas.
  */
-export type MailOutcome =
+export type MailOutcomeReel =
   | { readonly status: 'SENT'; readonly httpStatus: number }
   | { readonly status: 'FAILED'; readonly reason: string };
+
+/**
+ * Le sort que lit l'appelant du port. `RETENU` n'est rendu que par le port
+ * inerte (`inertes.ts`) : aucun echange n'a eu lieu, donc aucun statut HTTP a
+ * porter.
+ */
+export type MailOutcome = MailOutcomeReel | { readonly status: 'RETENU' };
 
 export interface Mailer {
   /** Rend le sort du courrier. **Ne rejette jamais.** */
   sendReport(mail: DailyReportMail): Promise<MailOutcome>;
+}
+
+/**
+ * Le mailer Brevo, dont l'issue **exclut** `RETENU` : `daily.ts` le compte comme
+ * rendu, et un vrai rapport manque qui le rendrait ferait taire le code de
+ * sortie. Le rendre ici est une erreur de compilation, et elargir ce type fait
+ * echouer `test/adapters/ports-reels.test-d.ts`.
+ */
+export interface MailerReel extends Mailer {
+  sendReport(mail: DailyReportMail): Promise<MailOutcomeReel>;
 }
 
 type BrevoSecrets = Pick<Secrets, 'brevoApiKey' | 'brevoSender' | 'brevoRecipient'>;
@@ -133,12 +150,12 @@ function corpsDe(
  * rapport. C'est la seule lecture du module qui ne soit pas sous filet, et c'est
  * assume — voir l'en-tete, « ce qui reste hors du filet ».
  */
-export function openMailer(secrets: BrevoSecrets, send: HttpSend): Mailer {
+export function openMailer(secrets: BrevoSecrets, send: HttpSend): MailerReel {
   const apiKey = secrets.brevoApiKey;
   const sender = secrets.brevoSender;
   const recipient = secrets.brevoRecipient;
   return {
-    async sendReport(mail: DailyReportMail): Promise<MailOutcome> {
+    async sendReport(mail: DailyReportMail): Promise<MailOutcomeReel> {
       try {
         const outcome = await send({
           url: BREVO_ENDPOINT,

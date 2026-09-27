@@ -135,13 +135,29 @@ export interface RunPulse {
  * abouti mais la surveillance ne l'a pas su » et « le run a abandonne » ne sont
  * pas le meme incident.
  */
-export type PingOutcome =
+export type PingOutcomeReel =
   | { readonly status: 'PINGED'; readonly marked: boolean }
   | { readonly status: 'FAILED'; readonly marked: boolean; readonly reason: string };
+
+/**
+ * Le sort que lit l'appelant du port. `RETENU` n'est rendu que par le port
+ * inerte (`inertes.ts`) : aucun ping n'est parti, et `marked` dit ce que le
+ * corps aurait porte.
+ */
+export type PingOutcome = PingOutcomeReel | { readonly status: 'RETENU'; readonly marked: boolean };
 
 export interface Healthcheck {
   /** Rend le sort du ping. **Ne rejette jamais.** */
   ping(pulse: RunPulse): Promise<PingOutcome>;
+}
+
+/**
+ * Le healthcheck reel, dont l'issue **exclut** `RETENU`. Le rendre ici est une
+ * erreur de compilation, et elargir ce type fait echouer
+ * `test/adapters/ports-reels.test-d.ts`.
+ */
+export interface HealthcheckReel extends Healthcheck {
+  ping(pulse: RunPulse): Promise<PingOutcomeReel>;
 }
 
 type HealthcheckSecrets = Pick<Secrets, 'healthcheckUrl'>;
@@ -264,10 +280,10 @@ function corpsDe(pulse: RunPulse): Corps {
  * tout ecrit. L'objet attrape n'est pas lu du tout, pas meme pour le classer :
  * le motif rendu est une constante.
  */
-export function openHealthcheck(secrets: HealthcheckSecrets, send: HttpSend): Healthcheck {
+export function openHealthcheck(secrets: HealthcheckSecrets, send: HttpSend): HealthcheckReel {
   const url = new URL(secrets.healthcheckUrl).toString();
   return {
-    async ping(pulse: RunPulse): Promise<PingOutcome> {
+    async ping(pulse: RunPulse): Promise<PingOutcomeReel> {
       let marked = false;
       try {
         const corps = corpsDe(pulse);

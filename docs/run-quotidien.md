@@ -471,22 +471,34 @@ refuse que le mode soit nommé ailleurs dans `src/` — ni condition, ni paramè
 ni variable d'environnement — et que `force` ou `bypass` le soient où que ce soit
 (E17).
 
-**Chaque port inerte rend la réponse nominale** du vrai, jamais une forme
-dégradée, et dit sur sa propre ligne ce qu'il a retenu :
+**Chaque port inerte rend une issue `RETENU`**, variante que les vrais ports ne
+peuvent pas rendre, et dit sur sa propre ligne ce qu'il a retenu. L'interdiction
+est une erreur de compilation, pas une convention : chaque fabrique réelle
+(`openMailer`, `openNotifier`, `openHealthcheck`, `openDatabase`,
+`openCoinbaseExecution`) déclare un type de retour étroit (`MailerReel`, …) dont
+les issues excluent `RETENU`, et `test/adapters/ports-reels.test-d.ts` fait
+échouer `make typecheck` si l'un d'eux s'élargit. `daily.ts` consomme toujours le
+type large du port. `daily.ts`
+journalise selon l'issue reçue, sans savoir dans quel mode il tourne : le
+journal d'un essai dit « retenu », jamais « parti » ni « pingué ».
 
-| Port | Réponse | Ce qu'il faut savoir en lisant le journal |
+| Port | Réponse | Ligne de `daily.ts` |
 |---|---|---|
-| `recordDecision` | `RECORDED`, id = UUID nul | jamais `ALREADY_RECORDED` : l'essai rejoue la journée comme si elle était la première |
+| `recordDecision` | `RETENU`, id = UUID nul | `… — RETENU` ; jamais `ALREADY_RECORDED` : l'essai rejoue la journée comme si elle était la première |
 | `recordSnapshot` | rien | la photo de la veille reste la dernière en base |
-| `notify` | `SENT` | « alerte … : partie » suit la ligne `ntfy inerte : … retenue` |
-| `sendReport` | `SENT`, `HTTP 0` | zéro : aucun échange n'a eu lieu, et aucun code Brevo ne vaut zéro |
-| `ping` | `PINGED` | le marqueur est celui que le corps aurait porté |
-| `placeOrder` | identifiant `non-place-<client_order_id>` | les six champs, sur une ligne `ordre non place` |
-| `recordOrder`, `recordPlacement` | `RECORDED`, rien | la ligne `PENDING` et son issue ne sont pas écrites ; le port réel n'est pas ouvert, donc une clé sans `can_trade` suffit |
+| `recordTransition` | `RETENU` | `ordre … : FILLED, … execute — RETENU` |
+| `notify` | `RETENU` | `alerte … : retenue, non envoyee (…)` |
+| `sendReport` | `RETENU` | `rapport quotidien : retenu, non envoye — …` |
+| `ping` | `RETENU`, avec le marqueur que le corps aurait porté | `healthcheck : retenu, non envoye (…)` |
+| `placeOrder` | `RETENU`, identifiant `non-place-<client_order_id>` | les six champs sur une ligne `ordre non place`, puis `<stratégie> : <client_order_id> RETENU` ; aucune issue de placement n'est écrite |
+| `cancelOrders` | `RETENU` | `annulation … : RETENU` ; l'ordre compte comme fermé, comme après une annulation réussie |
+| `recordOrder` | `RETENU` | la ligne `PENDING` n'est pas écrite ; le port réel n'est pas ouvert, donc une clé sans `can_trade` suffit |
 
-Un `FAILED` aurait fait sortir l'essai en 1 et changé le pulse pour une raison
-qui n'est pas la sienne. Le code de sortie d'un `DRY_RUN` est donc celui qu'aurait
-eu le run réel sur la même journée, pannes des canaux mises à part.
+**`RETENU` compte comme rendu** dans `toutParti`, donc pour `reported()` et le
+pulse. Un `FAILED` aurait fait sortir l'essai en 1 et changé le pulse pour une
+raison qui n'est pas la sienne. Le code de sortie d'un `DRY_RUN` est donc celui
+qu'aurait eu le run réel sur la même journée, pannes des canaux mises à part ;
+celui d'un run normal, qui ne rencontre jamais `RETENU`, est inchangé.
 
 ### Ce que la sonde garantit, et sa limite
 

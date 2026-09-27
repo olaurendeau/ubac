@@ -30,10 +30,14 @@ import { alertKey } from './notifier.js';
  * 1. **Lire reste reel, ecrire ne l'est plus.** La base inerte garde les
  *    lectures de la vraie : un run sur une photo absente et sans flux ne
  *    rejouerait rien de la journee. Ses ecritures, elles, ne partent pas.
- * 2. **Une reponse nominale, jamais degradee.** Chaque port rend ce que le vrai
- *    rendrait un jour sans panne — `RECORDED`, `SENT`, `PINGED`. Un `FAILED`
- *    ferait sortir le run en 1 et le pulse en `NON_RENDU` pour une raison qui
- *    n'est pas la sienne : on croirait avoir trouve un bug.
+ * 2. **Une reponse `RETENU`, ni un succes ni un echec.** Chaque port rend la
+ *    variante `RETENU` de son issue, que les vrais ne rendent jamais. Un
+ *    `FAILED` ferait sortir le run en 1 et le pulse en `NON_RENDU` pour une
+ *    raison qui n'est pas la sienne ; un `SENT` ou un `PINGED` ferait ecrire a
+ *    `daily.ts` « parti » ou « pingue » dans le seul journal qui prouve un
+ *    `DRY_RUN`. `RETENU` passe partout ou le succes passe — le code de sortie,
+ *    le pulse, la suite du run — et se journalise pour ce qu'il est, sans que
+ *    `daily.ts` sache dans quel mode il tourne.
  * 3. **Chaque port dit ce qu'il retient, sur sa propre ligne**, juste avant la
  *    ligne ou `daily.ts` rapporte la reponse. Ni secret ni URL : aucun de ces
  *    ports n'en recoit.
@@ -64,13 +68,6 @@ export interface Effets {
  */
 export const DECISION_NON_ECRITE = '00000000-0000-0000-0000-000000000000';
 
-/**
- * Le statut HTTP d'un echange qui n'a pas eu lieu. Zero, et jamais un code que
- * Brevo aurait pu rendre : la ligne « parti (HTTP 0) » se lit pour ce qu'elle
- * est.
- */
-export const AUCUN_ECHANGE_HTTP = 0;
-
 /** Le prefixe de l'identifiant d'exchange d'un ordre journalise, jamais place. */
 export const ORDRE_NON_PLACE = 'non-place-';
 
@@ -79,7 +76,7 @@ export const ORDRE_NON_PLACE = 'non-place-';
  * un `Pick` : une operation ajoutee a la base ne compile pas ici tant qu'on n'a
  * pas decide si c'est une lecture, qui passe, ou une ecriture, qui se retient.
  *
- * `RECORDED` et non `ALREADY_RECORDED` : le `DRY_RUN` ne sait pas si le run du
+ * `RETENU` et non `ALREADY_RECORDED` : le `DRY_RUN` ne sait pas si le run du
  * jour a deja eu lieu, et ne le demande pas. Il rejoue la journee comme si elle
  * etait la premiere, ce qui est la seule facon de voir ce qu'elle deciderait.
  */
@@ -88,7 +85,7 @@ export function baseSansEcriture(db: UbacDatabase, log: Journal): UbacDatabase {
     recordDecision(input: DecisionToRecord): Promise<RecordDecisionOutcome> {
       const { strategy, runDate } = input.intent;
       log(`base inerte : decision ${strategy}${input.isShadow ? ' (shadow)' : ''} du ${runDate} non ecrite`);
-      return Promise.resolve({ status: 'RECORDED', id: DECISION_NON_ECRITE });
+      return Promise.resolve({ status: 'RETENU', id: DECISION_NON_ECRITE });
     },
     recordSnapshot(input: SnapshotToRecord): Promise<void> {
       log(`base inerte : photo du ${input.runDate} non ecrite`);
@@ -100,7 +97,7 @@ export function baseSansEcriture(db: UbacDatabase, log: Journal): UbacDatabase {
     pendingOrders: () => db.pendingOrders(),
     recordOrder(input: OrderToRecord): Promise<RecordOrderOutcome> {
       log(`base inerte : ordre ${input.order.clientOrderId} non ecrit`);
-      return Promise.resolve({ status: 'RECORDED' });
+      return Promise.resolve({ status: 'RETENU' });
     },
     recordPlacement(input: PlacementToRecord): Promise<void> {
       log(`base inerte : issue ${input.kind} de ${input.clientOrderId} non ecrite`);
@@ -108,7 +105,7 @@ export function baseSansEcriture(db: UbacDatabase, log: Journal): UbacDatabase {
     },
     recordTransition(input: TransitionToRecord): Promise<RecordTransitionOutcome> {
       log(`base inerte : transition ${input.status} de ${input.clientOrderId} non ecrite`);
-      return Promise.resolve({ status: 'RECORDED' });
+      return Promise.resolve({ status: 'RETENU' });
     },
     // Fermer la connexion des lectures : ce n'est pas une ecriture.
     close: () => db.close(),
@@ -120,7 +117,7 @@ export function notifierInerte(log: Journal): Notifier {
   return {
     notify(alert: Alert): Promise<AlertOutcome> {
       log(`ntfy inerte : alerte ${alert.event} retenue, non envoyee — ${alert.title}`);
-      return Promise.resolve({ status: 'SENT', event: alert.event, key: alertKey(alert) });
+      return Promise.resolve({ status: 'RETENU', event: alert.event, key: alertKey(alert) });
     },
   };
 }
@@ -130,7 +127,7 @@ export function mailerInerte(log: Journal): Mailer {
   return {
     sendReport(mail: DailyReportMail): Promise<MailOutcome> {
       log(`brevo inerte : rapport retenu, non envoye — ${mail.subject}`);
-      return Promise.resolve({ status: 'SENT', httpStatus: AUCUN_ECHANGE_HTTP });
+      return Promise.resolve({ status: 'RETENU' });
     },
   };
 }
@@ -143,7 +140,7 @@ export function healthcheckInerte(log: Journal): Healthcheck {
   return {
     ping(pulse: RunPulse): Promise<PingOutcome> {
       log(`healthcheck inerte : ping retenu, non envoye (${pulse.ending.kind})`);
-      return Promise.resolve({ status: 'PINGED', marked: pulse.ending.kind === 'CONCLU' });
+      return Promise.resolve({ status: 'RETENU', marked: pulse.ending.kind === 'CONCLU' });
     },
   };
 }
@@ -168,7 +165,7 @@ export function executionJournalisee(log: Journal): ExecutionPort {
         `ordre non place (port journalisant) : client_order_id=${corps.client_order_id} paire=${corps.product_id} cote=${corps.side} quantite=${limite.base_size} prix_limite=${limite.limit_price} post_only=${String(limite.post_only)}`,
       );
       return {
-        kind: 'PLACED',
+        kind: 'RETENU',
         exchangeId: `${ORDRE_NON_PLACE}${corps.client_order_id}`,
         clientOrderId: order.clientOrderId,
       };
@@ -176,7 +173,7 @@ export function executionJournalisee(log: Journal): ExecutionPort {
 
     async cancelOrders(exchangeIds: readonly string[]): Promise<readonly CancelOutcome[]> {
       for (const exchangeId of exchangeIds) log(`annulation non envoyee (port journalisant) : ${exchangeId}`);
-      return exchangeIds.map((exchangeId) => ({ kind: 'CANCELLED', exchangeId }));
+      return exchangeIds.map((exchangeId) => ({ kind: 'RETENU', exchangeId }));
     },
   };
 }
