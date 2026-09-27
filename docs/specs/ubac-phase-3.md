@@ -151,7 +151,7 @@ précédents, avec l'échéance « avant la phase 3 ».
 
 | # | Question | Réponse retenue |
 |---|---|---|
-| **O1** | Forme du plafond réduit (B2) | **3 — fraction de la valeur du portefeuille par run**, c'est-à-dire `REBALANCE_TOO_LARGE_PCT` abaissé. **Valeur retenue le 2026-09-21 : 8 %** au lieu de 25 %, mesurée sur le rejeu et non estimée — voir E29 |
+| **O1** | Forme du plafond réduit (B2) | **3 — fraction de la valeur du portefeuille par run**, c'est-à-dire `REBALANCE_TOO_LARGE_PCT` abaissé. **Valeur retenue le 2026-09-21 : 8 %** au lieu de 25 %, mesurée sur le rejeu et non estimée ; **relevée à 11 % le 2026-09-27** par décision de l'opérateur, mesurée de même — voir E29 et E34 |
 | **O2** | Que fait le système quand une jambe dépasse le plafond ? | **3 — pas de rabotage.** Le run entier est refusé ; le portefeuille reste hors bande jusqu'à la levée du plafond |
 | **O3** | Par quel geste le plafond est-il levé ? | **3 — un geste explicite** : changement de constante dans le code, PR relue, déploiement. Jamais automatiquement, jamais par variable d'environnement |
 | **O4** | Qu'est-ce qui clôt la phase 3 ? | **1 — un mois calendaire de runs armés sans incident**, même si aucun rééquilibrage n'a eu lieu |
@@ -461,15 +461,41 @@ dans `decisions.reason`.
 29. Un plafond réduit est **armé dès le premier run qui exécute**, et il est
     strictement plus contraignant que `REBALANCE_TOO_LARGE_PCT` à 25 %.
     **O1 = 3** : le plafond est une **fraction de la valeur du portefeuille par
-    run**, donc `REBALANCE_TOO_LARGE_PCT` lui-même, abaissé à **8 %**. Cette
-    valeur est **mesurée, pas estimée** : sur 974 jours de rejeu, les douze
+    run**, donc `REBALANCE_TOO_LARGE_PCT` lui-même, abaissé à **8 %** le
+    2026-09-21, puis **relevé à 11 % le 2026-09-27**. Chaque valeur est
+    **mesurée, pas estimée** : sur 974 jours de rejeu, les douze
     rééquilibrages de production pesaient de 5,0 à 10,7 %, et un simple retour
     à la cible depuis la bande cash 24–36 % en déplace déjà ~6 %. À 5 %, valeur
     avancée par le cadrage sans données, 594 jours de déclenchement étaient
     refusés et 3 rééquilibrages sur 12 passaient — le mois calendaire d'E56
     serait devenu un mois d'alertes `URGENT` quotidiennes sans rien d'armé. À
     8 %, 166 jours sont refusés et 10 rééquilibrages passent : le plafond mord
-    sans neutraliser la phase. Aucune règle nouvelle n'est écrite : c'est la valeur d'une constante
+    sans neutraliser la phase.
+    **Relèvement à 11 %, décision de l'opérateur du 2026-09-27.** Le cas réel
+    l'a motivé : le portefeuille est hors bande depuis l'apport du 2026-09-26,
+    la correction pèse 8,40 %, et à 8 % chaque run à partir du dégel du
+    3 octobre aurait été refusé avec une alerte `URGENT` quotidienne. La
+    mesure, sur le même rejeu de 974 jours et avec le vrai noyau, un plafond à
+    la fois, pour la stratégie de production `rebalance` :
+
+    | plafond | exécutions (sur 12) | jours refusés `REBALANCE_TOO_LARGE` |
+    |---|---|---|
+    | 8 % | 10 | 166 |
+    | 9 % | 8 | 239 |
+    | 10 % | 11 | 45 |
+    | 11 % | 12 | 0 |
+    | 25 % | 12 | 0 |
+
+    Deux enseignements. **L'effet du plafond n'est pas monotone** : 9 % fait
+    pire que 8 %, parce que refuser ou exécuter un jour déplace tout le chemin
+    du portefeuille. Une valeur se mesure, elle ne s'interpole pas. **À 11 %,
+    le plafond ne refuse plus aucun rééquilibrage historique** : il cesse de
+    mordre sur la stratégie et devient un pur garde-fou contre un bug de
+    dimensionnement — 752 USDC par run au plus sur un portefeuille de
+    6 834 USDC, contre 1 708 à 25 %. C'est un choix assumé. L'ombre
+    `rebalance_ab`, qui arme le déclencheur B, bute encore sur 84 jours de
+    rejeu à 11 % ; elle ne place rien (E31).
+    Aucune règle nouvelle n'est écrite : c'est la valeur d'une constante
     existante qui change, et le lot qui l'abaisse est fusionné **avant** celui
     qui arme l'exécution. Le plafond s'applique donc à tout appel de
     `validate()`, verdicts shadow compris — voir E31.
@@ -518,6 +544,12 @@ dans `decisions.reason`.
     Ni levée automatique, ni variable d'environnement : `src/config/env.ts` fait
     déjà échouer le démarrage sur toute variable préfixée `UBAC_RISK_`, et ce
     critère ne rouvre pas cette porte.
+    Le **relèvement** de 8 à 11 % du 2026-09-27 suit le même geste et laisse
+    la même trace : une PR relue qui change la constante, son commit daté sur
+    `main`, et le `git_sha` des runs qui suivent son déploiement. Le plafond
+    reste armé, à une valeur qui ne refuse plus aucun rééquilibrage du rejeu ;
+    la date et le motif sont écrits en E29 et dans le commentaire de la
+    constante.
 
 **Réconciliation : les écritures que la phase 3 ouvre**
 

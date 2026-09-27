@@ -2118,14 +2118,14 @@ describe('la ligne du canal ouvert — §9, ecart assume', () => {
 
 // --- §8 etape 6, et le DRY_RUN -----------------------------------------------
 
-/** Cash a 23 % : sous la borne de 24 %, et un retour a la cible de 7 %, sous le plafond de 8 %. */
+/** Cash a 23 % : sous la borne de 24 %, et un retour a la cible de 7 %, sous le plafond (C20). */
 const JUSTE_HORS_BANDE: readonly AssetBalance[] = [
   solde('BTC', '0.94'),
   solde('ETH', '12'),
   solde('USDC', '23000'),
 ];
 
-/** Cash a 23,75 % : deux ventes, BTC puis ETH, 6,25 % a elles deux, sous le plafond de 8 %. */
+/** Cash a 23,75 % : deux ventes, BTC puis ETH, 6,25 % a elles deux, sous le plafond (C20). */
 const DEUX_JAMBES: readonly AssetBalance[] = [
   solde('BTC', '0.9'),
   solde('ETH', '12.5'),

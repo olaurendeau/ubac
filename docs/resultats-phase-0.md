@@ -3,8 +3,11 @@
 Généré le 2026-09-10 sur `main`, commit `12cbac0`.
 Reproductible par `make ci` puis `./scripts/dev.sh npm run replay`, **sur ce
 commit** : depuis le plafond réduit de la phase 3, `REBALANCE_TOO_LARGE_PCT`
-vaut 8 % et non 25 %, et les lignes `rebalance*`, qui passent par `validate()`,
-ne sont plus celles-ci sur `main`. Voir
+ne vaut plus 25 %. De 8 % (2026-09-21), les lignes `rebalance*`, qui passent
+par `validate()`, n'étaient plus celles-ci sur `main`. Relevé à 11 % le
+2026-09-27, le plafond ne refuse plus aucun rééquilibrage de `rebalance` : sa
+ligne est de nouveau identique à celle-ci. Celle de `rebalance_ab`, qui bute
+encore 84 jours, reste différente (23 304,05 USDC, 97 déclenchements). Voir
 [run-quotidien.md](run-quotidien.md#le-plafond-réduit-de-la-phase-3).
 
 ## Ce que ce document est, et ce qu'il n'est pas
