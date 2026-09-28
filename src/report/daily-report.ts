@@ -122,26 +122,27 @@ export interface TwrPoint {
   readonly benchmarks: Readonly<Record<string, Decimal>>;
 }
 
-/** Un apport enregistre, reduit a ce que la section « Derniers apports » lit. */
-export interface ReportDeposit {
-  /** Le jour UTC de l'apport. */
+/** Un mouvement enregistre, reduit a ce que la section « Derniers mouvements » lit. */
+export interface ReportMovement {
+  /** Le jour UTC du mouvement. */
   readonly occurredOn: IsoDate;
+  /** Signe : positif pour un apport, negatif pour un retrait. */
   readonly amount: UsdcAmount;
-  /** D'ou vient l'apport, quand quelqu'un l'a dit. */
+  /** D'ou vient le mouvement, ou ou il va, quand quelqu'un l'a dit. */
   readonly note: string | null;
 }
 
 /**
- * Les derniers apports tels que le run les a lus, **ou le motif de leur
+ * Les derniers mouvements tels que le run les a lus, **ou le motif de leur
  * absence** : une lecture en panne ne coupe pas le run, et le rapport le dit a
  * la place de la liste plutot que de la taire.
  */
-export type ReportDeposits =
-  | { readonly status: 'READ'; readonly deposits: readonly ReportDeposit[] }
+export type ReportMovements =
+  | { readonly status: 'READ'; readonly movements: readonly ReportMovement[] }
   | { readonly status: 'UNREADABLE'; readonly reason: string };
 
-/** Combien d'apports la section montre. Le run en demande autant a la base : c'est le rapport qui decide de ce qu'il affiche. */
-export const DERNIERS_APPORTS = 3;
+/** Combien de mouvements la section montre. Le run en demande autant a la base : c'est le rapport qui decide de ce qu'il affiche. */
+export const DERNIERS_MOUVEMENTS = 5;
 
 export interface DailyReportInput {
   readonly run: CompletedRun;
@@ -157,11 +158,11 @@ export interface DailyReportInput {
    */
   readonly series?: readonly TwrPoint[];
   /**
-   * Les derniers apports, du plus recent au plus ancien, rendus dans l'ordre
+   * Les derniers mouvements, du plus recent au plus ancien, rendus dans l'ordre
    * recu. Obligatoire : la section est la tous les jours, et une entree absente
    * ne dirait pas si la liste est vide ou si personne ne l'a lue.
    */
-  readonly deposits: ReportDeposits;
+  readonly movements: ReportMovements;
 }
 
 /** Ce que le rendu produit, et tout ce dont l'envoi a besoin. */
@@ -839,33 +840,36 @@ function comparisonSection(input: DailyReportInput): string {
 }
 
 /**
- * Un historique court, **pas le flux du jour** : les derniers apports
- * enregistres, quelle que soit leur date. La section ne disparait jamais — ni
- * sans apport, ni quand la lecture a echoue — : une section qui disparait ne dit
- * pas pourquoi.
+ * Un historique court, **pas le flux du jour** : les derniers mouvements
+ * enregistres, apports et retraits, quelle que soit leur date. La section ne
+ * disparait jamais — ni sans mouvement, ni quand la lecture a echoue — : une
+ * section qui disparait ne dit pas pourquoi.
  *
- * « Enregistres » et non « detectes » : un apport arrive dans `cash_flows` par
- * une ecriture, et la section ne pretend pas savoir laquelle.
+ * Le signe du montant distingue l'apport du retrait ; aucune colonne ne le
+ * repete.
+ *
+ * « Enregistres » et non « detectes » : un mouvement arrive dans `cash_flows`
+ * par une ecriture, et la section ne pretend pas savoir laquelle.
  */
-function apportsSection(deposits: ReportDeposits): string {
-  if (deposits.status === 'UNREADABLE') {
+function mouvementsSection(movements: ReportMovements): string {
+  if (movements.status === 'UNREADABLE') {
     return section(
-      'Derniers apports',
-      `<p style="${NOTE}">Les derniers apports n'ont pas pu etre lus : ${escape(deposits.reason)}. Le reste du rapport n'en depend pas.</p>`,
+      'Derniers mouvements',
+      `<p style="${NOTE}">Les derniers mouvements n'ont pas pu etre lus : ${escape(movements.reason)}. Le reste du rapport n'en depend pas.</p>`,
     );
   }
-  if (deposits.deposits.length === 0) {
-    return section('Derniers apports', `<p style="${NOTE}">Aucun apport enregistre.</p>`);
+  if (movements.movements.length === 0) {
+    return section('Derniers mouvements', `<p style="${NOTE}">Aucun mouvement enregistre.</p>`);
   }
-  const rows = deposits.deposits.map((apport) => [
-    escape(apport.occurredOn),
-    usdc(apport.amount),
-    apport.note === null ? '—' : escape(apport.note),
+  const rows = movements.movements.map((mouvement) => [
+    escape(mouvement.occurredOn),
+    usdc(mouvement.amount),
+    mouvement.note === null ? '—' : escape(mouvement.note),
   ]);
   return section(
-    'Derniers apports',
+    'Derniers mouvements',
     table(['Date', 'Montant', 'Note'], rows) +
-      `<p style="${NOTE}">Les ${String(DERNIERS_APPORTS)} plus recents au plus, du plus recent au plus ancien, quelle que soit leur date. Un retrait n'y figure pas.</p>`,
+      `<p style="${NOTE}">Les ${String(DERNIERS_MOUVEMENTS)} plus recents au plus, du plus recent au plus ancien, quelle que soit leur date. Un montant negatif est un retrait.</p>`,
   );
 }
 
@@ -958,7 +962,7 @@ export function renderDailyReport(input: DailyReportInput): DailyReportMail {
     allocationSection(run, input.params.targets) +
     comparisonSection(input) +
     gapSection(run) +
-    apportsSection(input.deposits) +
+    mouvementsSection(input.movements) +
     /* En dernier, et c'est donc ce que la coupure de Gmail emporte en premier : d'ou le graphe borne, qui est ce qui ferait grossir le rapport jusqu'a ce seuil. */
     lexiqueSection(run) +
     '</div>';

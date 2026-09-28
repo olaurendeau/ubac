@@ -35,7 +35,7 @@ import type {
   Verdict,
   Weights,
 } from '../core/types.js';
-import { DERNIERS_APPORTS, renderDailyReport } from '../report/daily-report.js';
+import { DERNIERS_MOUVEMENTS, renderDailyReport } from '../report/daily-report.js';
 import type { AlertInput, RebalanceExecuted } from './alerts.js';
 import { alertsFor } from './alerts.js';
 import type { IssueDAnnulation, IssueDeJambe } from './execute.js';
@@ -197,7 +197,7 @@ export interface DailyPorts {
     | 'latestSnapshot'
     | 'snapshotSeries'
     | 'recentCashFlows'
-    | 'latestDeposits'
+    | 'latestCashFlows'
     | 'pendingOrders'
     | 'recordOrder'
     | 'recordPlacement'
@@ -335,13 +335,13 @@ type DailyOutcome =
        */
       readonly snapshotSeries: readonly SnapshotPoint[];
       /**
-       * Les derniers apports du rapport, lus a l'etape 4bis avec la serie et pour
+       * Les derniers mouvements du rapport, lus a l'etape 4bis avec la serie et pour
        * le meme motif. Mais **leur panne ne coupe pas le run** : elle revient en
        * valeur, et le rapport le dit. Un historique court ne vaut pas qu'on
        * abandonne une journee pour lui ; la carence du declencheur A, elle, lit
        * `recentCashFlows`, que cette lecture ne remplace pas.
        */
-      readonly latestDeposits: LatestDeposits;
+      readonly latestCashFlows: LatestCashFlows;
       readonly observations: ReconcileObservations;
       /** §7 : l'etat interne a-t-il du se rendre a l'exchange ce jour-la. */
       readonly resync: Resynchronization;
@@ -363,22 +363,22 @@ type DailyOutcome =
 
 export type DailyRunResult = DailyOutcome & { readonly report: RunReport };
 
-/** Les derniers apports lus, ou le motif de leur absence. `DailyReportInput.deposits` le recoit tel quel. */
-export type LatestDeposits =
-  | { readonly status: 'READ'; readonly deposits: readonly CashFlowRecord[] }
+/** Les derniers mouvements lus, ou le motif de leur absence. `DailyReportInput.movements` le recoit tel quel. */
+export type LatestCashFlows =
+  | { readonly status: 'READ'; readonly movements: readonly CashFlowRecord[] }
   | { readonly status: 'UNREADABLE'; readonly reason: string };
 
 /**
  * La seule lecture du run dont la panne est **rendue** et non levee : voir
- * `latestDeposits` sur le resultat. Le motif est journalise, pour que la panne
+ * `latestCashFlows` sur le resultat. Le motif est journalise, pour que la panne
  * se lise aussi hors du courrier.
  */
-async function lireApports(db: Pick<UbacDatabase, 'latestDeposits'>, log: RunLogger): Promise<LatestDeposits> {
+async function lireMouvements(db: Pick<UbacDatabase, 'latestCashFlows'>, log: RunLogger): Promise<LatestCashFlows> {
   try {
-    return { status: 'READ', deposits: await db.latestDeposits(DERNIERS_APPORTS) };
+    return { status: 'READ', movements: await db.latestCashFlows(DERNIERS_MOUVEMENTS) };
   } catch (error) {
     const reason = texte(error);
-    log(`derniers apports non lus : ${reason}`);
+    log(`derniers mouvements non lus : ${reason}`);
     return { status: 'UNREADABLE', reason };
   }
 }
@@ -824,7 +824,7 @@ async function executeRun(run: DailyRun, parti: ExecutionDeStrategie[]): Promise
   const previous = await ports.db.latestSnapshot();
   /* La serie du graphe du rapport, lue ici et pas apres les ecritures : voir `snapshotSeries` sur le resultat. */
   const serie = await ports.db.snapshotSeries();
-  const apports = await lireApports(ports.db, log);
+  const mouvements = await lireMouvements(ports.db, log);
   const flows = previous === undefined ? [] : await ports.db.recentCashFlows(previous.createdAt);
   const step = prepareSnapshot({
     runDate,
@@ -961,7 +961,7 @@ async function executeRun(run: DailyRun, parti: ExecutionDeStrategie[]): Promise
     cashFlows,
     previousSnapshot: previous,
     snapshotSeries: serie,
-    latestDeposits: apports,
+    latestCashFlows: mouvements,
     observations: reconciled.observations,
     resync,
     outcomes,
@@ -1146,7 +1146,7 @@ async function deliverReport(run: DailyRun, outcome: DailyOutcome): Promise<Repo
     params: productionParams(run.config),
     previous: outcome.previousSnapshot,
     series: outcome.snapshotSeries,
-    deposits: outcome.latestDeposits,
+    movements: outcome.latestCashFlows,
   });
   const sent = await run.ports.mailer.sendReport(mail);
   run.log(

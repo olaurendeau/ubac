@@ -587,10 +587,10 @@ describe.skipIf(URL_DE_TEST === undefined)('adapter de base, contre un Postgres 
 
     /*
      * Quatre apports et deux retraits, le plus recent des flux etant un retrait :
-     * la requete filtre **avant** de borner, sinon les retraits prendraient la
-     * place des apports. Inverser le tri rend les trois plus anciens.
+     * les retraits restent, signe compris, et la borne laisse tomber le plus
+     * ancien. Inverser le tri rend les cinq plus anciens.
      */
-    it('latestDeposits rend les trois derniers apports, du plus recent au plus ancien, sans retrait', async () => {
+    it('latestCashFlows rend les cinq derniers mouvements, retraits compris, du plus recent au plus ancien', async () => {
       await brut.query(`
         INSERT INTO cash_flows (occurred_at, amount_usdc, note) VALUES
           ('2025-01-15T10:00:00Z', '5000', 'apport initial'),
@@ -600,19 +600,21 @@ describe.skipIf(URL_DE_TEST === undefined)('adapter de base, contre un Postgres 
           ('2026-07-01T09:00:00Z', '-300', 'retrait'),
           ('2026-09-27T09:00:00Z', '-50', 'dernier flux, un retrait')`);
 
-      const apports = await db.latestDeposits(3);
+      const mouvements = await db.latestCashFlows(5);
 
-      expect(apports.map((a) => [a.occurredOn, a.amount.toFixed(), a.note])).toEqual([
+      expect(mouvements.map((m) => [m.occurredOn, m.amount.toFixed(), m.note])).toEqual([
+        ['2026-09-27', '-50', 'dernier flux, un retrait'],
         ['2026-09-26', '1000', 'virement du compte courant'],
+        ['2026-07-01', '-300', 'retrait'],
         ['2026-06-10', '750.12345678', 'prime'],
         ['2026-03-01', '200', null],
       ]);
     });
 
-    it('latestDeposits rend une liste vide sans apport, retraits compris', async () => {
-      expect(await db.latestDeposits(3)).toEqual([]);
+    it('latestCashFlows rend une liste vide sans mouvement, et un retrait seul en est un', async () => {
+      expect(await db.latestCashFlows(5)).toEqual([]);
       await brut.query(`INSERT INTO cash_flows (occurred_at, amount_usdc) VALUES ('2026-09-01T00:00:00Z', '-10')`);
-      expect(await db.latestDeposits(3)).toEqual([]);
+      expect((await db.latestCashFlows(5)).map((m) => m.amount.toFixed())).toEqual(['-10']);
     });
 
     it('pendingOrders ne rend que les ordres ouverts, PENDING et PARTIAL', async () => {
