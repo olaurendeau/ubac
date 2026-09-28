@@ -1,11 +1,12 @@
 import { Decimal } from 'decimal.js';
-import { boolean, customType, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
+import { boolean, check, customType, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from 'drizzle-orm/pg-core';
 
 import type { AllowedAsset, IsoDate } from '../core/types.js';
 
 /**
- * Les quatre tables du §4 de la spec, et la frontiere de conversion qui les
- * borde. Ce module ne parle a personne : il decrit des colonnes et sait
+ * Les quatre tables du §4 de la spec, le journal du convoyeur, et la
+ * frontiere de conversion qui les borde. Ce module ne parle a personne : il decrit des colonnes et sait
  * traduire une valeur SQL en valeur du noyau, et l'inverse.
  *
  * Tout tient a une regle : **`numeric(20,8)` entre et sort en chaine.** Le
@@ -215,13 +216,118 @@ export const snapshots = pgTable('snapshots', {
 });
 
 /**
+ * D'ou vient un flux (DC7 du convoyeur). `OPERATEUR` est le defaut : l'`INSERT`
+ * que l'operateur tape aujourd'hui continue de passer, et les lignes deja
+ * saisies prennent l'origine qui est la leur. `CONVOYEUR` est l'apport ecrit
+ * par le convoyeur ; `DETECTE` est reserve au flux que l'exchange revelera (N8
+ * du plan des flux), et personne ne l'ecrit encore.
+ */
+export const CASH_FLOW_ORIGINS = ['OPERATEUR', 'CONVOYEUR', 'DETECTE'] as const;
+
+export type CashFlowOrigin = (typeof CASH_FLOW_ORIGINS)[number];
+
+/**
+ * L'index unique de la cle naturelle : la seconde ecriture d'un meme apport
+ * bute dessus, et c'est ce nom que le convoyeur reconnait dans une 23505 pour
+ * rendre `ALREADY_RECORDED` sans `SELECT` (il n'en a pas le droit). Les cles
+ * nulles ne se genent pas entre elles : les saisies de l'operateur n'en ont pas.
+ */
+export const CASH_FLOWS_NATURAL_KEY_INDEX = 'cash_flows_natural_key_key';
+
+/** Une origine hors de la liste est refusee par la base, pas seulement a la lecture. */
+export const CASH_FLOWS_ORIGIN_CHECK = 'cash_flows_origin_check';
+
+/** Une ligne `CONVOYEUR` sans cle naturelle ne serait pas idempotente : la base la refuse. */
+export const CASH_FLOWS_CONVOYEUR_KEY_CHECK = 'cash_flows_convoyeur_natural_key_check';
+
+/**
  * Apports et retraits. Sans eux un apport se lit comme une performance et
  * fausse tous les benchmarks : le rendement se calcule en time-weighted return,
  * pas en variation de valeur brute.
+ *
+ * La cle naturelle **ne remplace pas `id`**, qui reste la cle primaire, comme
+ * dans `decisions`. Les droits du role du convoyeur ne sont pas ici :
+ * `drizzle-kit push` ne connait pas les `GRANT`, voir
+ * `scripts/role-convoyeur.sql`.
  */
-export const cashFlows = pgTable('cash_flows', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
-  amountUsdc: decimalColumn('amount_usdc').notNull(),
-  note: text('note'),
-});
+export const cashFlows = pgTable(
+  'cash_flows',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
+    amountUsdc: decimalColumn('amount_usdc').notNull(),
+    note: text('note'),
+    origin: text('origin').$type<CashFlowOrigin>().notNull().default('OPERATEUR'),
+    naturalKey: text('natural_key'),
+  },
+  (table) => [
+    uniqueIndex(CASH_FLOWS_NATURAL_KEY_INDEX).on(table.naturalKey),
+    check(CASH_FLOWS_ORIGIN_CHECK, sql`${table.origin} IN ('OPERATEUR', 'CONVOYEUR', 'DETECTE')`),
+    check(
+      CASH_FLOWS_CONVOYEUR_KEY_CHECK,
+      sql`${table.origin} <> 'CONVOYEUR' OR ${table.naturalKey} IS NOT NULL`,
+    ),
+  ],
+);
+
+/**
+ * Les etapes d'un convoyage, dans l'ordre (point 2 du plan du convoyeur).
+ * `EN_PANNE` clot un convoyage dont l'invariant DC6 n'a pas pu etre retabli.
+ */
+export const CONVOYEUR_STEPS = [
+  'ACHAT_DEMANDE',
+  'ACHETE',
+  'TRANSFERT_DEMANDE',
+  'TRANSFERE',
+  'ENREGISTRE',
+  'EN_PANNE',
+] as const;
+
+export type ConvoyeurStep = (typeof CONVOYEUR_STEPS)[number];
+
+/** Une etape deja ecrite ne se reecrit pas : le rejeu bute sur cet index. */
+export const CONVOYEUR_JOURNAL_STEP_INDEX = 'convoyeur_journal_convoyage_step_key';
+
+/**
+ * Un convoyage par jour (DC8), tenu par la base : un second `ACHAT_DEMANDE` le
+ * meme jour bute ici, quel que soit l'identifiant que le code lui donnerait.
+ */
+export const CONVOYEUR_JOURNAL_DAY_INDEX = 'convoyeur_journal_day_key';
+
+export const CONVOYEUR_JOURNAL_STEP_CHECK = 'convoyeur_journal_step_check';
+
+/**
+ * Le journal du convoyeur (DC6, U5), **en ajout seul** : une ligne par etape,
+ * ecrite **avant** l'appel a l'exchange qu'elle annonce. L'etat d'un convoyage
+ * est sa derniere etape ; le role du convoyeur n'a besoin que de `SELECT` et
+ * d'`INSERT`, jamais d'`UPDATE`.
+ *
+ * `convoyage` identifie le convoyage (son `client_order_id`), `day` est le jour
+ * UTC du passage qui l'a ouvert, recopie sur chacune de ses lignes. Les
+ * grandeurs ne servent qu'aux etapes qui les portent : `ACHETE` (USDC recu, EUR
+ * debite, frais, identifiant d'ordre), `TRANSFERT_DEMANDE` (USDC demande),
+ * `EN_PANNE` (motif).
+ */
+export const convoyeurJournal = pgTable(
+  'convoyeur_journal',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    convoyage: text('convoyage').notNull(),
+    day: isoDateColumn('day').notNull(),
+    step: text('step').$type<ConvoyeurStep>().notNull(),
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
+    amountUsdc: decimalColumn('amount_usdc'),
+    debitedEur: decimalColumn('debited_eur'),
+    feesEur: decimalColumn('fees_eur'),
+    exchangeOrderId: text('exchange_order_id'),
+    reason: text('reason'),
+  },
+  (table) => [
+    uniqueIndex(CONVOYEUR_JOURNAL_STEP_INDEX).on(table.convoyage, table.step),
+    uniqueIndex(CONVOYEUR_JOURNAL_DAY_INDEX).on(table.day).where(sql`step = 'ACHAT_DEMANDE'`),
+    check(
+      CONVOYEUR_JOURNAL_STEP_CHECK,
+      sql`${table.step} IN ('ACHAT_DEMANDE', 'ACHETE', 'TRANSFERT_DEMANDE', 'TRANSFERE', 'ENREGISTRE', 'EN_PANNE')`,
+    ),
+  ],
+);

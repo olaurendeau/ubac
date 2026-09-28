@@ -1,7 +1,27 @@
 import pg from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
-import { DECISIONS_UNIQUE_INDEX } from '../../src/adapters/schema.js';
+import {
+  CASH_FLOWS_CONVOYEUR_KEY_CHECK,
+  CASH_FLOWS_NATURAL_KEY_INDEX,
+  CASH_FLOWS_ORIGIN_CHECK,
+  CONVOYEUR_JOURNAL_DAY_INDEX,
+  CONVOYEUR_JOURNAL_STEP_CHECK,
+  CONVOYEUR_JOURNAL_STEP_INDEX,
+  DECISIONS_UNIQUE_INDEX,
+} from '../../src/adapters/schema.js';
+
+/** Le code et la contrainte d'une requete refusee, ou `undefined` si elle passe. */
+async function refus(
+  client: pg.Client,
+  requete: string,
+  params: readonly unknown[],
+): Promise<{ code?: string; constraint?: string } | undefined> {
+  return client
+    .query(requete, [...params])
+    .then(() => undefined)
+    .catch((cause: unknown) => cause as { code?: string; constraint?: string });
+}
 
 /**
  * Ce que la **base** garantit, éprouvé sur un vrai Postgres et **sans passer
@@ -33,7 +53,7 @@ describe.skipIf(URL_DE_TEST === undefined)('le schéma appliqué, contre un Post
   });
 
   beforeEach(async () => {
-    await brut.query('TRUNCATE decisions, orders, snapshots, cash_flows');
+    await brut.query('TRUNCATE decisions, orders, snapshots, cash_flows, convoyeur_journal');
   });
 
   /**
@@ -43,7 +63,7 @@ describe.skipIf(URL_DE_TEST === undefined)('le schéma appliqué, contre un Post
    * sont les **clés** qui portent l'idempotence, pas la seule présence des
    * tables.
    */
-  it('les quatre tables portent les clés du §4', async () => {
+  it('les quatre tables du §4 et le journal du convoyeur portent une clé primaire', async () => {
     const cles = await brut.query<{ table_name: string; constraint_name: string }>(`
       SELECT tc.table_name, tc.constraint_name
         FROM information_schema.table_constraints tc
@@ -53,6 +73,7 @@ describe.skipIf(URL_DE_TEST === undefined)('le schéma appliqué, contre un Post
 
     expect(cles.rows.map((r) => r.table_name)).toEqual([
       'cash_flows',
+      'convoyeur_journal',
       'decisions',
       'orders',
       'snapshots',
@@ -109,6 +130,95 @@ describe.skipIf(URL_DE_TEST === undefined)('le schéma appliqué, contre un Post
 
       const compte = await brut.query<{ n: string }>('SELECT count(*)::text AS n FROM decisions');
       expect(compte.rows[0]?.n).toBe('3');
+    });
+  });
+  /**
+   * DC7 : une ligne du convoyeur est reconnaissable et ne s'ecrit qu'une fois.
+   * Le refus vient de la base ; `ALREADY_RECORDED` (Y4a) ne fera que le lire.
+   */
+  describe('cash_flows : origine et clé naturelle', () => {
+    const INSERT = `
+      INSERT INTO cash_flows (occurred_at, amount_usdc, origin, natural_key)
+      VALUES ('2026-10-27T17:00:05Z', '99.5', $1, $2)`;
+
+    it('une ligne insérée sans origine prend OPERATEUR, sans clé naturelle', async () => {
+      await brut.query(`INSERT INTO cash_flows (occurred_at, amount_usdc) VALUES ('2026-09-01T00:00:00Z', '10')`);
+
+      const lignes = await brut.query('SELECT origin, natural_key FROM cash_flows');
+      expect(lignes.rows).toEqual([{ origin: 'OPERATEUR', natural_key: null }]);
+    });
+
+    it('la base refuse une seconde ligne de même clé naturelle, sur l’index nommé', async () => {
+      await brut.query(INSERT, ['CONVOYEUR', 'CONVOYEUR:conv-2026-10-27']);
+
+      const erreur = await refus(brut, INSERT, ['CONVOYEUR', 'CONVOYEUR:conv-2026-10-27']);
+
+      expect(erreur?.code).toBe('23505');
+      expect(erreur?.constraint).toBe(CASH_FLOWS_NATURAL_KEY_INDEX);
+    });
+
+    it('les saisies de l’opérateur, sans clé, ne se gênent pas', async () => {
+      await brut.query(INSERT, ['OPERATEUR', null]);
+      await brut.query(INSERT, ['OPERATEUR', null]);
+
+      const compte = await brut.query<{ n: string }>('SELECT count(*)::text AS n FROM cash_flows');
+      expect(compte.rows[0]?.n).toBe('2');
+    });
+
+    it('la base refuse une ligne CONVOYEUR sans clé naturelle', async () => {
+      const erreur = await refus(brut, INSERT, ['CONVOYEUR', null]);
+
+      expect(erreur?.code).toBe('23514');
+      expect(erreur?.constraint).toBe(CASH_FLOWS_CONVOYEUR_KEY_CHECK);
+    });
+
+    it('la base refuse une origine inconnue', async () => {
+      const erreur = await refus(brut, INSERT, ['convoyeur', 'k']);
+
+      expect(erreur?.code).toBe('23514');
+      expect(erreur?.constraint).toBe(CASH_FLOWS_ORIGIN_CHECK);
+    });
+  });
+
+  /** Le journal du convoyeur, en ajout seul : une étape s'écrit une fois, un convoyage s'ouvre une fois par jour. */
+  describe('convoyeur_journal', () => {
+    const ETAPE = `
+      INSERT INTO convoyeur_journal (convoyage, day, step, occurred_at)
+      VALUES ($1, $2, $3, '2026-10-27T17:00:00Z')`;
+
+    it('une étape déjà écrite bute sur l’index (convoyage, étape)', async () => {
+      await brut.query(ETAPE, ['conv-a', '2026-10-27', 'ACHETE']);
+
+      const erreur = await refus(brut, ETAPE, ['conv-a', '2026-10-27', 'ACHETE']);
+
+      expect(erreur?.code).toBe('23505');
+      expect(erreur?.constraint).toBe(CONVOYEUR_JOURNAL_STEP_INDEX);
+    });
+
+    it('un second convoyage ouvert le même jour bute sur l’index du jour', async () => {
+      await brut.query(ETAPE, ['conv-a', '2026-10-27', 'ACHAT_DEMANDE']);
+
+      const erreur = await refus(brut, ETAPE, ['conv-b', '2026-10-27', 'ACHAT_DEMANDE']);
+
+      expect(erreur?.code).toBe('23505');
+      expect(erreur?.constraint).toBe(CONVOYEUR_JOURNAL_DAY_INDEX);
+    });
+
+    it('les étapes suivantes et le jour suivant restent ouverts', async () => {
+      await brut.query(ETAPE, ['conv-a', '2026-10-27', 'ACHAT_DEMANDE']);
+      await brut.query(ETAPE, ['conv-a', '2026-10-27', 'ACHETE']);
+      await brut.query(ETAPE, ['conv-a', '2026-10-27', 'TRANSFERT_DEMANDE']);
+      await brut.query(ETAPE, ['conv-b', '2026-10-28', 'ACHAT_DEMANDE']);
+
+      const compte = await brut.query<{ n: string }>('SELECT count(*)::text AS n FROM convoyeur_journal');
+      expect(compte.rows[0]?.n).toBe('4');
+    });
+
+    it('une étape inconnue est refusée', async () => {
+      const erreur = await refus(brut, ETAPE, ['conv-a', '2026-10-27', 'VENDU']);
+
+      expect(erreur?.code).toBe('23514');
+      expect(erreur?.constraint).toBe(CONVOYEUR_JOURNAL_STEP_CHECK);
     });
   });
 });
