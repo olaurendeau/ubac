@@ -159,6 +159,10 @@ const FIXES: readonly EntreeLexique[] = [
     'fenetre OHLCV',
     'Le nombre de jours de cours — ouverture, haut, bas, cloture, volume — que le run a relus pour calculer les courbes de reference.',
   ),
+  entree(
+    'apport',
+    "Un versement d'USDC enregistre dans les flux de tresorerie ; un retrait n'en est pas un. Le TWR neutralise l'un comme l'autre.",
+  ),
 ];
 
 /**

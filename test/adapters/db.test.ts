@@ -585,6 +585,36 @@ describe.skipIf(URL_DE_TEST === undefined)('adapter de base, contre un Postgres 
       expect(flux[0]?.id).toMatch(/^[0-9a-f-]{36}$/);
     });
 
+    /*
+     * Quatre apports et deux retraits, le plus recent des flux etant un retrait :
+     * la requete filtre **avant** de borner, sinon les retraits prendraient la
+     * place des apports. Inverser le tri rend les trois plus anciens.
+     */
+    it('latestDeposits rend les trois derniers apports, du plus recent au plus ancien, sans retrait', async () => {
+      await brut.query(`
+        INSERT INTO cash_flows (occurred_at, amount_usdc, note) VALUES
+          ('2025-01-15T10:00:00Z', '5000', 'apport initial'),
+          ('2026-03-01T10:00:00Z', '200', NULL),
+          ('2026-09-26T08:00:00Z', '1000', 'virement du compte courant'),
+          ('2026-06-10T12:00:00Z', '750.12345678', 'prime'),
+          ('2026-07-01T09:00:00Z', '-300', 'retrait'),
+          ('2026-09-27T09:00:00Z', '-50', 'dernier flux, un retrait')`);
+
+      const apports = await db.latestDeposits(3);
+
+      expect(apports.map((a) => [a.occurredOn, a.amount.toFixed(), a.note])).toEqual([
+        ['2026-09-26', '1000', 'virement du compte courant'],
+        ['2026-06-10', '750.12345678', 'prime'],
+        ['2026-03-01', '200', null],
+      ]);
+    });
+
+    it('latestDeposits rend une liste vide sans apport, retraits compris', async () => {
+      expect(await db.latestDeposits(3)).toEqual([]);
+      await brut.query(`INSERT INTO cash_flows (occurred_at, amount_usdc) VALUES ('2026-09-01T00:00:00Z', '-10')`);
+      expect(await db.latestDeposits(3)).toEqual([]);
+    });
+
     it('pendingOrders ne rend que les ordres ouverts, PENDING et PARTIAL', async () => {
       await brut.query(`
         INSERT INTO orders

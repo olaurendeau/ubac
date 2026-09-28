@@ -94,6 +94,7 @@ export function baseSansEcriture(db: UbacDatabase, log: Journal): UbacDatabase {
     latestSnapshot: () => db.latestSnapshot(),
     snapshotSeries: () => db.snapshotSeries(),
     recentCashFlows: (since) => db.recentCashFlows(since),
+    latestDeposits: (limit) => db.latestDeposits(limit),
     pendingOrders: () => db.pendingOrders(),
     recordOrder(input: OrderToRecord): Promise<RecordOrderOutcome> {
       log(`base inerte : ordre ${input.order.clientOrderId} non ecrit`);

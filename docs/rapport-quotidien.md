@@ -53,6 +53,7 @@ Les six points du §9, dans l'ordre où ils apparaissent :
 | Allocation | poids constatés contre cibles, et l'écart | `weights`, `params.targets` |
 | Comparaison | le **graphe du TWR cumulé** (section 10), puis TWR, max drawdown et Sharpe 90 j, portefeuille contre hold BTC et hold 50/50 ; ladder et DCA y figurent **sans courbe**, avec leur raison (section 6) | `snapshots.benchmarks`, `series` |
 | Métriques indisponibles | ce que le noyau n'a pas pu rendre, et pourquoi | `benchmarkGaps` |
+| **Derniers apports** | les trois derniers apports enregistrés, du plus récent au plus ancien, avec date, montant et note ; tous les jours, liste vide ou lecture en échec compris (section 11) | `deposits`, lus par `latestDeposits()` |
 | **Lexique** | une définition d'une phrase par terme de jargon que le corps imprime (section 9) | `src/report/lexique.ts` |
 
 HTML en ligne, une colonne, largeur maximale de 520 px : ni feuille de style, ni
@@ -563,3 +564,60 @@ Le rendu, lui, reste pur : il reçoit la série comme il reçoit le reste, dans
 jour — 365 lignes après un an, 3 650 après dix. Deux colonnes par ligne, c'est
 négligeable pour un job quotidien. Le jour où un plafond serait nécessaire, ce
 sera une décision, pas un ajustement technique.
+
+## 11. Les derniers apports : un historique court, pas le flux du jour
+
+Demande de l'opérateur : voir dans le courrier quotidien les trois derniers
+dépôts. La section **« Derniers apports »** liste les trois dernières lignes de
+`cash_flows` à montant **strictement positif**, du plus récent au plus ancien,
+avec leur jour UTC, leur montant en USDC et leur note — la note dit d'où vient
+l'apport, un tiret la remplace quand personne ne l'a dit.
+
+| Cas | Ce que la section affiche |
+|---|---|
+| un à trois apports ou plus | un tableau `Date / Montant / Note`, trois lignes au plus, puis une note qui rappelle l'ordre et l'absence des retraits |
+| aucun apport | la ligne « Aucun apport enregistre. » |
+| lecture en échec | « Les derniers apports n'ont pas pu etre lus : <motif>. Le reste du rapport n'en depend pas. » |
+
+**Toujours visible, quelle que soit la date des apports.** Un apport d'il y a
+six mois y figure encore tant que trois plus récents ne l'ont pas remplacé. Ce
+n'est donc pas la liste des flux tombés depuis la photo précédente, qu'un autre
+lot peut rendre à part : là, un apport n'apparaît qu'un jour. Et la section ne
+disparaît jamais, ni sans apport ni en panne : une section qui disparaît ne dit
+pas laquelle des trois situations est vraie.
+
+**« Enregistrés », pas « détectés ».** Un apport arrive dans `cash_flows` par
+une écriture — à la main aujourd'hui, par une détection automatique demain — et
+la section ne prétend pas savoir laquelle. Elle continuera de fonctionner sans
+changement quand une détection ajoutera des lignes.
+
+### Le filtre et l'ordre sont dans la requête
+
+`UbacDatabase.latestDeposits(limit)` filtre `amount_usdc > 0` **en SQL, avant la
+limite** : filtrer après coup laisserait trois retraits récents prendre la place
+des apports qui les précèdent. La comparaison se fait sur la colonne `numeric`,
+aucun montant ne passe par un flottant. Le tri est `occurred_at` décroissant,
+départagé par l'identifiant. `test/adapters/db.test.ts` le sonde contre Postgres
+(`make test-db`), avec un retrait comme flux le plus récent ; inverser le tri
+fait rougir la sonde. Le nombre, 3, est `DERNIERS_APPORTS` dans le rendu : c'est
+le rapport qui décide de ce qu'il affiche, le run en demande autant.
+
+### Lue à l'étape 4bis, mais sa panne ne coupe pas le run
+
+La lecture a lieu au même endroit que `snapshotSeries()` (section 10), et pour
+le même motif : avant toute écriture. Elle en diffère sur un point, voulu : **une
+panne de `latestDeposits()` ne fait pas échouer le run.** Elle est rattrapée par
+`lireApports()` dans `src/jobs/daily.ts`, journalisée
+(`derniers apports non lus : <motif>`), et revient en valeur —
+`{ status: 'UNREADABLE', reason }` — jusqu'au rendu, qui la dit à la place de la
+liste. Le reste du run, décisions, photo, courrier et ping, n'en dépend pas. Un
+historique court ne vaut pas qu'on abandonne une journée pour lui ; la carence
+du déclencheur A, elle, lit `recentCashFlows()`, qui reste fatale en panne.
+
+Le rendu reste pur : il reçoit `deposits` dans `DailyReportInput`, champ
+**obligatoire** — une entrée absente ne dirait pas si la liste est vide ou si
+personne ne l'a lue. `test/report/contrat-run.test-d.ts` (V6 ter) ferme la
+compatibilité entre `DailyRunResult.latestDeposits` et ce champ.
+
+Le terme « apport » entre au lexique (section 9) comme entrée fixe : la section
+est là tous les jours, le mot aussi.

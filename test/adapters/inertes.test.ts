@@ -51,6 +51,7 @@ function baseComptee(): { readonly db: UbacDatabase; readonly appels: string[] }
     latestSnapshot: () => vu('latestSnapshot', undefined),
     snapshotSeries: () => vu('snapshotSeries', []),
     recentCashFlows: () => vu('recentCashFlows', []),
+    latestDeposits: () => vu('latestDeposits', []),
     pendingOrders: () => vu('pendingOrders', []),
     recordOrder: () => vu('recordOrder', { status: 'RECORDED' }),
     recordPlacement: () => vu('recordPlacement', undefined),
