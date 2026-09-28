@@ -4,6 +4,9 @@ Spec de référence : [`docs/specs/ubac-convoyeur.md`](../specs/ubac-convoyeur.m
 (#74), **vingt-trois critères CV1 à CV23**, décisions D1 à D3, Q1 à Q10 et DC1
 à DC9 closes le 2026-09-28, incertitudes U1 à U9. Plan établi le 2026-09-28,
 `main` à `f5e3721`, production en v0.3.2 (plafond 11 %, derniers apports).
+Revu le 2026-09-28 après la revue Codex de `d4efd79` : le repli « Y8 sans S13 »
+est retiré (point 4), le rôle Neon perd ce qu'il tenait de `PUBLIC` (Y1, OP3),
+et Y7a reste séparé d'Y7b pour une raison dite dans Y7a.
 
 La spec est la référence de vérité ; ce plan est une hypothèse de découpage.
 Aucun code n'est écrit ici. Chaque lot cite les `CV` qu'il couvre, et la table
@@ -124,9 +127,12 @@ constatées :
   l'être avant fin novembre de toute façon.
 
 S13 est estimé à ~400 lignes par le plan de phase 3 et partage `daily.ts` avec
-S9. **Si S13 glisse au-delà du 2026-11-13**, Y8 part sans lui et S13 hérite de
-l'obligation de dire son refus au rapport les jours où la divergence est
-expliquée ; le coordinateur le note dans le dispatch de S13.
+S9. **Y8 part strictement après S13 fusionné, sans repli** : un Y8 anticipé
+tairait l'alerte où S13 écrirait ensuite son refus, et rien ne sérialiserait ni
+ne sonderait la correction commune. S13 est donc **prioritaire sur les workers
+libres des vagues 3 à 6** (voir « Ordre, vagues et sérialisation »). **Si S13
+glisse, c'est OP6 qui glisse** — la mise en réel attend le virement suivant, ce
+que U6 impose déjà — jamais Y8 qui part avant lui.
 
 ### 5. Neon : un rôle créé par SQL, et un `push` qui ne connaît pas les droits
 
@@ -144,6 +150,10 @@ expliquée ; le coordinateur le note dans le dispatch de S13.
   par un `INSERT` simple dont la violation 23505 **sur l'index nommé** vaut
   `ALREADY_RECORDED` — ni `RETURNING`, ni lecture préalable, qui exigeraient un
   `SELECT`.
+- **« Rien d'autre » inclut ce que `PUBLIC` donne à tout rôle** : `EXECUTE`
+  sur les fonctions, `TEMPORARY` sur la base, et ce que Neon y ajoute. Le script
+  le retire (Y1) et OP3 constate par `has_*_privilege` qu'une table non autorisée
+  reste fermée au rôle.
 - **La sonde CV19 tourne contre le Postgres local** : `ubac_dev` y est
   superutilisateur, le test crée le rôle par le script du dépôt et l'éprouve par
   `SET ROLE`, sans mot de passe.
@@ -249,7 +259,8 @@ Les étapes opérateur sont préfixées **OP**.
 DC7, Q9, U5. · **Critères** : **CV19** ; CV11, moitié base (la clé refuse le
 doublon). · **Audit** : argent + garde-fou (l'indice et la carence lisent la
 table ; le rôle borne une clé de base) → mutation **+** audit complet ;
-**`make test-db` obligatoire**. · **Diff estimé compté** : **~600 lignes**.
+**`make test-db` obligatoire**. · **Diff estimé compté** : **~650 lignes**
+(dont ~50 pour le retrait de `PUBLIC` et son inventaire).
 **Fichiers prévus** : `src/adapters/schema.ts` (`origin`, `natural_key`,
 `CASH_FLOWS_NATURAL_KEY_INDEX` exporté, table `convoyeur_journal` et son index
 exporté), `src/adapters/db.ts` (`CashFlowRecord` gagne l'origine, validée à la
@@ -266,18 +277,50 @@ l'index unique du jour de convoyage. Le script SQL crée, s'il n'existe pas, le
 rôle `ubac_convoyeur` **sans mot de passe** et lui donne exactement : `USAGE` sur
 le schéma, `INSERT` sur `cash_flows`, `SELECT` et `INSERT` sur son journal.
 
+**Ce que le rôle hérite de `PUBLIC` est retiré**, pour que « `INSERT` sur
+`cash_flows` et son journal, rien d'autre » (Q9) se vérifie au lieu de se
+supposer. Le script, idempotent :
+
+- `REVOKE CREATE ON SCHEMA public FROM PUBLIC` (déjà le défaut en Postgres ≥ 15,
+  rejoué pour ne pas en dépendre) ; `USAGE` reste accordé **nommément** au rôle ;
+- `REVOKE ALL ON ALL TABLES IN SCHEMA public FROM PUBLIC`, idem pour
+  `SEQUENCES`, et `REVOKE EXECUTE ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC` ;
+- `ALTER DEFAULT PRIVILEGES FOR ROLE <propriétaire des tables> IN SCHEMA public
+  REVOKE …  FROM PUBLIC` sur tables, séquences et fonctions, pour qu'une table
+  ajoutée par un `push` futur n'ouvre rien au rôle ;
+- `REVOKE TEMPORARY ON DATABASE <base> FROM PUBLIC` ; `CONNECT` est accordé
+  nommément au rôle et **laissé à `PUBLIC`** — il n'ouvre aucune donnée, et le
+  retirer risquerait de couper des rôles de Neon que le dépôt ne connaît pas.
+
+Ce que Neon accorde de plus à `PUBLIC` (extensions installées dans `public`,
+fonctions propres à Neon) n'est pas supposé : OP3 le lit par `aclexplode` avant
+de rejouer le script, et le rapporte. Le propriétaire des tables — le rôle
+d'Ubac — garde ses droits de propriétaire, que `REVOKE … FROM PUBLIC` ne touche
+pas.
+
 **Validation** : CV19 contre la base locale, par `SET ROLE` : `INSERT` d'une
 ligne `CONVOYEUR` accepté ; `UPDATE`, `DELETE` et `SELECT` sur `cash_flows`
 refusés (42501) ; toute écriture **et toute lecture** de `decisions`,
 `snapshots`, `orders` refusées ; `SELECT` et `INSERT` du journal acceptés,
-`UPDATE` et `DELETE` refusés. Le script rejoué deux fois ne change rien. Deux
+`UPDATE` et `DELETE` refusés ; `CREATE TABLE` dans `public` et `CREATE TEMP
+TABLE` refusés ; **inventaire exhaustif** : pour chaque table, séquence et
+fonction du schéma `public`, `has_table_privilege`, `has_sequence_privilege` et
+`has_function_privilege` du rôle valent `false`, hors de la liste blanche
+(`INSERT` sur `cash_flows`, `SELECT` et `INSERT` sur le journal), et une
+fonction créée **après** le script n'est pas exécutable par le rôle (défauts :
+Postgres accorde `EXECUTE` à `PUBLIC` sur toute fonction neuve, rien sur une
+table neuve). Le rôle
+d'Ubac garde ses droits après le script. Le script rejoué deux fois ne change rien. Deux
 lignes de même clé naturelle : la seconde lève 23505 **sur l'index nommé** ; une
 ligne `CONVOYEUR` sans clé est refusée par la base ; une ligne insérée sans
 origine prend `OPERATEUR` ; une origine inconnue relue est refusée à la
 frontière. **Mutations** : ajouter `UPDATE` au `GRANT` du journal — la sonde
 rougit ; retirer l'index unique — la sonde d'idempotence rougit, **sous
 `make test-db` seulement** ; accepter une origine inconnue à la lecture — la
-sonde de frontière rougit.
+sonde de frontière rougit ; retirer le `REVOKE … ON ALL TABLES … FROM PUBLIC`
+après un `GRANT SELECT … TO PUBLIC` posé par le test — l'inventaire rougit ;
+retirer l'`ALTER DEFAULT PRIVILEGES` — la sonde de la fonction créée après
+rougit.
 
 **Pièges.** (1) **Le schéma se pousse sur Neon avant tout tag qui contient Y4a**,
 depuis le poste, avec TTY (`docs/deploiement.md` §2) ; le script de rôle se
@@ -294,7 +337,12 @@ plus si le champ est ajouté sans casser sa lecture. (6) **Une politique RLS**
 plus ; elle n'est retenue que si `drizzle-kit push` la laisse intacte — à
 constater dans le lot, sinon noté comme limite. (7) `docs/base-de-donnees.md` §6
 promet que « les flux viendront de l'exchange, avec l'identifiant de
-transfert » : S7 dit qu'il n'y en a pas ; la phrase se réécrit.
+transfert » : S7 dit qu'il n'y en a pas ; la phrase se réécrit. (8) **Les
+`REVOKE … FROM PUBLIC` valent pour toute la base**, pas pour le seul rôle du
+convoyeur : le rôle d'Ubac est propriétaire des tables et ne dépend pas de
+`PUBLIC`, ce qu'OP3 constate sur Neon **avant** de rejouer le script ; si ce
+n'est pas le cas, le script accorde d'abord nommément au rôle d'Ubac ce qu'il
+tenait de `PUBLIC`, et le lot le dit.
 
 **Redécoupe** : **Y1a** schéma et frontière ; **Y1b** rôle, script et sonde CV19.
 
@@ -571,6 +619,13 @@ les valeurs d'Ubac épinglées. **Mutation** : changer `FENETRE_MIN` dans l'appe
 part** si l'extraction est fidèle ; la preuve est que les attentes des sondes
 n'ont pas bougé d'un caractère — le diff des tests ne touche que le chargement.
 
+**Pourquoi Y7a reste séparé d'Y7b** (revue du plan) : fusionnés, ils feraient
+~950 lignes comptées — au-dessus de la cible de 700 et à 5 % du plafond, sur une
+frontière dont l'étalon prévoit un débordement de 1,5 à 2 (les ~110 lignes de
+contrôles et de relecture du job `deploy` s'extraient, et `workflow.test.ts`,
+1 129 lignes, suit) — alors que séparé, Y7a garde une preuve que la fusion
+noierait : des attentes de sonde inchangées au caractère près.
+
 ### Y7b — Le job `deploy` à deux définitions
 
 **Dépend de** : **Y6** et **Y7a** fusionnés ; OP4 fait avant le premier tag qui
@@ -617,7 +672,8 @@ suivants — c'est le repli si Y7b n'est pas fusionné en octobre.
 
 ### Y8 — CV15 : une divergence entièrement expliquée par les flux ne crie plus
 
-**Dépend de** : **S13** fusionné (point 4) ; **DP1** tranchée. **Reprend** : N10
+**Dépend de** : **S13** fusionné, strictement et sans repli (point 4) ; **DP1**
+tranchée. **Reprend** : N10
 du plan des flux, réduit. · **Décisions** : Q4 = 1, D4 des flux, T6. ·
 **Critères** : **CV15**. · **Audit** : garde-fou (une alerte urgente se tait) →
 mutation **+** audit complet ; **`make test-db` obligatoire** si la lecture des
@@ -725,7 +781,7 @@ aucune chaîne de connexion ne passe par Orca** ; on y rapporte des constats.
 |---|---|---|---|---|
 | **OP1** | dès Y9 fusionné, **au plus tard le 2026-10-09** (délais de 48 h) | opérateur, console CDP | créer la clé sur *Primary*, `view` + `trade` + `transfer` ; activer la liste blanche vide ; ranger la clé dans un fichier hors dépôt, `chmod 600` | la ligne `key_permissions` (portefeuille, type, `can_*`), sans la clé ; l'état de la liste blanche |
 | **OP2** | après OP1 et Y10, **avant OP4** (DP3 = 1) | opérateur, poste | MC1, MC2 (crypto et EUR), MC3 avec `scripts/mesures-convoyeur.ts`, **entre deux runs d'Ubac**, loin de 07:00 : MC1 puis MC3 laissent `ubac-agent` à net nul | **CV20** : code et message de MC1 ; **CV21** : code et message de l'envoi crypto, et du retrait EUR, quel qu'il soit ; **CV22** : réponse de MC3 et solde relu ; soldes avant / après de chaque mesure |
-| **OP3** | après Y1, **avant tout tag qui contient Y4a** | opérateur, poste | compter `cash_flows` ; `db:push` sur Neon avec TTY ; rejouer `scripts/role-convoyeur.sql` ; poser le mot de passe du rôle par `\password` | le compte de lignes avant et après, et leur origine ; `pg_has_role(…, 'neon_superuser', 'member')` ; les `has_table_privilege` du rôle sur les cinq tables |
+| **OP3** | après Y1, **avant tout tag qui contient Y4a** | opérateur, poste | compter `cash_flows` ; `db:push` sur Neon avec TTY ; rejouer `scripts/role-convoyeur.sql` ; poser le mot de passe du rôle par `\password` | le compte de lignes avant et après, et leur origine ; **avant le script**, ce que `PUBLIC` tient sur la base, le schéma `public`, ses tables, séquences et fonctions (`aclexplode`), et le propriétaire des tables ; **après**, `pg_has_role(…, 'neon_superuser', 'member') = false`, `has_schema_privilege('ubac_convoyeur', 'public', 'CREATE') = false`, `has_database_privilege('ubac_convoyeur', <base>, 'TEMP') = false`, `has_table_privilege` du rôle sur chaque table (`true` seulement pour `INSERT` sur `cash_flows`, `SELECT` / `INSERT` sur le journal ; `false` pour `SELECT` sur `decisions`, table non autorisée), `has_sequence_privilege` et `has_function_privilege` à `false` sur tout le schéma ; le rôle d'Ubac inchangé (mêmes `has_table_privilege` avant et après) |
 | **OP4** | après Y6, OP3 et **OP2** (DP3 = 1) | opérateur, console Scaleway | créer la définition `ubac-convoyeur` : image de `build`, délai et ressources d'Y4b, **aucune tentative**, déclencheur `convoyeur` `0 19 * * *` Europe/Paris **sans argument**, secrets `CONVOYEUR_*` ; variable de forge `SCW_CONVOYEUR_JOB_DEFINITION_ID` | l'identifiant de définition ; la liste des noms de variables, sans valeurs ; le journal du premier passage |
 | **OP5** | virement du ~2026-10-27 | opérateur | attendre la notification « convoyeur DRY_RUN » du passage de 19:00 ; **puis** convertir dans *Primary*, transférer, saisir `cash_flows` comme aujourd'hui, **avant 07:00** | **CV23** : les lignes du journal du passage (ordre et transfert qu'il aurait faits) ; le constat que rien n'a bougé ; le rapport d'Ubac du lendemain |
 | **OP6** | après **Y7b**, **Y8** et **S13** fusionnés et déployés, **CV20 à CV22 rapportés et favorables**, OP5 constaté ; avant le virement de novembre | opérateur, console Scaleway | ajouter `--reel` aux arguments du déclencheur `convoyeur` (DP5 = 2) ; aucune PR | **CV23** : le message Orca cite les rapports MC1 à MC3, OP5 et les fusions de S13 et Y8 ; le journal du premier passage qui dit `mode=REEL` ; puis le premier convoyage réel : ordre, `filled_size`, frais (U2, lus par `transaction_summary`), ligne `cash_flows`, rapport d'Ubac du lendemain sans `RECONCILIATION_DRIFT` ; captures pour remplacer les fixtures fabriquées d'Y3 |
@@ -758,7 +814,7 @@ Exhaustive. Un critère partagé entre deux lots est **clos après le dernier**.
 | CV12 | **Y4a** | sonde de base, lecture d'Ubac |
 | CV13 | **Y2** (texte), **Y4b** (alerte), **Y5** (envoi) | |
 | CV14 | **Y4a** | noyau inchangé |
-| CV15 | **Y8** | après **S13** ; DP1 |
+| CV15 | **Y8** | strictement après **S13** fusionné ; DP1. S13 qui glisse fait glisser OP6, pas Y8 |
 | CV16 | **Y5** | |
 | CV17 | **Y2** (textes), **Y5** (envoi, aucun email) | DP4 pour le `DRY_RUN` |
 | CV18 | **Y9** | |
@@ -780,18 +836,23 @@ sur le chemin de novembre, avec S13.
 | **4** | **Y5** | 1 | `main.ts`, `env.ts`, `eslint.config.js`, `package.json` |
 | **5** | **Y6** | 1 | `Dockerfile.prod`, scripts d'image, `ci.yml` |
 | **6** | **Y7b** | 1 | `ci.yml`, `test/ci/` |
-| **hors vague** | **Y8** | 1 | dès **S13** fusionné ; file de `daily.ts` avec S9 et S13 |
+| **hors vague** | **Y8** | 1 | strictement après **S13** fusionné, jamais avant ; file de `daily.ts` avec S9 et S13 |
 
-Les vagues 3 à 6 laissent un ou deux workers libres : **S9, S13 et S12** de la
-phase 3 s'y placent, sous la table ci-dessous. **S13 avant le 2026-11-13** tient
-Y8 dans le calendrier (point 4).
+Les vagues 3 à 6 laissent un ou deux workers libres. **S13 y est prioritaire** :
+il prend le premier worker libre de la vague 3, avant S9 et S12, qui se placent
+ensuite sous la table ci-dessous (S9 et S13 se sérialisent sur `daily.ts`).
 
 **Calendrier cible.** Vagues 1 à 5 et OP1, OP3 fusionnés ou faits **avant le
 2026-10-23** ; OP2 et OP4 le **2026-10-24** au plus tard ; tag et quelques
-passages « rien à faire » avant le 27. Y8, S13 et OP6 **avant le
-2026-11-24**, pour le virement de novembre.
+passages « rien à faire » avant le 27. S13 fusionné **au plus tard le
+2026-11-13**, puis Y8, puis OP6 **avant le 2026-11-24**, pour le virement de
+novembre. **Si S13 glisse au-delà du 2026-11-13, la conséquence est le report
+d'OP6** au virement suivant — le convoyeur reste en `DRY_RUN` et l'opérateur
+convoie à la main comme en octobre (OP5) — **pas un Y8 anticipé** (point 4,
+U6).
 
-**Volume estimé : ~6 400 lignes** en douze lots, déjà corrigées du facteur
+**Volume estimé : ~6 450 lignes** en douze lots (Y1 passe de ~600 à ~650 avec le
+retrait de `PUBLIC` ; Y7a reste séparé d'Y7b, voir Y7a), déjà corrigées du facteur
 constaté ; les fixtures de réponse d'Y3 sont écrites à la main et comptées ;
 aucun lockfile ni fichier généré attendu.
 
