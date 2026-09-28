@@ -232,8 +232,9 @@ journée d'observation.
 ## 6. Créer le job
 
 Valeurs du §10, sauf deux écarts constatés le 2026-09-27 sur la définition
-déployée, signalés et non corrigés : changer la production ou la spec est une
-décision de l'opérateur.
+déployée. Changer la production ou la spec est une décision de l'opérateur :
+celui du cron est **décidé le 2026-09-27** — le déclencheur reste en
+`Europe/Paris` et la spec s'aligne (§8 et annexe).
 
 | Réglage | Valeur | Motif |
 |---|---|---|
@@ -242,7 +243,7 @@ décision de l'opérateur.
 | vCPU | **140 mvCPU** | la spec dit 0,1 vCPU (100) ; 140 tourne depuis la création, et c'est la valeur que `deploy` relit. Hypothèse non vérifiée : 256 Mo et 140 mvCPU forment l'une des paires imposées aux Serverless Functions, peut-être aussi aux Jobs |
 | Timeout | 5 min | |
 | **Tentatives max** | **0** | un retry après un timeout partiel pourrait doubler une jambe ; `client_order_id` protège, mais on ne dépend pas d'une seule ligne de défense |
-| Cron | déclencheur `daily`, `0 7 * * *` en **`Europe/Paris`** | un déclencheur séparé : la définition ne porte aucun cron. La spec (§8) et cette section disaient UTC, pour que les bougies daily, closes à 00:00 UTC, ne voient pas de changement d'heure ; le réel en a un — 05:00 UTC l'été, 06:00 UTC l'hiver |
+| Cron | déclencheur `daily`, `0 7 * * *` en **`Europe/Paris`** | un déclencheur séparé : la définition ne porte aucun cron. La spec (§8) et cette section disaient UTC ; le réel suit l'heure de Paris — 05:00 UTC l'été, 06:00 UTC l'hiver. **Décidé le 2026-09-27** : on garde `Europe/Paris`, la spec s'aligne. Le run tombe toujours après la clôture des bougies daily à 00:00 UTC, donc sans effet sur les prix |
 | Variables **secrètes** | les onze de la section 1 | secrètes, pas ordinaires : la console masque alors leur valeur |
 
 **Aucun argument n'est à ajouter à la commande du job** : le point d'entrée de

@@ -140,7 +140,11 @@ dépendre d'une suite qu'on peut oublier de lancer.
 de marché : ils circulent en `Date`. `run_date` reste une **chaîne**
 `YYYY-MM-DD` : la convertir en `Date` lui donnerait minuit dans le fuseau du
 processus, donc un décalage d'un jour à l'ouest de Greenwich. Le noyau raisonne
-en `IsoDate` depuis la phase 0, et le cron tourne en UTC (§8).
+en `IsoDate` depuis la phase 0, et ce sont des **jours UTC** : le point d'entrée
+fabrique `run_date` par `date -u`. Le déclencheur, lui, tire à 07:00
+`Europe/Paris` (spec §8), soit 05:00 UTC l'été et 06:00 UTC l'hiver : toujours
+après la clôture des bougies daily à 00:00 UTC, et toujours dans le même jour
+UTC que le jour de Paris.
 
 ---
 

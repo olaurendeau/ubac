@@ -16,9 +16,13 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 /**
  * Valeurs figees pour cette fixture ; ce ne sont pas des jugements de performance (C31).
- * `rebalance*` passent par `validate()`, donc par le plafond reduit de la phase 3
- * (8 %) : une partie de leurs retours a la cible y sont refuses et chaque jour
- * hors bande recompte un declenchement. Lever le plafond (E34) refige ces deux-la.
+ * `rebalance*` passent par `validate()`, donc par le plafond reduit de la phase 3 :
+ * un retour a la cible refuse laisse le jour suivant hors bande, qui recompte un
+ * declenchement. Chaque geste sur le plafond (E34) refige ces deux-la.
+ * A 11 % (2026-09-27), `rebalance` ne connait plus aucun refus : ses valeurs sont
+ * exactement celles de la phase 0 a 25 %, et ses 12 declenchements sont ses 12
+ * executions (a 8 % : 176 declenchements, 166 jours refuses). `rebalance_ab`, qui
+ * arme le declencheur B en shadow, bute encore 84 jours sur 97 declenchements.
  */
 const ORACLES: Record<
   SeriesName,
@@ -31,18 +35,18 @@ const ORACLES: Record<
   }
 > = {
   rebalance: {
-    finalValue: '21163.004751774530728',
-    twr: '0.2742821886308717625',
-    sharpe90: '1.9973294554458287241',
-    maxDrawdown: '-0.44296931338421931158',
-    triggerCount: 176,
+    finalValue: '23368.544266268632033',
+    twr: '0.4462025103433672621',
+    sharpe90: '2.1818200100164471748',
+    maxDrawdown: '-0.45704704034794534468',
+    triggerCount: 12,
   },
   rebalance_ab: {
-    finalValue: '21308.399366828224302',
-    twr: '0.2863160301302045295',
-    sharpe90: '1.9995101730999044903',
-    maxDrawdown: '-0.44386906385658183351',
-    triggerCount: 247,
+    finalValue: '23304.047839822982111',
+    twr: '0.4401041390023201043',
+    sharpe90: '2.1818917506752426527',
+    maxDrawdown: '-0.45697900010834647782',
+    triggerCount: 97,
   },
   ladder: {
     finalValue: '20984.999026077450747',

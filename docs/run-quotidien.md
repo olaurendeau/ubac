@@ -177,28 +177,40 @@ sans danger.
 
 ### Le plafond réduit de la phase 3
 
-`REBALANCE_TOO_LARGE_PCT` vaut **8 %** au lieu de 25 % (B2, O1 = 3) : un run dont
-la somme des |jambes| dépasse 8 % de la valeur du portefeuille est **refusé en
-entier**, jamais raboté (O2 = 3). Aucune règle n'est ajoutée : c'est la valeur
+`REBALANCE_TOO_LARGE_PCT` vaut **11 %** au lieu de 25 % (B2, O1 = 3) — 8 %
+retenu le 2026-09-21, relevé à 11 % le 2026-09-27 : un run dont la somme des
+|jambes| dépasse 11 % de la valeur du portefeuille est **refusé en entier**, jamais raboté (O2 = 3). Aucune règle n'est ajoutée : c'est la valeur
 d'une constante de `src/core/risk.ts`, armée dès le premier run qui exécute (E29).
 
 **Le refus n'est pas silencieux (E32).** La ligne de `decisions` porte
 `REJECTED:REBALANCE_TOO_LARGE` dans `risk_verdict`. Sa colonne `reason` garde le
 motif de la stratégie en première ligne, puis celui du refus :
-`refus REBALANCE_TOO_LARGE : somme des |jambes| … au-dela de 8 %`, l'ampleur du
+`refus REBALANCE_TOO_LARGE : somme des |jambes| … au-dela de 11 %`, l'ampleur du
 run et le plafond. L'alerte urgente `REBALANCE_TOO_LARGE` porte le même texte.
 Le portefeuille reste hors bande, et l'alerte repart chaque jour où il le reste.
 Tout refus s'écrit ainsi dans `reason`, quels que soient le code et la stratégie.
 
-**Ce que 8 % veut dire pour la production.** La bande de cash va de 24 à 36 %
-autour d'une cible de 30 %, en mode `target` : un retour à la cible déplace déjà
-de l'ordre de 6 % du portefeuille. Sur le rejeu (974 jours), les 12
-rééquilibrages de production pesaient de 5,0 à 10,7 % ; à 8 %, 10 passent et 166
-jours de déclenchement sont refusés. La valeur est mesurée, pas estimée : la
-table et la décision sont dans le [plan de la phase 3](plans/ubac-phase-3.md)
-(S3). Attendre, pour les
-rééquilibrages les plus amples, une alerte par jour hors bande et aucun ordre
-avant la levée.
+**Ce que 8 % voulait dire pour la production (2026-09-21 → 2026-09-27).** La
+bande de cash va de 24 à 36 % autour d'une cible de 30 %, en mode `target` : un
+retour à la cible déplace déjà de l'ordre de 6 % du portefeuille. Sur le rejeu
+(974 jours), les 12 rééquilibrages de production pesaient de 5,0 à 10,7 % ; à
+8 %, 10 passent et 166 jours de déclenchement sont refusés. Pour les
+rééquilibrages les plus amples : une alerte par jour hors bande et aucun ordre.
+C'est ce qui s'annonçait en vrai : le portefeuille est hors bande depuis l'apport
+du 2026-09-26, la correction pèse 8,40 %, et chaque run à partir du dégel du
+3 octobre aurait été refusé avec une alerte `URGENT` quotidienne.
+
+**Ce que 11 % veut dire pour la production (depuis le 2026-09-27).** Sur le même
+rejeu, 12 rééquilibrages sur 12 passent et aucun jour n'est refusé : le plafond
+ne mord plus sur la stratégie. Il reste un **garde-fou contre un bug de
+dimensionnement** — 752 USDC par run au plus sur un portefeuille de 6 834 USDC,
+contre 1 708 à 25 %. Deux leçons de la mesure : l'effet du plafond **n'est pas
+monotone** (à 9 %, 8 exécutions et 239 jours refusés, pire qu'à 8 %, parce que
+refuser ou exécuter un jour déplace tout le chemin du portefeuille), donc une
+valeur se mesure et ne s'interpole pas ; et un refus à 11 % signale désormais un
+run anormal, pas un retour à la cible ordinaire. La table et les décisions sont
+dans la [spec de la phase 3](specs/ubac-phase-3.md) (E29) et le
+[plan](plans/ubac-phase-3.md) (S3).
 
 **Le bruit des ombres (E31).** `validate()` est appelée pour les quatre
 stratégies : `rebalance_ab`, `ladder` et `dca` verront aussi plus de
@@ -207,7 +219,7 @@ Elles ne placent rien : ce n'est pas une panne, et ce bruit éprouve le chemin
 d'E32 avant qu'un ordre soit en jeu. La sortie propre n'appelle pas `validate()`
 ([sortie-propre.md](sortie-propre.md)) : le plafond ne la touche pas.
 
-**La levée (E34, O3 = 3)** est un commit qui change la constante, en PR relue,
+**La levée ou le relèvement (E34, O3 = 3)** est un commit qui change la constante, en PR relue,
 puis déployé — jamais par l'environnement (`UBAC_RISK_REBALANCE_TOO_LARGE_PCT`
 fait échouer le démarrage, comme tout le préfixe), jamais automatiquement. La
 trace est l'historique de `main` : le premier run à pleine taille est le premier

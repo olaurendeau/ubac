@@ -199,28 +199,33 @@ describe('REBALANCE_TOO_LARGE (C20)', () => {
 
 /*
  * Le plafond reduit de la phase 3 (B2, O1 = 3) : la valeur elle-meme. Ces
- * sondes-ci rougissent si la constante remonte ; les cas relatifs ci-dessus,
- * non. Lever le plafond (O3 = 3, E34) est un commit relu qui les change.
+ * sondes-ci rougissent si la constante bouge ; les cas relatifs ci-dessus,
+ * non. 8 % retenu le 2026-09-21, releve a 11 % le 2026-09-27 : chaque geste
+ * (O3 = 3, E34) est un commit relu qui les change.
  */
 describe('plafond reduit de la phase 3 (E29, E30, E32)', () => {
-  it('vaut 8 %, strictement plus contraignant que les 25 % de la phase 0 (E29)', () => {
-    expect(REBALANCE_TOO_LARGE_PCT.toString()).toBe('0.08');
+  it('vaut 11 %, strictement plus contraignant que les 25 % de la phase 0 (E29)', () => {
+    expect(REBALANCE_TOO_LARGE_PCT.toString()).toBe('0.11');
     expect(REBALANCE_TOO_LARGE_PCT.lt('0.25')).toBe(true);
   });
-  it('refuse un run a 9 % du portefeuille, que les 25 % laissaient passer', () => {
-    expect(codes(intent(arbitrage(new Decimal('4500'))))).toEqual(['REBALANCE_TOO_LARGE']);
+  it('refuse un run a 12 % du portefeuille, que les 25 % laissaient passer', () => {
+    expect(codes(intent(arbitrage(new Decimal('6000'))))).toEqual(['REBALANCE_TOO_LARGE']);
   });
-  it('laisse passer un run a 7 % du portefeuille', () => {
-    expect(validate(intent(arbitrage(new Decimal('3500'))), context()).status).toBe('ACCEPTED');
+  it('laisse passer un run a 10 % du portefeuille', () => {
+    expect(validate(intent(arbitrage(new Decimal('5000'))), context()).status).toBe('ACCEPTED');
+  });
+  /* Le cas qui a motive le relevement : la correction de l'apport du 2026-09-26. */
+  it('laisse passer un run a 8,40 %, que le plafond de 8 % refusait', () => {
+    expect(validate(intent(arbitrage(new Decimal('4200'))), context()).status).toBe('ACCEPTED');
   });
   it('refuse le run entier, sans raboter ses jambes (O2 = 3)', () => {
-    const verdict = validate(intent(arbitrage(new Decimal('4500'))), context());
+    const verdict = validate(intent(arbitrage(new Decimal('6000'))), context());
     expect(verdict).toEqual({ status: 'REJECTED', rejections: [expect.anything()] });
   });
   it('le motif cite l\'ampleur du run et la valeur du plafond (E32)', () => {
-    const [rejet] = rejections(intent(arbitrage(new Decimal('4500'))));
+    const [rejet] = rejections(intent(arbitrage(new Decimal('6000'))));
     expect(rejet?.reason).toBe(
-      'somme des |jambes| 9000 USDC soit 9.0000 % de 100000, au-dela de 8 %',
+      'somme des |jambes| 12000 USDC soit 12.0000 % de 100000, au-dela de 11 %',
     );
   });
 });

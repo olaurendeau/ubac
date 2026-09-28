@@ -80,7 +80,7 @@ soldes réels (Coinbase) + prix du jour
 | Tests | Vitest | |
 | Email | Brevo API HTTP `/v3/smtp/email` | pas de SMTP en serverless |
 | Push | ntfy auto-hébergé | alertes uniquement |
-| Hébergement | Scaleway Serverless Jobs (fr-par) | cron UTC |
+| Hébergement | Scaleway Serverless Jobs (fr-par) | cron `0 7 * * *` en `Europe/Paris` (§8) ; `run_date` en jour UTC |
 | CI/CD | GitHub Actions → Scaleway Container Registry | |
 
 ---
@@ -269,7 +269,7 @@ L'état de l'exchange fait toujours foi. L'état interne n'est qu'un cache.
 
 ## 8. Job quotidien
 
-Cron Scaleway : `0 7 * * *` (UTC). Les bougies daily crypto clôturent à 00:00 UTC, donc pas de problème de changement d'heure.
+Cron Scaleway : `0 7 * * *` en **`Europe/Paris`** (décidé le 2026-09-27 ; ce paragraphe disait UTC). Le run tombe donc à 05:00 UTC l'été et à 06:00 UTC l'hiver : le changement d'heure le déplace, mais toujours après la clôture des bougies daily crypto à 00:00 UTC, donc sans effet sur les prix lus.
 
 ```
 1. Healthcheck de démarrage, log du git_sha
@@ -431,7 +431,7 @@ Commande `jobs/liquidate.ts`, déclenchable en CLI et depuis un bouton d'action 
   },
 
   "execution": { "postOnly": true, "quoteCurrency": "USDC", "limitOffsetPct": 0.001 },
-  "schedule": { "cron": "0 7 * * *", "timezone": "UTC" }
+  "schedule": { "cron": "0 7 * * *", "timezone": "Europe/Paris" }
 }
 ```
 

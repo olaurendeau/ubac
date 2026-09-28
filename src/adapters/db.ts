@@ -179,7 +179,10 @@ export type SnapshotRecord = SnapshotToRecord;
 export interface CashFlowRecord {
   readonly id: string;
   readonly occurredAt: Date;
-  /** Le jour UTC de l'apport, sous la forme dont raisonne le noyau. Le cron est en UTC (§8). */
+  /**
+   * Le jour UTC de l'apport, sous la forme dont raisonne le noyau : `run_date` est
+   * un jour UTC (`date -u` au point d'entree), voir `utcDay`.
+   */
   readonly occurredOn: IsoDate;
   /** Positif = apport, negatif = retrait. */
   readonly amount: UsdcAmount;
@@ -368,7 +371,14 @@ function decimalMapFromJson(raw: unknown, contexte: string): Readonly<Record<str
   return sortie;
 }
 
-/** Le jour UTC d'un instant. Le cron tourne en UTC et les bougies daily cloturent a 00:00 UTC (§8). */
+/**
+ * Le jour UTC d'un instant. Tout le systeme raisonne en jours UTC : le point
+ * d'entree fabrique `run_date` par `date -u`. Le declencheur tire a 07:00
+ * Europe/Paris (§8), soit 05:00 UTC l'ete et 06:00 UTC l'hiver : toujours apres
+ * la cloture des bougies daily a 00:00 UTC, et toujours dans le meme jour UTC
+ * que le jour de Paris. Le jour d'un flux se compare donc au `run_date` sans
+ * conversion.
+ */
 function utcDay(instant: Date): IsoDate {
   return instant.toISOString().slice(0, 10);
 }

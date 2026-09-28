@@ -323,7 +323,8 @@ lignes**.
 
 **Résultat** : `REBALANCE_TOO_LARGE_PCT` passe de `0.25` à **`0.08`**, avec le
 commentaire qui dit que c'est le plafond d'armement de la phase 3 et par quel
-geste il se lève (O3 = 3).
+geste il se lève (O3 = 3). **Relevé à `0.11` le 2026-09-27**, hors vague, par le
+geste d'O3 = 3 : voir plus bas.
 
 **La valeur vient d'une mesure, pas d'un ordre de grandeur.** Le cadrage
 écrivait « de l'ordre de 5 % », un chiffre avancé sans données. Le rejeu les a
@@ -336,7 +337,13 @@ produites : sur 974 jours, les douze rééquilibrages de production pesaient de
 | 5 % | 594 | 3 |
 | 7 % | 353 | 6 |
 | **8 %** | **166** | **10** |
-| 11 % | 0 | 12 *(soit les 25 % actuels)* |
+| 9 % | 239 | 8 |
+| 10 % | 45 | 11 |
+| **11 %** | **0** | **12** *(soit les 25 % de la phase 0)* |
+| 25 % | 0 | 12 |
+
+*Lignes 9 %, 10 % et 25 % ajoutées le 2026-09-27, mesurées par le coordinateur sur
+le même rejeu, avec le vrai noyau, un plafond à la fois.*
 
 À 5 %, le premier déclenchement réel aurait été refusé, avec une alerte
 `URGENT` chaque jour et rien d'armé avant la levée : le mois calendaire d'O4
@@ -345,6 +352,19 @@ indistinguable d'une panne, et il apprend à ignorer les alertes urgentes.
 **L'opérateur a retenu 8 % le 2026-09-21** : le plafond mord encore — deux des
 douze rééquilibrages passent à la trappe et 166 jours de déclenchement sont
 refusés — sans neutraliser la phase qu'il est censé protéger.
+
+**L'opérateur a relevé le plafond à 11 % le 2026-09-27.** Le portefeuille est
+hors bande depuis l'apport du 2026-09-26 ; la correction pèse 8,40 %, et à 8 %
+chaque run à partir du dégel du 3 octobre aurait été refusé, avec une alerte
+`URGENT` quotidienne. Deux enseignements de la mesure. (a) **L'effet du plafond
+n'est pas monotone** : 9 % fait pire que 8 %, parce que refuser ou exécuter un
+jour déplace tout le chemin du portefeuille — une valeur se mesure, elle ne
+s'interpole pas. (b) **À 11 %, le plafond ne refuse plus aucun rééquilibrage
+historique** : il cesse de mordre sur la stratégie et devient un pur garde-fou
+contre un bug de dimensionnement, 752 USDC par run au plus sur un portefeuille
+de 6 834 USDC, contre 1 708 à 25 %. Choix assumé. Les oracles `rebalance` du
+rejeu redeviennent ceux de la phase 0 (12 déclenchements) ; l'ombre
+`rebalance_ab`, qui arme B, bute encore 84 jours à 11 %.
 
 **C'est le lot le plus court et le plus facile à sous-estimer.** Les trois
 décisions se referment l'une sur l'autre : `REBALANCE_TOO_LARGE` **refuse déjà le
@@ -357,7 +377,8 @@ satisfait E32 en composant le motif de l'intention et celui du rejet. Ce qui
 coûte, c'est ce que la valeur touche ailleurs.
 
 **Validation** : un run dont les jambes pèsent 9 % du portefeuille est refusé et
-ne l'était pas ; un run à 7 % passe ; le motif cite la nouvelle valeur ; l'alerte
+ne l'était pas ; un run à 7 % passe *(à 11 % : 12 % refusé, 10 % et 8,40 %
+passent)* ; le motif cite la nouvelle valeur ; l'alerte
 part ; `make coverage` tient les 100 % lignes **et branches**.
 **Mutation** : remettre `0.25` — les sondes du plafond rougissent. Si elles ne
 rougissent pas, elles ne testaient pas le seuil.
