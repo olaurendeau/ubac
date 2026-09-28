@@ -35,7 +35,7 @@ import {
 /**
  * L'acces a Postgres, expose en **operations** et non en client. Rien ici ne
  * rend un `db` brut : le job quotidien enregistre une decision, lit le dernier
- * snapshot, lit les flux recents et lit les ordres en attente. Ce qui n'est pas
+ * snapshot, lit les flux recents, les derniers apports et les ordres en attente. Ce qui n'est pas
  * dans cette liste ne se fait pas depuis le job.
  *
  * Ce module ne lit jamais l'environnement. La chaine de connexion arrive
@@ -235,6 +235,13 @@ export interface UbacDatabase {
   snapshotSeries(): Promise<readonly SnapshotPoint[]>;
   /** Flux dont `occurred_at >= since`, du plus ancien au plus recent. */
   recentCashFlows(since: Date): Promise<readonly CashFlowRecord[]>;
+  /**
+   * Les `limit` derniers **apports** — montant strictement positif —, du plus
+   * recent au plus ancien, quelle que soit leur date. Un retrait n'en est pas
+   * un et n'y entre pas : le filtre est dans la requete, pas chez l'appelant,
+   * sinon trois retraits recents masqueraient les apports qui les precedent.
+   */
+  latestDeposits(limit: number): Promise<readonly CashFlowRecord[]>;
   pendingOrders(): Promise<readonly PendingOrderRecord[]>;
   /** L'ordre en `PENDING`, **avant** son placement (E23). */
   recordOrder(input: OrderToRecord): Promise<RecordOrderOutcome>;
@@ -364,6 +371,17 @@ function decimalMapFromJson(raw: unknown, contexte: string): Readonly<Record<str
 /** Le jour UTC d'un instant. Le cron tourne en UTC et les bougies daily cloturent a 00:00 UTC (§8). */
 function utcDay(instant: Date): IsoDate {
   return instant.toISOString().slice(0, 10);
+}
+
+/** Une ligne de `cash_flows`, telle que les deux lectures de flux la rendent. */
+function cashFlowRecord(ligne: typeof cashFlows.$inferSelect): CashFlowRecord {
+  return {
+    id: ligne.id,
+    occurredAt: ligne.occurredAt,
+    occurredOn: utcDay(ligne.occurredAt),
+    amount: ligne.amountUsdc as UsdcAmount,
+    note: ligne.note,
+  };
 }
 
 function sideFromText(raw: string, contexte: string): Side {
@@ -511,13 +529,19 @@ export function openDatabase(secrets: Pick<Secrets, 'databaseUrl'>): UbacDatabas
         .from(cashFlows)
         .where(gte(cashFlows.occurredAt, since))
         .orderBy(asc(cashFlows.occurredAt));
-      return lignes.map((ligne) => ({
-        id: ligne.id,
-        occurredAt: ligne.occurredAt,
-        occurredOn: utcDay(ligne.occurredAt),
-        amount: ligne.amountUsdc as UsdcAmount,
-        note: ligne.note,
-      }));
+      return lignes.map(cashFlowRecord);
+    },
+
+    async latestDeposits(limit: number): Promise<readonly CashFlowRecord[]> {
+      const lignes = await db
+        .select()
+        .from(cashFlows)
+        /* Compare en SQL, sur la colonne numeric : aucun montant ne passe par un flottant pour etre filtre. */
+        .where(sql`${cashFlows.amountUsdc} > 0`)
+        /* L'identifiant departage deux apports au meme instant : la meme table rend toujours la meme liste. */
+        .orderBy(desc(cashFlows.occurredAt), desc(cashFlows.id))
+        .limit(limit);
+      return lignes.map(cashFlowRecord);
     },
 
     async pendingOrders(): Promise<readonly PendingOrderRecord[]> {

@@ -122,6 +122,27 @@ export interface TwrPoint {
   readonly benchmarks: Readonly<Record<string, Decimal>>;
 }
 
+/** Un apport enregistre, reduit a ce que la section « Derniers apports » lit. */
+export interface ReportDeposit {
+  /** Le jour UTC de l'apport. */
+  readonly occurredOn: IsoDate;
+  readonly amount: UsdcAmount;
+  /** D'ou vient l'apport, quand quelqu'un l'a dit. */
+  readonly note: string | null;
+}
+
+/**
+ * Les derniers apports tels que le run les a lus, **ou le motif de leur
+ * absence** : une lecture en panne ne coupe pas le run, et le rapport le dit a
+ * la place de la liste plutot que de la taire.
+ */
+export type ReportDeposits =
+  | { readonly status: 'READ'; readonly deposits: readonly ReportDeposit[] }
+  | { readonly status: 'UNREADABLE'; readonly reason: string };
+
+/** Combien d'apports la section montre. Le run en demande autant a la base : c'est le rapport qui decide de ce qu'il affiche. */
+export const DERNIERS_APPORTS = 3;
+
 export interface DailyReportInput {
   readonly run: CompletedRun;
   /** Cibles et bandes de la configuration de **production**. */
@@ -135,6 +156,12 @@ export interface DailyReportInput {
    * rapport le dit plutot que de rendre un cadre vide.
    */
   readonly series?: readonly TwrPoint[];
+  /**
+   * Les derniers apports, du plus recent au plus ancien, rendus dans l'ordre
+   * recu. Obligatoire : la section est la tous les jours, et une entree absente
+   * ne dirait pas si la liste est vide ou si personne ne l'a lue.
+   */
+  readonly deposits: ReportDeposits;
 }
 
 /** Ce que le rendu produit, et tout ce dont l'envoi a besoin. */
@@ -811,6 +838,37 @@ function comparisonSection(input: DailyReportInput): string {
   );
 }
 
+/**
+ * Un historique court, **pas le flux du jour** : les derniers apports
+ * enregistres, quelle que soit leur date. La section ne disparait jamais — ni
+ * sans apport, ni quand la lecture a echoue — : une section qui disparait ne dit
+ * pas pourquoi.
+ *
+ * « Enregistres » et non « detectes » : un apport arrive dans `cash_flows` par
+ * une ecriture, et la section ne pretend pas savoir laquelle.
+ */
+function apportsSection(deposits: ReportDeposits): string {
+  if (deposits.status === 'UNREADABLE') {
+    return section(
+      'Derniers apports',
+      `<p style="${NOTE}">Les derniers apports n'ont pas pu etre lus : ${escape(deposits.reason)}. Le reste du rapport n'en depend pas.</p>`,
+    );
+  }
+  if (deposits.deposits.length === 0) {
+    return section('Derniers apports', `<p style="${NOTE}">Aucun apport enregistre.</p>`);
+  }
+  const rows = deposits.deposits.map((apport) => [
+    escape(apport.occurredOn),
+    usdc(apport.amount),
+    apport.note === null ? '—' : escape(apport.note),
+  ]);
+  return section(
+    'Derniers apports',
+    table(['Date', 'Montant', 'Note'], rows) +
+      `<p style="${NOTE}">Les ${String(DERNIERS_APPORTS)} plus recents au plus, du plus recent au plus ancien, quelle que soit leur date. Un retrait n'y figure pas.</p>`,
+  );
+}
+
 /** Ce que le noyau n'a pas pu rendre, et pourquoi. Une absence sans motif serait un oubli. */
 function gapSection(run: CompletedRun): string {
   if (run.benchmarkGaps.length === 0) return '';
@@ -900,6 +958,7 @@ export function renderDailyReport(input: DailyReportInput): DailyReportMail {
     allocationSection(run, input.params.targets) +
     comparisonSection(input) +
     gapSection(run) +
+    apportsSection(input.deposits) +
     /* En dernier, et c'est donc ce que la coupure de Gmail emporte en premier : d'ou le graphe borne, qui est ce qui ferait grossir le rapport jusqu'a ce seuil. */
     lexiqueSection(run) +
     '</div>';

@@ -13,6 +13,8 @@ import { HOLD_5050_KEYS, HOLD_BTC_KEYS, PORTFOLIO_KEYS } from '../../src/jobs/sn
 import type {
   CompletedRun,
   DailyReportInput,
+  ReportDeposit,
+  ReportDeposits,
   ReportExecution,
   ReportOutcome,
   TwrPoint,
@@ -126,11 +128,23 @@ const SERIE: readonly TwrPoint[] = [
   { runDate: '2026-09-12', benchmarks: { [PORTFOLIO_KEYS.index]: dec('1.20') } },
 ];
 
+/** Un apport tel que le run le lit. `note` absente : personne n'a dit d'ou il venait. */
+const apport = (occurredOn: string, montant: string, note: string | null = null): ReportDeposit => ({
+  occurredOn,
+  amount: dec(montant) as UsdcAmount,
+  note,
+});
+
+/** L'apport de la table reelle : un seul, et anterieur au run. */
+const APPORTS: ReportDeposits = { status: 'READ', deposits: [apport('2026-09-01', '1000', 'virement initial')] };
+const SANS_APPORT: ReportDeposits = { status: 'READ', deposits: [] };
+
 const INPUT: DailyReportInput = {
   run: RUN,
   params: DEFAULT_REBALANCE_PARAMS,
   previous: VEILLE,
   series: SERIE,
+  deposits: APPORTS,
 };
 
 /** Un point de serie, reduit a ce que le graphe lit. `indice` absent : la colonne restera vide. */
@@ -223,6 +237,10 @@ describe('rendu — la sortie attendue, ligne a ligne', () => {
       "Portefeuille : TWR depuis la premiere photo. Hold : fenetre OHLCV de 3 jour(s), du 2026-09-10 au 2026-09-12. Les deux periodes ne coincident pas tant que le systeme n'a pas tourne aussi longtemps que la fenetre.",
       "Recul actuel depuis le plus haut : -3.85 %. Ce n'est pas un max drawdown : la photo porte l'indice et son sommet, pas la serie — ni le pire recul passe ni le Sharpe du portefeuille ne s'en lisent.",
       'Ladder et DCA : leur decision du jour figure ci-dessus ; leur P&L demande un rejeu jour par jour, pas une photo.',
+      'Derniers apports',
+      'Date | Montant | Note',
+      '2026-09-01 | 1000.00 USDC | virement initial',
+      "Les 3 plus recents au plus, du plus recent au plus ancien, quelle que soit leur date. Un retrait n'y figure pas.",
       'Lexique',
       'Terme | Definition',
       "P&L | Profit and loss : ce que le portefeuille a gagne ou perdu sur la periode, en pourcentage de ce qu'il valait.",
@@ -252,6 +270,7 @@ describe('rendu — la sortie attendue, ligne a ligne', () => {
       "recul actuel depuis le plus haut | De combien l'indice est descendu sous son plus haut connu, aujourd'hui et non dans le passe. C'est la mesure sur laquelle la suspension se declenche.",
       'Sharpe 90 j | Le rendement rapporte a son agitation sur les 90 derniers jours : plus il est haut, plus la performance a ete reguliere plutot que chanceuse.',
       'fenetre OHLCV | Le nombre de jours de cours — ouverture, haut, bas, cloture, volume — que le run a relus pour calculer les courbes de reference.',
+      "apport | Un versement d'USDC enregistre dans les flux de tresorerie ; un retrait n'en est pas un. Le TWR neutralise l'un comme l'autre.",
       "NONE | Aucune bande n'est franchie : le run constate l'etat du portefeuille et ne propose rien.",
     ]);
   });
@@ -347,7 +366,7 @@ describe('§9 et C27 — le P&L se lit sur l’indice de croissance, jamais sur 
   });
 
   it('declare le P&L du jour indisponible sans photo de reference, et ne se replie pas sur la valeur', () => {
-    const sansVeille = renderDailyReport({ run: RUN, params: DEFAULT_REBALANCE_PARAMS });
+    const sansVeille = renderDailyReport({ run: RUN, params: DEFAULT_REBALANCE_PARAMS, deposits: SANS_APPORT });
     expect(lignes(sansVeille.html)).toContain('100000.00 USDC | indisponible | +25.00 %');
     expect(sansVeille.html).toContain('une variation de valeur brute n&#39;en serait pas un (C27)');
   });
@@ -625,7 +644,7 @@ describe('R1 a R6 — le lexique vit dans le rapport, et n’y est ni mort ni mu
       .slice(2)
       .map((entree) => (entree.split(' | ')[0] ?? '').toLowerCase());
 
-    expect(termes.length).toBe(28);
+    expect(termes.length).toBe(29);
     for (const terme of termes) expect(texte).toContain(terme);
   });
 
@@ -774,7 +793,7 @@ describe('R7 a R16 — le graphe du TWR cumule', () => {
 
   it('R14 — zero ou une photo : une phrase nommee, jamais un cadre vide', () => {
     /* Aucune serie lue : le rendu compose le point du jour, il reste seul. */
-    const premier = renderDailyReport({ run: RUN, params: DEFAULT_REBALANCE_PARAMS });
+    const premier = renderDailyReport({ run: RUN, params: DEFAULT_REBALANCE_PARAMS, deposits: SANS_APPORT });
     expect(graphe(premier.html)).toContain('1 photo(s) dans l');
     expect(graphe(premier.html)).toContain('Il apparaitra des le run suivant.');
     expect(graphe(premier.html)).not.toContain('<td');
@@ -892,6 +911,71 @@ describe('E28 — le rapport distingue place, execute, partiel et non execute, e
     const corps = lignes(html.slice(0, index)).join('\n').toLowerCase();
     for (const entree of lignes(html.slice(index)).slice(2)) {
       expect(corps).toContain((entree.split(' | ')[0] ?? '').toLowerCase());
+    }
+  });
+});
+
+/**
+ * Les derniers apports : un historique court, pas le flux du jour. La section
+ * est la **tous les jours** — avec la liste, avec la phrase qui dit qu'il n'y en
+ * a pas, ou avec celle qui dit que la lecture a echoue —, parce qu'une section
+ * qui disparait ne dit pas laquelle des trois est vraie.
+ *
+ * Le filtre des retraits et l'ordre sont ceux de la requete, sondes contre
+ * Postgres dans `test/adapters/db.test.ts` ; le rendu, lui, garde l'ordre recu.
+ */
+describe('Derniers apports', () => {
+  /** Les lignes de la section, titre compris, jusqu'au titre suivant. */
+  function apports(input: DailyReportInput): readonly string[] {
+    const rendu = lignes(renderDailyReport(input).html);
+    const debut = rendu.indexOf('Derniers apports');
+    expect(debut).toBeGreaterThan(-1);
+    return rendu.slice(debut, rendu.indexOf('Lexique', debut));
+  }
+
+  it('rend les apports dans l’ordre recu, du plus recent au plus ancien, note comprise', () => {
+    const recus: ReportDeposits = {
+      status: 'READ',
+      deposits: [
+        apport('2026-09-26', '1000', 'virement du compte courant'),
+        apport('2026-08-02', '250.5'),
+        apport('2025-12-31', '5000.12345678', 'apport <initial>'),
+      ],
+    };
+    expect(apports({ ...INPUT, deposits: recus })).toEqual([
+      'Derniers apports',
+      'Date | Montant | Note',
+      '2026-09-26 | 1000.00 USDC | virement du compte courant',
+      '2026-08-02 | 250.50 USDC | —',
+      '2025-12-31 | 5000.12 USDC | apport <initial>',
+      "Les 3 plus recents au plus, du plus recent au plus ancien, quelle que soit leur date. Un retrait n'y figure pas.",
+    ]);
+  });
+
+  it('sans apport enregistre, une ligne le dit et la section reste', () => {
+    expect(apports({ ...INPUT, deposits: SANS_APPORT })).toEqual(['Derniers apports', 'Aucun apport enregistre.']);
+  });
+
+  it('une lecture en echec se dit a la place de la liste, motif echappe', () => {
+    const html = renderDailyReport({
+      ...INPUT,
+      deposits: { status: 'UNREADABLE', reason: 'connexion <refusee>' },
+    }).html;
+    expect(html).toContain('connexion &lt;refusee&gt;');
+    expect(apports({ ...INPUT, deposits: { status: 'UNREADABLE', reason: 'connexion refusee' } })).toEqual([
+      'Derniers apports',
+      "Les derniers apports n'ont pas pu etre lus : connexion refusee. Le reste du rapport n'en depend pas.",
+    ]);
+  });
+
+  it('se place avant le lexique, sans accent, et nomme le terme que le lexique glose', () => {
+    for (const deposits of [APPORTS, SANS_APPORT, { status: 'UNREADABLE', reason: 'panne' } as const]) {
+      const html = renderDailyReport({ ...INPUT, deposits }).html;
+      const rendu = lignes(html);
+      expect(rendu.indexOf('Derniers apports')).toBeGreaterThan(rendu.indexOf('Comparaison'));
+      expect(rendu.indexOf('Derniers apports')).toBeLessThan(rendu.indexOf('Lexique'));
+      expect(html.normalize('NFD')).not.toMatch(/[\u0300-\u036f]|[æœÆŒ]/);
+      expect(rendu.some((ligne) => ligne.startsWith('apport | '))).toBe(true);
     }
   });
 });

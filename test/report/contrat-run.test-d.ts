@@ -1,9 +1,11 @@
-import type { SnapshotPoint, SnapshotRecord } from '../../src/adapters/db.js';
+import type { CashFlowRecord, SnapshotPoint, SnapshotRecord } from '../../src/adapters/db.js';
 import type { DailyRunResult } from '../../src/jobs/daily.js';
 import type {
   CompletedRun,
   DailyReportInput,
   PreviousSnapshot,
+  ReportDeposit,
+  ReportDeposits,
   ReportDrawdown,
   ReportExecution,
   ReportGap,
@@ -124,6 +126,19 @@ const serieDuRun: DailyReportInput['series'] = acheve.snapshotSeries;
 void [unPoint, serieDuRun];
 
 /**
+ * V6 ter — les derniers apports, meme sonde que V6 bis : le rendu les lit par
+ * `DailyReportInput.deposits`. Un flux tel que la base le rend est un apport du
+ * rapport, et les deux branches du run — lu, illisible — en sont une chacune.
+ */
+declare const flux: CashFlowRecord;
+declare const lus: Extract<Completed['latestDeposits'], { status: 'READ' }>;
+declare const illisibles: Extract<Completed['latestDeposits'], { status: 'UNREADABLE' }>;
+const unApport: ReportDeposit = flux;
+const apportsDuRun: DailyReportInput['deposits'] = acheve.latestDeposits;
+const deuxBranches: readonly [ReportDeposits, ReportDeposits] = [lus, illisibles];
+void [unApport, apportsDuRun, deuxBranches];
+
+/**
  * V8 — ce que le run porte et que le rendu ne lit pas. Un champ **ajoute** a
  * `DailyRunResult` passerait sans bruit dans V1 : la forme du rendu est plus
  * etroite, et un objet plus large lui reste assignable. C'est voulu — le rapport
@@ -160,7 +175,9 @@ type NonLus = Exclude<keyof Completed, keyof CompletedRun>;
  *
  * `snapshotSeries` rejoint la liste pour exactement le meme motif que
  * `previousSnapshot` : le graphe la lit, mais par `DailyReportInput.series`, et
- * V6 bis le tient.
+ * V6 bis le tient. `latestDeposits` la rejoint pour le meme motif encore : la
+ * section « Derniers apports » le lit par `DailyReportInput.deposits`, et V6 ter
+ * le tient.
  */
 type NonLusAttendus =
   | 'status'
@@ -173,6 +190,7 @@ type NonLusAttendus =
   | 'report'
   | 'previousSnapshot'
   | 'snapshotSeries'
+  | 'latestDeposits'
   | 'placements';
 type MemeEnsemble<A extends B, B> = A;
 declare const nonLus: [MemeEnsemble<NonLus, NonLusAttendus>, MemeEnsemble<NonLusAttendus, NonLus>];

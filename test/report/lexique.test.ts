@@ -122,7 +122,7 @@ describe('R4 — les deux vocabulaires du noyau sont couverts en entier', () => 
 describe('R5 — les entrees conditionnelles suivent ce que le rapport imprime', () => {
   it('le vocabulaire fixe est la tous les jours, contexte vide compris', () => {
     const fixes = termes();
-    expect(fixes).toHaveLength(27);
+    expect(fixes).toHaveLength(28);
     expect(fixes).toContain('P&L');
     expect(fixes).toContain('indice de croissance');
     /* Derive de la fenetre du noyau : la changer ne peut pas oublier le terme. */
