@@ -244,7 +244,7 @@ Le contrôle du risque repose sur l'**allocation cible elle-même** : la ligne U
 - Portefeuille Coinbase **dédié**, clé API scopée dessus uniquement. Le portefeuille principal doit être invisible pour l'agent. Protection structurelle, pas logicielle.
 - Permissions : lecture + trade. **Jamais de permission de retrait.**
 - Ordres **limit post-only** exclusivement. Un ordre qui s'exécuterait en taker est rejeté par l'exchange plutôt qu'exécuté au prix fort. Cela préserve le statut maker (0,25 % contre 0,6 %).
-- Prix limite : mid ± 0,1 %.
+- Prix limite : meilleur acheteur à l'achat, meilleur vendeur à la vente, lus au carnet juste avant la couche risque, qui valide ce prix. Voir [ubac-prix-au-carnet.md](ubac-prix-au-carnet.md) (D2, D3), qui remplace « mid ± 0,1 % ».
 - `client_order_id` déterministe : `sha256(run_date | asset | side | leg_index)` tronqué. Un rejeu du job ne peut pas doubler l'ordre.
 - Paires **exclusivement en USDC** (voir §11).
 

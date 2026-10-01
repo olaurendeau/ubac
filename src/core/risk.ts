@@ -43,7 +43,7 @@ export const REBALANCE_TOO_LARGE_PCT = new Decimal('0.11');
 /** Delai min entre deux reequilibrages complets (C21). */
 export const COOLDOWN_DAYS = 7;
 
-/** Ecart max entre prix limite et mid. Strict : 2 % passe. */
+/** Ecart max entre prix limite et mid, puis entre mid et cloture. Strict : 2 % passe. */
 export const PRICE_SANITY_PCT = new Decimal('0.02');
 
 /** Divergence max exchange / interne. Stricte : 1 % passe. */
@@ -86,7 +86,14 @@ export interface RebalanceExecution {
   readonly ordersFilled: number;
 }
 
-/** Contexte requis en entier : aucun champ optionnel. */
+/**
+ * Contexte requis en entier : aucun champ optionnel.
+ *
+ * Deux references de prix par actif (`docs/specs/ubac-prix-au-carnet.md`, D3) :
+ * `mids`, le mid **en direct** lu au carnet, et `prices`, la **cloture**, qui
+ * valorise aussi le portefeuille. Les ombres et le rejeu passent la cloture
+ * pour les deux.
+ */
 export interface RiskContext {
   readonly makeClientOrderId: MakeClientOrderId;
   readonly mids: MidPrices;
@@ -280,35 +287,40 @@ function tooSmall(leg: IntentLeg, legIndex: number): Rejection {
   };
 }
 
-/** Ecart au mid ; absence de mid = rejet. */
+/**
+ * Les trois controles de D3 : un mid en direct present et strictement positif,
+ * le prix limite a 2 % au plus de ce mid, et ce mid a 2 % au plus de la cloture
+ * — garde contre un carnet aberrant. Absence de mid = rejet.
+ */
 function priceSanity(
   leg: IntentLeg,
   asset: TradableAsset,
   legIndex: number,
-  mids: MidPrices,
+  context: RiskContext,
 ): Rejection | null {
-  const mid = mids[asset];
+  const rejet = (reason: string): Rejection => ({ code: 'PRICE_SANITY', reason, legIndex });
+  const mid = context.mids[asset];
   if (mid === undefined) {
-    return {
-      code: 'PRICE_SANITY',
-      reason: `aucun prix de reference pour ${asset} : le prix limite n'est comparable a rien`,
-      legIndex,
-    };
+    return rejet(`aucun prix de reference pour ${asset} : le prix limite n'est comparable a rien`);
   }
-  if (mid.lte(0)) {
-    return {
-      code: 'PRICE_SANITY',
-      reason: `prix de reference ${asset} a ${mid.toString()} : un mid nul ou negatif n'a pas de sens`,
-      legIndex,
-    };
+  if (!mid.isFinite() || mid.lte(0)) {
+    return rejet(`prix de reference ${asset} a ${mid.toString()} : un mid nul, negatif ou non fini n'a pas de sens`);
   }
   const deviation = leg.limitPrice.sub(mid).abs().div(mid);
   if (deviation.gt(PRICE_SANITY_PCT)) {
-    return {
-      code: 'PRICE_SANITY',
-      reason: `prix limite ${leg.limitPrice.toString()} a ${deviation.times(100).toFixed(4)} % du mid ${mid.toString()}, au-dela de ${PRICE_SANITY_PCT.times(100).toString()} %`,
-      legIndex,
-    };
+    return rejet(
+      `prix limite ${leg.limitPrice.toString()} a ${deviation.times(100).toFixed(4)} % du mid ${mid.toString()}, au-dela de ${PRICE_SANITY_PCT.times(100).toString()} %`,
+    );
+  }
+  const close = context.prices[asset];
+  if (!close.isFinite() || close.lte(0)) {
+    return rejet(`cloture ${asset} a ${close.toString()} : le mid en direct n'est comparable a rien`);
+  }
+  const drift = mid.sub(close).abs().div(close);
+  if (drift.gt(PRICE_SANITY_PCT)) {
+    return rejet(
+      `mid en direct ${mid.toString()} a ${drift.times(100).toFixed(4)} % de la cloture ${close.toString()}, au-dela de ${PRICE_SANITY_PCT.times(100).toString()} %`,
+    );
   }
   return null;
 }
@@ -346,7 +358,7 @@ export function validate(intent: Intent, context: RiskContext): Verdict {
       rejections.push(screening.rejection);
       continue;
     }
-    const aberrant = priceSanity(leg, screening.asset, legIndex, context.mids);
+    const aberrant = priceSanity(leg, screening.asset, legIndex, context);
     if (aberrant !== null) {
       rejections.push(aberrant);
       continue;

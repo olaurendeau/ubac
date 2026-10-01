@@ -1,0 +1,17 @@
+{
+  "_fabrique": "FABRIQUEE, PAS CAPTUREE (plan ubac-prix-au-carnet, lot L1). Aucune capture de best_bid_ask n'existe. Forme calquee sur la documentation Coinbase (get-best-bid-ask, verifiee le 2026-10-01) et sur l'echantillon de fetchBidsAsks que ccxt 4.5.78 garde dans coinbase.js. A remplacer par la reponse brute, expurgee, du premier run --dry-run (etape O1).",
+  "pricebooks": [
+    {
+      "product_id": "BTC-USDC",
+      "bids": [{ "price": "83412.57", "size": "0.04812339" }],
+      "asks": [{ "price": "83412.58", "size": "0.11250000" }],
+      "time": "2026-10-01T05:03:12.345678Z"
+    },
+    {
+      "product_id": "ETH-USDC",
+      "bids": [{ "price": "2604.11", "size": "1.92031144" }],
+      "asks": [{ "price": "2604.12", "size": "0.38400000" }],
+      "time": "2026-10-01T05:03:12.345678Z"
+    }
+  ]
+}

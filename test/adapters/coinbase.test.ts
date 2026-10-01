@@ -83,6 +83,9 @@ const ORDRE_EXECUTE = 'ab12cd34-0000-4000-8000-0000000000f1';
 const LISTE_EXECUTE = await fabriquee('coinbase-order-filled');
 const EXECUTIONS = await fabriquee('coinbase-order-fills');
 
+/** Le carnet des deux paires, **fabrique** : aucune capture n'existe (etape O1). */
+const CARNET = await fabriquee('coinbase-best-bid-ask');
+
 /** La liste filtree sur l'ordre execute, dont on fait varier des champs. */
 function execute(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   const [brut] = LISTE_EXECUTE['orders'] as Record<string, unknown>[];
@@ -278,7 +281,7 @@ const methodesEnumerees: MemeEnsemble<keyof ExecutionPort, (typeof EXECUTION_MET
  * regle de noms d'`eslint.config.js` ; elle est retiree (B4), la recopie aussi.
  */
 describe('E10 — la surface du module, lecture et ecriture, enumeree', () => {
-  it('a six routes de lecture et deux d’ecriture, disjointes', () => {
+  it('a sept routes de lecture et deux d’ecriture, disjointes', () => {
     expect([...READ_ROUTES]).toEqual([
       'key_permissions',
       'accounts',
@@ -286,6 +289,7 @@ describe('E10 — la surface du module, lecture et ecriture, enumeree', () => {
       'daily_candles',
       'order',
       'fills',
+      'best_bid_ask',
     ]);
     expect([...WRITE_ROUTES]).toEqual(['create_order', 'cancel_orders']);
     expect(READ_ROUTES.filter((route) => (WRITE_ROUTES as readonly string[]).includes(route))).toEqual([]);
@@ -300,10 +304,11 @@ describe('E10 — la surface du module, lecture et ecriture, enumeree', () => {
     ]);
   });
 
-  it('n’expose sur le lecteur que cinq lectures et une fermeture', () => {
+  it('n’expose sur le lecteur que six lectures et une fermeture', () => {
     const { transport } = transportDe({});
     expect(Object.keys(ouvrir(transport)).sort()).toEqual([
       'balances',
+      'bestBidAsk',
       'close',
       'keyPermissions',
       'openOrders',
@@ -1110,6 +1115,62 @@ describe('formes de reponse inattendues', () => {
   });
 });
 
+/** Le carnet de la fixture, dont on remplace la paire `product_id` par `remplacant`, ou qu'on retire. */
+function carnetAvec(product: string, remplacant?: Record<string, unknown>): Record<string, unknown> {
+  const pricebooks = (CARNET['pricebooks'] as Record<string, unknown>[]).flatMap((pb) =>
+    pb['product_id'] !== product ? [pb] : remplacant === undefined ? [] : [{ ...pb, ...remplacant }],
+  );
+  return { pricebooks };
+}
+
+describe('best_bid_ask — le carnet des deux paires, en Decimal', () => {
+  it('lit les deux paires en un appel, apres la cle, bid et ask au centime pres', async () => {
+    const { transport, routes } = transportDe({ best_bid_ask: CARNET });
+    const carnet = await ouvrir(transport).bestBidAsk();
+
+    expect(routes).toEqual([
+      { kind: 'key_permissions' },
+      { kind: 'best_bid_ask', products: ['BTC-USDC', 'ETH-USDC'] },
+    ]);
+    expect(carnet.BTC).toEqual({ kind: 'COTE', bid: new Decimal('83412.57'), ask: new Decimal('83412.58') });
+    expect(carnet.ETH).toEqual({ kind: 'COTE', bid: new Decimal('2604.11'), ask: new Decimal('2604.12') });
+    expect(carnet.BTC.kind === 'COTE' && carnet.BTC.bid instanceof Decimal).toBe(true);
+  });
+
+  it.each([
+    ['paire absente', undefined, /BTC-USDC\] : 0 carnet\(s\)/],
+    ['cote acheteur vide', { bids: [] }, /bids : cote vide/],
+    ['cote vendeur vide', { asks: [] }, /asks : cote vide/],
+    ['cote qui n’est pas une liste', { asks: null }, /liste attendue/],
+    ['prix non numerique', { bids: [{ price: 'abc', size: '1' }] }, /decimale litterale attendue/],
+    ['prix en number', { bids: [{ price: 83412.57, size: '1' }] }, /chaine attendue/],
+    ['prix nul', { bids: [{ price: '0', size: '1' }] }, /prix non positif/],
+    ['bid egal a ask', { bids: [{ price: '83412.58', size: '1' }] }, /bid 83412.58 >= ask 83412.58/],
+    ['bid au-dessus d’ask', { bids: [{ price: '90000', size: '1' }] }, /carnet croise/],
+  ])('%s : BTC inexploitable, ETH intact', async (_nom, remplacant, motif) => {
+    const { transport } = transportDe({ best_bid_ask: carnetAvec('BTC-USDC', remplacant) });
+    const carnet = await ouvrir(transport).bestBidAsk();
+
+    expect(carnet.BTC.kind).toBe('INEXPLOITABLE');
+    expect(carnet.BTC.kind === 'INEXPLOITABLE' ? carnet.BTC.reason : '').toMatch(motif);
+    expect(carnet.ETH.kind).toBe('COTE');
+  });
+
+  it('une paire en double est inexploitable : on ne choisit pas', async () => {
+    const [btc] = CARNET['pricebooks'] as unknown[];
+    const { transport } = transportDe({ best_bid_ask: { pricebooks: [...(CARNET['pricebooks'] as unknown[]), btc] } });
+    const carnet = await ouvrir(transport).bestBidAsk();
+
+    expect(carnet.BTC).toEqual({ kind: 'INEXPLOITABLE', reason: 'best_bid_ask[BTC-USDC] : 2 carnet(s) dans la reponse, un attendu' });
+    expect(carnet.ETH.kind).toBe('COTE');
+  });
+
+  it('une enveloppe illisible leve une erreur typee, que le run traite', async () => {
+    const { transport } = transportDe({ best_bid_ask: { pricebooks: 'aucun' } });
+    await expect(ouvrir(transport).bestBidAsk()).rejects.toBeInstanceOf(CoinbaseFrontierError);
+  });
+});
+
 /**
  * Le mappage route -> endpoint, verifie sans reseau en interceptant la couche
  * HTTP de ccxt. C'est le test qui garde le constat central du lot : **v3 et
@@ -1211,6 +1272,11 @@ describe('mappage des routes vers les endpoints', () => {
     } finally {
       prototype['fetch'] = original;
     }
+  });
+
+  it('lit le carnet des deux paires en un appel v3, product_ids repete', async () => {
+    const [url] = await urlsDe([{ kind: 'best_bid_ask', products: ['BTC-USDC', 'ETH-USDC'] }]);
+    expect(url).toContain('/api/v3/brokerage/best_bid_ask?product_ids=BTC-USDC&product_ids=ETH-USDC');
   });
 
   it('lit un ordre par la liste filtree, et ses executions par la leur', async () => {

@@ -8,9 +8,7 @@ import type {
   PlacementOutcome,
 } from '../adapters/coinbase.js';
 import type { UbacDatabase } from '../adapters/db.js';
-import type { MidPrices } from '../core/risk.js';
-import type { Order, Price, Quantity } from '../core/types.js';
-import { prixLimite } from './liquidate.js';
+import type { Order, Quantity } from '../core/types.js';
 import type { CancellationIntent } from './reconcile.js';
 
 /**
@@ -39,35 +37,23 @@ export class ExecutionError extends Error {
 }
 
 /**
- * Les pas de BTC-USDC et d'ETH-USDC : `quote_increment` 0,01 USDC,
- * `base_increment` 1e-8. Un prix ou une quantite plus fins sont refuses par
- * l'exchange. Constantes, et non lus : si Coinbase les changeait, les ordres
- * seraient rejetes — journalises, sans rien placer de faux.
+ * Le pas de quantite de BTC-USDC et d'ETH-USDC : `base_increment` 1e-8. Une
+ * quantite plus fine est refusee par l'exchange. Constante, et non lue : si
+ * Coinbase la changeait, les ordres seraient rejetes — journalises, sans rien
+ * placer de faux.
  */
-const PAS_DE_PRIX = 2;
 const PAS_DE_QUANTITE = 8;
 
 /**
- * L'ordre tel qu'il part au carnet (E20) : le prix limite a mid ± 0,1 % du cote
- * qui ne croise pas, par `prixLimite` — la seule definition, partagee avec la
- * sortie (T3) —, arrondi au pas **en s'eloignant du mid** ; la quantite validee
- * par le risque, arrondie **vers le bas**, pour ne jamais engager plus.
- *
- * Le sens de l'arrondi n'est pas un biais a corriger : arrondir le prix vers le
- * mid pourrait le faire croiser le carnet, et l'exchange rejetterait l'ordre
- * post-only. Ne pas l'inverser.
+ * L'ordre tel qu'il part au carnet (E20) : la quantite validee par le risque,
+ * arrondie **vers le bas**, pour ne jamais engager plus. **Le prix n'est pas
+ * touche** : il a ete pose au carnet avant `validate` (`prixLimite`, etape 5 de
+ * `daily.ts`), et c'est celui que la couche risque a accepte qui part
+ * (`docs/specs/ubac-prix-au-carnet.md`, D3). Le reecrire ici rouvrirait K3 : un
+ * prix envoye que personne n'a valide.
  */
-export function auCarnet(ordre: Order, mids: MidPrices): Order {
-  const mid = mids[ordre.asset];
-  if (mid === undefined || !mid.isFinite() || !mid.gt(0)) {
-    throw new ExecutionError(`${ordre.clientOrderId} : aucun mid exploitable pour ${ordre.asset}.`);
-  }
-  const arrondi = ordre.side === 'BUY' ? Decimal.ROUND_DOWN : Decimal.ROUND_UP;
-  return {
-    ...ordre,
-    limitPrice: prixLimite(ordre.side, mid).toDecimalPlaces(PAS_DE_PRIX, arrondi) as Price,
-    quantity: ordre.quantity.toDecimalPlaces(PAS_DE_QUANTITE, Decimal.ROUND_DOWN) as Quantity,
-  };
+export function auCarnet(ordre: Order): Order {
+  return { ...ordre, quantity: ordre.quantity.toDecimalPlaces(PAS_DE_QUANTITE, Decimal.ROUND_DOWN) as Quantity };
 }
 
 /** Ce qu'il faut pour placer : l'exchange, et la base qui ecrit avant lui. */

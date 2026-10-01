@@ -2,8 +2,8 @@ import { Decimal } from 'decimal.js';
 import { describe, expect, it } from 'vitest';
 
 import { clientOrderId, exitClientOrderId } from '../../src/core/order-id.js';
+import type { Carnet, CoteAuCarnet } from '../../src/adapters/coinbase.js';
 import { MIN_LEG_USDC } from '../../src/core/risk.js';
-import type { MidPrices } from '../../src/core/risk.js';
 import type { IsoDate, Price } from '../../src/core/types.js';
 import type {
   IntentionDeCession,
@@ -11,12 +11,7 @@ import type {
   PlanDeSortie,
   SortieInput,
 } from '../../src/jobs/liquidate.js';
-import {
-  ETAPES,
-  MARGE_LIMITE_PCT,
-  SortieError,
-  planifierSortie,
-} from '../../src/jobs/liquidate.js';
+import { ETAPES, SortieError, planifierSortie } from '../../src/jobs/liquidate.js';
 import type { ReconciledBalances } from '../../src/jobs/reconcile.js';
 import { reconcile } from '../../src/jobs/reconcile.js';
 import type { Scenario } from './doubles.js';
@@ -37,9 +32,10 @@ const RUN_DATE: IsoDate = '2026-09-12';
 
 const prix = (v: string): Price => new Decimal(v) as Price;
 
-const BTC = prix('60000');
-const ETH = prix('3000');
-const MIDS: MidPrices = { BTC, ETH };
+const cote = (bid: string, ask: string): CoteAuCarnet => ({ kind: 'COTE', bid: prix(bid), ask: prix(ask) });
+const INEXPLOITABLE: CoteAuCarnet = { kind: 'INEXPLOITABLE', reason: 'best_bid_ask[ETH-USDC] : asks : cote vide' };
+/** Le meilleur vendeur a 60 000 et 3 000 : les cessions s'y posent. */
+const CARNET: Carnet = { BTC: cote('59999.99', '60000'), ETH: cote('2999.99', '3000') };
 
 /** Un portefeuille ordinaire : 30 000 de BTC, 30 000 d'ETH, 40 000 de cash. */
 const PORTEFEUILLE: Scenario = {
@@ -59,7 +55,7 @@ async function entree(
     runDate: RUN_DATE,
     soldes: await soldesDe(scenario),
     ouverts: scenario.open ?? [],
-    mids: MIDS,
+    carnet: CARNET,
     ...overrides,
   };
 }
@@ -170,23 +166,22 @@ describe('§14.2, §11 — la contrepartie est USDC, jamais EUR', () => {
   });
 });
 
-describe('§14.2, §7 — limit post-only, mid + 0,1 %', () => {
-  it('chaque cession est post-only et se pose strictement au-dessus du mid', async () => {
+describe('§14.2, §7 — limit post-only, au meilleur vendeur du carnet (D6)', () => {
+  it('chaque cession est post-only et se pose au meilleur vendeur, au-dessus du meilleur acheteur', async () => {
     const p = await plan();
 
     for (const cession of cessionsDe(p)) {
       expect(cession.postOnly).toBe(true);
       expect(cession.ordre.side).toBe('SELL');
-      /*
-       * Le signe de la marge est la moitie utile du post-only : une vente sous
-       * le mid croiserait le carnet et l'exchange la refuserait.
-       */
-      expect(cession.ordre.limitPrice.gt(cession.mid)).toBe(true);
-      expect(cession.ordre.limitPrice.toString()).toBe(
-        cession.mid.mul(new Decimal(1).add(MARGE_LIMITE_PCT)).toString(),
-      );
+      expect(cession.ordre.limitPrice.toString()).toBe(cession.fourchette.ask.toString());
+      expect(cession.ordre.limitPrice.gt(cession.fourchette.bid)).toBe(true);
     }
-    expect(cessionsDe(p).map((c) => c.ordre.limitPrice.toString())).toEqual(['60060', '3003']);
+    expect(cessionsDe(p).map((c) => c.ordre.limitPrice.toString())).toEqual(['60000', '3000']);
+  });
+
+  it('arrondit le meilleur vendeur au centime superieur, en s’eloignant du mid', async () => {
+    const p = await plan(PORTEFEUILLE, { carnet: { ...CARNET, BTC: cote('60000.001', '60000.004') } });
+    expect(cessionsDe(p)[0]?.ordre.limitPrice.toFixed()).toBe('60000.01');
   });
 
   it('la quantite cedee est le solde total, gele compris', async () => {
@@ -282,14 +277,14 @@ describe('§14.2 — le plancher de MIN_LEG_USDC separe une cession d’un resid
      * borne est celle du noyau, et elle est stricte des deux cotes — 200 passe,
      * 199 non.
      */
-    const centUsdc = { BTC: prix('100'), ETH };
-    const auPlancher = await plan({ balances: [solde('BTC', '2')] }, { mids: centUsdc });
+    const centUsdc = { ...CARNET, BTC: cote('99.99', '100') };
+    const auPlancher = await plan({ balances: [solde('BTC', '2')] }, { carnet: centUsdc });
     expect(cessionsDe(auPlancher)[0]?.ordre.quantity.mul(100).toString()).toBe(
       MIN_LEG_USDC.toString(),
     );
     expect(auPlancher.rapport.residus).toEqual([]);
 
-    const sousLePlancher = await plan({ balances: [solde('BTC', '1.99')] }, { mids: centUsdc });
+    const sousLePlancher = await plan({ balances: [solde('BTC', '1.99')] }, { carnet: centUsdc });
     expect(cessionsDe(sousLePlancher)).toEqual([]);
     expect(sousLePlancher.rapport.residus.map((r) => r.asset)).toEqual(['BTC']);
   });
@@ -300,12 +295,14 @@ describe('§14.2 — le plancher de MIN_LEG_USDC separe une cession d’un resid
     expect(p.rapport.residus).toEqual([]);
   });
 
-  it('un actif detenu sans prix de reference arrete le plan', async () => {
-    await expect(plan(PORTEFEUILLE, { mids: { BTC } })).rejects.toBeInstanceOf(SortieError);
+  it('un actif detenu au carnet inexploitable arrete le plan, et dit pourquoi', async () => {
+    const refus = plan(PORTEFEUILLE, { carnet: { ...CARNET, ETH: INEXPLOITABLE } });
+    await expect(refus).rejects.toBeInstanceOf(SortieError);
+    await expect(refus).rejects.toThrow(/ETH : carnet inexploitable.*asks : cote vide/);
   });
 
-  it('un actif a zero n’exige aucun prix de reference', async () => {
-    const p = await plan({ balances: [solde('BTC', '0.5'), solde('ETH', '0')] }, { mids: { BTC } });
+  it('un actif a zero n’exige aucun carnet', async () => {
+    const p = await plan({ balances: [solde('BTC', '0.5'), solde('ETH', '0')] }, { carnet: { ...CARNET, ETH: INEXPLOITABLE } });
     expect(cessionsDe(p).map((c) => c.ordre.asset)).toEqual(['BTC']);
   });
 });
@@ -340,10 +337,10 @@ describe('§14.4 — le rapport recapitule les cessions', () => {
     expect(rapport.runDate).toBe(RUN_DATE);
     expect(rapport.ordresRetires).toBe(2);
     expect(rapport.cessions.map((l) => l.asset)).toEqual(['BTC', 'ETH']);
-    // 0.5 x 60 060 + 10 x 3 003.
-    expect(rapport.produitTotalUsdc.toString()).toBe('60060');
+    // 0.5 x 60 000 + 10 x 3 000, au meilleur vendeur.
+    expect(rapport.produitTotalUsdc.toString()).toBe('60000');
     expect(rapport.usdcInitial.toString()).toBe('40000');
-    expect(rapport.usdcProjete.toString()).toBe('100060');
+    expect(rapport.usdcProjete.toString()).toBe('100000');
     expect(
       rapport.cessions
         .reduce((total, l) => total.add(l.produitUsdc), new Decimal(0))
@@ -353,7 +350,7 @@ describe('§14.4 — le rapport recapitule les cessions', () => {
 
   it('le produit est celui du prix limite, pas du mid : il est attendu, pas encaisse', async () => {
     const p = await plan({ balances: [solde('BTC', '1')] });
-    expect(p.rapport.cessions[0]?.produitUsdc.toString()).toBe('60060');
+    expect(p.rapport.cessions[0]?.produitUsdc.toString()).toBe('60000');
     expect(p.rapport.statut).toBe('PROJETE');
   });
 });
@@ -366,7 +363,7 @@ describe('la sortie part d’un etat reconcilie', () => {
       ...PORTEFEUILLE,
       snapshot: photo({ BTC: qty('0.5'), ETH: qty('10'), USDC: qty('40000') }),
     });
-    expect(p.rapport.usdcProjete.toString()).toBe('100060');
+    expect(p.rapport.usdcProjete.toString()).toBe('100000');
   });
 
   /*
@@ -399,16 +396,6 @@ describe('les entrees qu’aucun plan ne peut interpreter sont refusees', () => 
     ['chaine vide', ''],
   ])('runDate : %s', async (_nom, runDate) => {
     await expect(plan(PORTEFEUILLE, { runDate })).rejects.toBeInstanceOf(SortieError);
-  });
-
-  it.each([
-    ['mid nul', '0'],
-    ['mid negatif', '-1'],
-    ['mid non fini', 'NaN'],
-  ])('prix de reference : %s', async (_nom, valeur) => {
-    await expect(
-      plan(PORTEFEUILLE, { mids: { BTC: prix(valeur), ETH } }),
-    ).rejects.toBeInstanceOf(SortieError);
   });
 
   it.each([

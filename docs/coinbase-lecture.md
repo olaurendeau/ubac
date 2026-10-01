@@ -11,6 +11,7 @@ le code, pas répété ici. Chaque morceau apporte sa section avec son code.
 | **Q3c** | le marché : bougies journalières | une série complète, ou un refus |
 | **S2** (phase 3) | le statut d'un ordre donné et ses exécutions | un ordre dénoué se lit exécuté, annulé, expiré ou rejeté — ou se dit indéterminable |
 | **S4** (phase 3) | le port d'exécution et ses deux routes d'écriture | la surface d'écriture est énumérée, et le lecteur ne sait toujours rien écrire |
+| **L1** (prix au carnet) | le meilleur acheteur et le meilleur vendeur des deux paires | le prix d'un ordre se lit au carnet, ou la paire se dit inexploitable |
 
 Chaque section arrive avec le code qu'elle explique : §1 à §3 avec Q3a,
 §4 à §7 avec Q3b, §8 avec Q3c, §10 avec S2 ; S4 réécrit le §2.
@@ -22,10 +23,10 @@ en direct contre la vraie clé, en lecture seule, le **2026-09-11**.
 
 ---
 
-## 1. Le transport : six lectures, un seul verbe
+## 1. Le transport : sept lectures, un seul verbe
 
 `CoinbaseTransport` n'expose que `read(route)` et `close()`. `CoinbaseRoute` est
-un type somme **fermé à six requêtes**, toutes en lecture — les deux écritures
+un type somme **fermé à sept requêtes**, toutes en lecture — les deux écritures
 de la phase 3 vivent sur un autre transport, §2 :
 
 | Route | Endpoint | Pour |
@@ -36,6 +37,7 @@ de la phase 3 vivent sur un autre transport, §2 :
 | `daily_candles` | `GET /api/v3/brokerage/market/products/{id}/candles` | Q3c |
 | `order` | `GET /api/v3/brokerage/orders/historical/batch?order_ids={id}` | S2 |
 | `fills` | `GET /api/v3/brokerage/orders/historical/fills?order_ids={id}` | S2 |
+| `best_bid_ask` | `GET /api/v3/brokerage/best_bid_ask?product_ids=BTC-USDC&product_ids=ETH-USDC` | L1 |
 
 Les quatre premières sont déclarées ensemble, y compris `daily_candles` que
 personne n'appelle encore : une surface close n'a de sens qu'énumérée en entier, et c'est
@@ -46,7 +48,7 @@ sont jamais utilisées : elles convertissent les chaînes en `number`, et un
 flottant déjà arrondi ne se répare pas. Voir §6.
 
 `CoinbaseReader`, ajouté par Q3b, est la surface que voit le reste du programme —
-cinq lectures depuis S2 et une fermeture, et pas d'autre porte :
+six lectures depuis L1 et une fermeture, et pas d'autre porte :
 
 | Opération | Rend |
 |---|---|
@@ -55,6 +57,7 @@ cinq lectures depuis S2 et une fermeture, et pas d'autre porte :
 | `openOrders()` | les ordres non dénoués |
 | `orderStatus(id)` | le statut réel d'un ordre donné — §10 |
 | `orderFills(id)` | ses exécutions — §10 |
+| `bestBidAsk()` | le carnet de BTC-USDC et ETH-USDC, en un appel — par paire `COTE` (`bid < ask`, en `Decimal`) ou `INEXPLOITABLE` avec son motif |
 | `close()` | — ferme le transport HTTP |
 
 `MarketReader`, ajouté par Q3c, en a une seule : `dailyCandles(asset, window)`,
@@ -385,3 +388,27 @@ que `size_in_quote` vaille `false` sur un ordre limit en taille de base. Chaque
 tranchera. Le lecteur ne recoupe pas non plus la somme des exécutions avec
 `filled_size` et `total_fees` : les deux peuvent se suivre avec retard, et c'est
 au branchement de S8 d'en décider.
+
+---
+
+## 11. Le carnet : `best_bid_ask` (L1)
+
+Lot L1 de [ubac-prix-au-carnet.md](specs/ubac-prix-au-carnet.md). La clé de
+scope *view* suffit. Un seul appel couvre les deux paires, `product_ids`
+répété ; la réponse porte `pricebooks[]`, chacun avec `product_id`, `bids` et
+`asks` (`{price, size}` en chaînes) et `time`. Seul le premier niveau de chaque
+côté est lu : c'est le meilleur, et la route n'en rend qu'un.
+
+**Une paire inexploitable n'est pas une erreur de lecture.** Paire absente ou
+en double, côté vide, prix non numérique ou non positif, `bid >= ask` : la
+paire rend `INEXPLOITABLE` avec son motif, l'autre reste lisible, et la couche
+risque rejette la jambe en `PRICE_SANITY`. Seule une enveloppe illisible lève
+une `CoinbaseFrontierError` ; le run quotidien la traite comme un carnet
+inexploitable pour les deux paires, sans échouer.
+
+**Ce qui n'est pas vérifié contre l'API** : la forme de la réponse. La fixture
+`coinbase-best-bid-ask.json` est **fabriquée** (`_fabrique`, chargée par
+`fabriquee()`), calquée sur la documentation Coinbase et l'échantillon de
+`fetchBidsAsks` de ccxt 4.5.78. Le premier run `--dry-run` après déploiement
+journalise la ligne du carnet (étape O1 du plan) ; sa réponse brute, expurgée,
+remplacera la fixture.

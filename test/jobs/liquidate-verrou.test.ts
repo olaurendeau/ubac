@@ -8,7 +8,7 @@ import type { Linter } from 'eslint';
 import tseslint from 'typescript-eslint';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { MidPrices } from '../../src/core/risk.js';
+import type { Carnet } from '../../src/adapters/coinbase.js';
 import type { Price } from '../../src/core/types.js';
 import type { IntentionDeCession, SortieInput, SortieVerrouillee } from '../../src/jobs/liquidate.js';
 import * as liquidate from '../../src/jobs/liquidate.js';
@@ -46,7 +46,7 @@ import { harnais, ordreOuvert, solde } from './doubles.js';
  *   `reconcile.ts` — n'entrent qu'en **type**, donc effaces a la compilation.
  *   `validate` n'entre pas non plus, nomme ou renomme : la couche risque n'est
  *   pas appelee ici, et c'est une decision, pas un oubli.
- * - **V8** — la surface publique est exactement celle-ci. Neuf noms, enumeres.
+ * - **V8** — la surface publique est exactement celle-ci. Huit noms, enumeres.
  *   Un export de plus est un test rouge, ce qui est le point : on n'ajoute pas
  *   discretement une porte.
  * - **V9** — aucune des chaines habituelles de contournement n'apparait dans le
@@ -80,7 +80,10 @@ const LIQUIDATE = 'src/jobs/liquidate.ts';
 const SOURCE = readFileSync(resolve(ROOT, LIQUIDATE), 'utf8');
 
 const prix = (v: string): Price => new Decimal(v) as Price;
-const MIDS: MidPrices = { BTC: prix('60000'), ETH: prix('3000') };
+const CARNET: Carnet = {
+  BTC: { kind: 'COTE', bid: prix('59999.99'), ask: prix('60000') },
+  ETH: { kind: 'COTE', bid: prix('2999.99'), ask: prix('3000') },
+};
 
 async function entree(scenario: Scenario): Promise<SortieInput> {
   const resultat = await reconcile(harnais(scenario).input);
@@ -88,7 +91,7 @@ async function entree(scenario: Scenario): Promise<SortieInput> {
     runDate: '2026-09-12',
     soldes: resultat.balances,
     ouverts: scenario.open ?? [],
-    mids: MIDS,
+    carnet: CARNET,
   };
 }
 
@@ -384,7 +387,6 @@ describe('V8, V9 — la surface publique n’a pas de porte', () => {
     expect(Object.keys(liquidate).sort()).toEqual([
       'CRON_QUOTIDIEN',
       'ETAPES',
-      'MARGE_LIMITE_PCT',
       'PHASE_COURANTE',
       'PHASE_D_APPLICATION',
       'SortieError',
