@@ -35,6 +35,7 @@ function ruleCounts(result: ESLint.LintResult): Record<string, number> {
 const TRANSPORT = 'src/convoyeur/coinbase.ts';
 const AUTRE = 'src/convoyeur/passage.ts';
 const PUR = 'src/convoyeur/regles.ts';
+const BASE = 'src/convoyeur/base.ts';
 
 describe('CV4 — aucune route v2 ni sortie de ccxt dans le convoyeur', () => {
   it.each([TRANSPORT, AUTRE])('refuse chaque acces de la fixture dans %s', async (chemin) => {
@@ -128,6 +129,41 @@ describe('frontiere du convoyeur — ce qu’il importe', () => {
     for (const chemin of [AUTRE, TRANSPORT]) {
       expect((await lint('convoyeur-good-module', chemin)).messages, chemin).toEqual([]);
     }
+  });
+});
+
+describe('frontiere du convoyeur — la base, et seulement elle (Y4a)', () => {
+  const PILOTE = [
+    "import { inArray } from 'drizzle-orm';",
+    "import { drizzle } from 'drizzle-orm/node-postgres';",
+    "import pg from 'pg';",
+    'export const x = [inArray, drizzle, pg];',
+  ].join('\n');
+
+  it('admet drizzle-orm et pg dans base.ts, et nulle part ailleurs', async () => {
+    for (const [chemin, attendu] of [
+      [BASE, {}],
+      [AUTRE, { '@typescript-eslint/no-restricted-imports': 3 }],
+      [TRANSPORT, { '@typescript-eslint/no-restricted-imports': 3 }],
+    ] as const) {
+      const [result] = await eslint.lintText(PILOTE, { filePath: resolve(ROOT, chemin) });
+      expect(result === undefined ? {} : ruleCounts(result), chemin).toEqual(attendu);
+    }
+  });
+
+  it('refuse dans base.ts les memes imports qu’ailleurs, adapters/db.js compris', async () => {
+    expect(ruleCounts(await lint('convoyeur-bad-imports', BASE))).toEqual({
+      '@typescript-eslint/no-restricted-imports': 6,
+      'no-restricted-imports': 1,
+    });
+    const [result] = await eslint.lintText("export { openDatabase } from '../adapters/db.js';", {
+      filePath: resolve(ROOT, BASE),
+    });
+    expect(result === undefined ? {} : ruleCounts(result)).toEqual({ '@typescript-eslint/no-restricted-imports': 1 });
+  });
+
+  it('garde la regle v2 dans base.ts', async () => {
+    expect(ruleCounts(await lint('convoyeur-bad-v2', BASE))).toEqual({ 'no-restricted-syntax': 12 });
   });
 });
 

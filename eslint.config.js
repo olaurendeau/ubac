@@ -108,6 +108,8 @@ const JOBS_IMPORT_PATTERN = {
 const CONVOYEUR = ['src/convoyeur/**/*.ts'];
 const CONVOYEUR_PUR = ['src/convoyeur/regles.ts', 'src/convoyeur/types.ts'];
 const CONVOYEUR_TRANSPORT = ['src/convoyeur/coinbase.ts'];
+/** Seul lieu du convoyeur qui ouvre la base (Y4a) : drizzle et pg n'entrent que la. */
+const CONVOYEUR_BASE = ['src/convoyeur/base.ts'];
 
 const CONVOYEUR_IMPORT_PATTERN = {
   regex: '(^|/)convoyeur(/|$)',
@@ -286,6 +288,17 @@ export default tseslint.config(
   {
     files: CONVOYEUR_PUR,
     rules: { '@typescript-eslint/no-restricted-imports': convoyeurImports(['decimal.js', 'node:crypto']) },
+  },
+  {
+    files: CONVOYEUR_BASE,
+    rules: {
+      '@typescript-eslint/no-restricted-imports': convoyeurImports([
+        'decimal.js',
+        'drizzle-orm',
+        'drizzle-orm/node-postgres',
+        'pg',
+      ]),
+    },
   },
   {
     files: CONVOYEUR,

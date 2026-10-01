@@ -64,6 +64,8 @@ convoyage ouvert le même jour UTC sur `convoyeur_journal_day_key` (index
 partiel sur `ACHAT_DEMANDE`) : « un passage, un convoyage » (DC8) est une
 propriété de la base. Les colonnes de grandeur (`amount_usdc`, `debited_eur`,
 `fees_eur`) sont des `numeric(20, 8)`, nulles aux étapes qui ne les portent pas.
+`convoyage` porte le `client_order_id` du convoyage, dérivé de `day` ;
+`debited_eur` vaut `filled_value + total_fees` (Y4a).
 
 ### L'index unique est la garantie d'idempotence
 
@@ -381,6 +383,35 @@ convoyeur) : la clé naturelle du convoyeur est dérivée de son ordre d'achat,
 idempotent — un rejeu doublerait l'apport et fausserait le time-weighted return.
 Les lectures (`recentCashFlows`, `latestDeposits`) rendent l'origine de chaque
 ligne ; le noyau ne la lit pas. Les tests alimentent la table en SQL direct.
+
+### La base du convoyeur : trois opérations, sous son rôle
+
+`src/convoyeur/base.ts` est le pendant de `db.ts` pour le convoyeur, et le seul
+fichier de son arbre qui importe `drizzle-orm` et `pg` (`eslint.config.js`).
+`openConvoyeurBase({ databaseUrl })` se connecte avec la chaîne du rôle
+`ubac_convoyeur` et rend une `ConvoyeurBase` :
+
+| Opération | Ce qu'elle fait |
+|---|---|
+| `dernierConvoyage()` | les lignes du jour le plus récent du journal, lues en leur étape la plus avancée (`EN_PANNE` clôt) ; `undefined` si le journal est vide |
+| `ecrireEtape(etape)` | ajoute une ligne au journal ; `ALREADY_RECORDED` sur `convoyeur_journal_convoyage_step_key` ou `convoyeur_journal_day_key` |
+| `ecrireApport(apport)` | ajoute la ligne `cash_flows` du convoyage ; `ALREADY_RECORDED` sur `cash_flows_natural_key_key` |
+| `close()` | ferme le pool |
+
+Rien n'y demande plus que Q9 : ni `UPDATE`, ni `DELETE`, ni `RETURNING` (qui
+exigerait `SELECT` sur `cash_flows`), ni lecture de l'apport avant de l'écrire.
+L'apport porte l'origine `CONVOYEUR`, la clé `CONVOYEUR:<client_order_id>`, pour
+montant `filled_size` (DC4), pour instant celui du transfert (DC5), et pour note
+l'EUR débité, les frais et l'identifiant d'ordre de l'exchange. Un montant nul,
+négatif ou à plus de 8 décimales est refusé avant l'écriture : la colonne
+l'arrondirait sans le dire. Un journal dont les lignes du dernier jour mêlent
+deux convoyages, ou dont une étape manque d'une grandeur, est refusé à la
+lecture (`ConvoyeurBaseError`) plutôt que lu.
+
+Les tests de base (`test/convoyeur/base.test.ts`) ouvrent le port **sous le
+rôle**, par l'option de connexion `-c role=ubac_convoyeur` (le rôle n'a pas de
+mot de passe en local), et éprouvent le même contrat sur le double du passage
+(`test/convoyeur/doubles.ts`).
 
 ---
 
