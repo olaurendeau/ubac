@@ -60,6 +60,28 @@ const SI_TAG = "github.event_name == 'push' && startsWith(github.ref, 'refs/tags
 /** Les etapes de deploy, dans cet ordre, aucune sautee : rien ne s'ecrit sans controle ni ne finit sans relecture. */
 const ETAPES_DEPLOI = ['main', 'cli', 'avant', 'controles', 'mise-a-jour', 'apres', 'relecture'];
 
+/**
+ * Les etapes qui decident appellent les scripts du depot (lot Y7a), et les
+ * valeurs d'Ubac sont epinglees a l'appel : un script sans elles ne controle rien.
+ * `deploiement.test.ts` execute ces appels ; ici, ils ne bougent pas.
+ */
+const APPELS_DEPLOI: Readonly<Record<string, string>> = {
+  controles: './scripts/deploiement/controles.sh',
+  relecture: './scripts/deploiement/relecture.sh',
+};
+/** Le chemin d'un script appele, relatif au depot. */
+function cheminDeScript(appel: string): string {
+  return appel.replace(/^\.\//, '');
+}
+const VALEURS_UBAC: Readonly<Record<string, string>> = {
+  CPU_MVCPU: '140',
+  MEMOIRE_MIO: '256',
+  DELAI_S: '300',
+  TENTATIVES: '0',
+  DECLENCHEUR: 'daily',
+  FENETRE_MIN: '15',
+};
+
 /** La seule ecriture admise chez Scaleway : l'image. Des environment-variables remplaceraient toute la table. */
 const MISE_A_JOUR = 'scw jobs definition update "$DEFINITION" image-uri="$UBAC_REFERENCE" region=fr-par -o json > /dev/null';
 
@@ -114,6 +136,7 @@ function depotReel(): Depot {
     'package.json',
     ENV,
     ...NODE_DES_DOCKERFILES.map((d) => d.fichier),
+    ...Object.values(APPELS_DEPLOI).map(cheminDeScript),
   ];
   return {
     fichiers: new Map(chemins.map((c) => [c, readFileSync(resolve(ROOT, c), 'utf8')])),
@@ -615,6 +638,30 @@ const REGLES = {
       return motifs;
     },
   },
+  appels: {
+    nom: 'deploy appelle les scripts de controle et de relecture avec les valeurs d Ubac epinglees',
+    verifier: (depot) => {
+      const job = jobDeploi(depot);
+      const motifs: string[] = [];
+      for (const [id, script] of Object.entries(APPELS_DEPLOI)) {
+        const run = etape(job, id)?.['run'];
+        if (run !== script) motifs.push(`etape ${id} : run ${JSON.stringify(run)}, attendu « ${script} »`);
+      }
+      const env = etape(job, 'controles')?.['env'];
+      for (const [nom, valeur] of Object.entries(VALEURS_UBAC)) {
+        const lue = estObjet(env) ? env[nom] : undefined;
+        if (lue !== valeur) motifs.push(`controles : ${nom} ${JSON.stringify(lue)}, attendu « ${valeur} »`);
+      }
+      // Ce que les scripts ne font pas : parler a Scaleway. Ils lisent les fichiers
+      // des lectures ; l'ecriture de l'image reste la seule, dans ci.yml.
+      for (const script of Object.values(APPELS_DEPLOI).map(cheminDeScript)) {
+        for (const commande of commandesDe(texte(depot, script)).filter((c) => /^scw\s/.test(c))) {
+          motifs.push(`${script} : « ${commande} », un script de deploiement ne parle pas a Scaleway`);
+        }
+      }
+      return motifs;
+    },
+  },
   variables: {
     nom: 'deploy exige les variables sans defaut de src/config/env.ts, ni plus ni moins',
     verifier: (depot) => {
@@ -1078,6 +1125,27 @@ const SONDES: readonly Sonde[] = [
       return muter(sansJob, PORTE, '        id: avant\n        env:\n', `        id: avant\n        env:\n          ${ORGANISATION}\n          ${PROJET}\n`);
     },
     motif: 'mise-a-jour : scw sans SCW_DEFAULT_PROJECT_ID',
+  },
+  {
+    regle: 'appels',
+    mutation: 'changer FENETRE_MIN dans l appel des controles',
+    appliquer: (d) => muter(d, PORTE, "          FENETRE_MIN: '15'\n", "          FENETRE_MIN: '5'\n"),
+    motif: 'controles : FENETRE_MIN "5", attendu « 15 »',
+  },
+  {
+    regle: 'appels',
+    mutation: 'remplacer la relecture par une ligne qui ne relit rien',
+    appliquer: (d) => muter(d, PORTE, '        run: ./scripts/deploiement/relecture.sh\n', '        run: echo relu\n'),
+    motif: 'etape relecture : run "echo relu"',
+  },
+  {
+    regle: 'appels',
+    mutation: 'une ecriture chez Scaleway cachee dans le script de relecture',
+    appliquer: (d) => {
+      const script = 'scripts/deploiement/relecture.sh';
+      return avecFichier(d, script, `${texte(d, script)}scw jobs definition update "$DEFINITION" image-uri=x region=fr-par\n`);
+    },
+    motif: 'un script de deploiement ne parle pas a Scaleway',
   },
   {
     regle: 'variables',

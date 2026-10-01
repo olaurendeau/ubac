@@ -217,8 +217,9 @@ jobs:
           scw jobs secret list job-definition-id="$DEFINITION" region=fr-par -o json > "$RUNNER_TEMP/avant-secrets.json"
       # Avant de toucher a quoi que ce soit : le tag precedent est ecrit, la
       # production est dans l'etat attendu, le run du matin est loin. Un refus
-      # ici laisse la definition intacte. test/ci/deploiement.test.ts execute
-      # ce script tel quel.
+      # ici laisse la definition intacte. Le script est du depot ; ses valeurs,
+      # celles d'Ubac, sont epinglees ici et nulle part ailleurs.
+      # test/ci/deploiement.test.ts l'execute tel que cette etape l'appelle.
       - name: controles avant
         id: controles
         env:
@@ -236,65 +237,7 @@ jobs:
             DATABASE_URL COINBASE_API_KEY COINBASE_API_SECRET COINBASE_PORTFOLIO_UUID
             BREVO_API_KEY BREVO_SENDER BREVO_RECIPIENT NTFY_URL NTFY_TOPIC NTFY_TOKEN
             HEALTHCHECK_URL
-        run: |
-          avant="$RUNNER_TEMP/avant"
-          # Les variables ordinaires sont en clair : masquees des maintenant, une
-          # ligne qui les recopierait un jour ne montrerait que ***.
-          jq -r '.environment_variables // {} | .[]' "$avant-definition.json" \
-            | while IFS= read -r valeur; do [[ -z "$valeur" ]] || echo "::add-mask::$valeur"; done
-          # Le tag precedent, avant tout controle : ces deux lignes SONT la
-          # procedure de retour en arriere (docs/deploiement.md §8).
-          precedente=$(jq -r '.image_uri' "$avant-definition.json")
-          retour="scw jobs definition update $DEFINITION image-uri=$precedente region=fr-par"
-          echo "image deployee jusqu'ici : $precedente"
-          echo "retour en arriere : $retour"
-          printf '### Retour en arriere\n\n    %s\n\n' "$retour" >> "$GITHUB_STEP_SUMMARY"
-          motifs=$(jq -r -n \
-            --slurpfile definition "$avant-definition.json" \
-            --slurpfile declencheurs "$avant-declencheurs.json" \
-            --slurpfile secrets "$avant-secrets.json" \
-            --argjson cpu "$CPU_MVCPU" --argjson memoire "$MEMOIRE_MIO" \
-            --argjson delai "$DELAI_S" --argjson tentatives "$TENTATIVES" \
-            --arg declencheur "$DECLENCHEUR" --arg variables "$VARIABLES" '
-            $definition[0] as $d
-            | [$declencheurs[0] | if type == "array" then .[] else .triggers[] end] as $t
-            | [$secrets[0] | if type == "array" then .[] else .secrets[] end | .env_var.name // empty] as $s
-            | [ (if $d.cpu_limit != $cpu then "cpu-limit \($d.cpu_limit), attendu \($cpu)" else empty end),
-                (if $d.memory_limit != $memoire then "memory-limit \($d.memory_limit), attendu \($memoire)" else empty end),
-                (if ($d.job_timeout | tostring | sub("s$"; "") | tonumber? // null) != $delai
-                 then "job-timeout \($d.job_timeout), attendu \($delai)s" else empty end),
-                (if $d.retry_policy.max_retries != $tentatives
-                 then "max-retries \($d.retry_policy.max_retries), attendu \($tentatives)" else empty end),
-                (if $d.cron_schedule != null
-                 then "un cron sur la definition : seul le declencheur ordonnance le job" else empty end),
-                ((($variables | split(" ") | map(select(. != ""))) - ([$d.environment_variables // {} | keys[]] + $s))[]
-                 | "variable \(.) absente : le job refuserait de demarrer"),
-                (if ($t | length) != 1 or $t[0].name != $declencheur
-                 then "declencheurs \([$t[].name]), attendu le seul « \($declencheur) »" else empty end)
-              ] | .[]')
-          if [[ -n "$motifs" ]]; then
-            printf "REFUS, rien n'a ete modifie : %s\n" "$motifs" >&2
-            exit 1
-          fi
-          # La fenetre se lit dans le declencheur lui-meme, dans SON fuseau :
-          # aucune heure n'est figee ici, et le changement d'heure est celui de
-          # la production.
-          ligne=$(jq -r '(if type == "array" then .[] else .triggers[] end)
-            | [.cron_config.schedule, .cron_config.timezone] | @tsv' "$avant-declencheurs.json")
-          IFS=$'\t' read -r horaire fuseau <<< "$ligne"
-          if [[ ! "$horaire" =~ ^([0-9]{1,2})\ ([0-9]{1,2})\ \*\ \*\ \*$ || ! -f "/usr/share/zoneinfo/$fuseau" ]]; then
-            echo "REFUS, rien n'a ete modifie : declencheur « $horaire » en « $fuseau », forme non lue (attendu « M H * * * » et un fuseau connu)" >&2
-            exit 1
-          fi
-          run=$(( 10#${BASH_REMATCH[2]} * 60 + 10#${BASH_REMATCH[1]} ))
-          read -r h m <<< "$(TZ="$fuseau" date +'%H %M')"
-          ecart=$(( (10#$h * 60 + 10#$m - run + 1440) % 1440 ))
-          (( ecart <= 720 )) || ecart=$(( 1440 - ecart ))
-          if (( ecart <= FENETRE_MIN )); then
-            echo "REFUS, rien n'a ete modifie : il est $h:$m en $fuseau, a $ecart min du run « $horaire » ; relancer le job hors des $FENETRE_MIN min qui l'entourent" >&2
-            exit 1
-          fi
-          echo "controles avant : etat attendu, run a $ecart min"
+        run: ./scripts/deploiement/controles.sh
       # L'image, et RIEN d'autre. Une mise a jour qui passe des
       # environment-variables REMPLACE la table entiere chez Scaleway.
       - name: mise a jour
@@ -315,34 +258,11 @@ jobs:
       # LA RELECTURE : l'image est la nouvelle, et tout le reste vaut ce qu'il
       # valait avant — reglages, variables, declencheur, secrets. L'etat d'avant
       # ayant passe les controles, l'egalite porte les valeurs epinglees. Les
-      # ecarts se nomment par leur cle, jamais par leur valeur.
+      # ecarts se nomment par leur cle, jamais par leur valeur. Script du depot,
+      # execute par test/ci/deploiement.test.ts tel que cette etape l'appelle.
       - name: relecture
         id: relecture
-        run: |
-          motifs=$(jq -r -n \
-            --slurpfile av "$RUNNER_TEMP/avant-definition.json" --slurpfile ap "$RUNNER_TEMP/apres-definition.json" \
-            --slurpfile dav "$RUNNER_TEMP/avant-declencheurs.json" --slurpfile dap "$RUNNER_TEMP/apres-declencheurs.json" \
-            --slurpfile sav "$RUNNER_TEMP/avant-secrets.json" --slurpfile sap "$RUNNER_TEMP/apres-secrets.json" \
-            --arg image "$UBAC_REFERENCE" '
-            def liste: if type == "array" then . else (.triggers // .secrets) end;
-            def par(cle): liste | map({(cle): .}) | add // {};
-            def ecarts($a; $b; $quoi):
-              ($a + $b | keys[]) as $k | select($a[$k] != $b[$k])
-              | "\($quoi) \($k) : ajoute, retire ou change pendant le deploiement";
-            [ (if $ap[0].image_uri != $image then "image-uri relue « \($ap[0].image_uri) », attendu « \($image) »" else empty end),
-              ecarts($av[0] | del(.image_uri, .updated_at, .environment_variables);
-                     $ap[0] | del(.image_uri, .updated_at, .environment_variables); "reglage"),
-              ecarts($av[0].environment_variables // {}; $ap[0].environment_variables // {}; "variable"),
-              ecarts($dav[0] | par(.name); $dap[0] | par(.name); "declencheur"),
-              ecarts($sav[0] | par(.env_var.name // .file.path // .secret_id);
-                     $sap[0] | par(.env_var.name // .file.path // .secret_id); "secret")
-            ] | .[]')
-          if [[ -n "$motifs" ]]; then
-            printf "RELECTURE EN ECHEC, la production a change : %s\n" "$motifs" >&2
-            exit 1
-          fi
-          jq -r '"relu : \(.image_uri), cpu \(.cpu_limit), memoire \(.memory_limit), delai \(.job_timeout), tentatives \(.retry_policy.max_retries), variables \(.environment_variables | keys | join(" "))"' \
-            "$RUNNER_TEMP/apres-definition.json" | tee -a "$GITHUB_STEP_SUMMARY"
+        run: ./scripts/deploiement/relecture.sh
       # Les lectures portent les variables ordinaires en clair.
       - name: effacement des lectures
         if: always()

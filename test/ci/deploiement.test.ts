@@ -9,8 +9,10 @@ import { afterAll, describe, expect, it } from 'vitest';
 
 /**
  * Les deux etapes du job `deploy` qui decident (lot R3 de la phase 2) : les
- * controles, avant la mise a jour, et la relecture, apres. Executees telles que
- * `.github/workflows/ci.yml` les ecrit, avec le bash et le jq du poste.
+ * controles, avant la mise a jour, et la relecture, apres. Deux scripts du depot
+ * (`scripts/deploiement/`, extraits en Y7a), executes tels que
+ * `.github/workflows/ci.yml` les appelle — son `run`, avec son `env` et donc les
+ * valeurs d'Ubac qu'il epingle —, avec le bash et le jq du poste.
  *
  * `workflow.test.ts` prouve qu'elles sont la et a leur place ; ce fichier prouve
  * qu'elles mordent. Les lectures Scaleway sont fabriquees a la forme que rend
@@ -151,6 +153,7 @@ function executer(id: string, avant: Etat, apres: Etat | undefined, maintenant =
   const { run, env } = etape(id);
   const r = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', run], {
     encoding: 'utf8',
+    cwd: ROOT,
     env: {
       ...Object.fromEntries(Object.entries(env).map(([k, v]) => [k, String(v)])),
       PATH: `${join(temp, 'bin')}:${process.env['PATH'] ?? ''}`,
