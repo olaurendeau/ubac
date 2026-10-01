@@ -211,6 +211,12 @@ export interface SnapshotPoint {
 export interface PendingOrderRecord {
   readonly clientOrderId: string;
   readonly decisionId: string | null;
+  /**
+   * Le `run_date` de la decision qui a pose l'ordre, lu par jointure sur
+   * `decisions` : c'est le jour qui decide de son annulation au run suivant
+   * (`docs/specs/ubac-prix-au-carnet.md`, D5). `null` sans decision rattachee.
+   */
+  readonly runDate: IsoDate | null;
   readonly exchangeId: string | null;
   readonly side: Side;
   readonly asset: string;
@@ -569,14 +575,17 @@ export function openDatabase(secrets: Pick<Secrets, 'databaseUrl'>): UbacDatabas
     },
 
     async pendingOrders(): Promise<readonly PendingOrderRecord[]> {
+      /* Jointure externe : un ordre sans decision reste lu, avec un `run_date` nul. */
       const lignes = await db
-        .select()
+        .select({ ordre: orders, runDate: decisions.runDate })
         .from(orders)
+        .leftJoin(decisions, eq(decisions.id, orders.decisionId))
         .where(inArray(orders.status, OPEN_ORDER_STATUSES))
         .orderBy(asc(orders.createdAt));
-      return lignes.map((ligne) => ({
+      return lignes.map(({ ordre: ligne, runDate }) => ({
         clientOrderId: ligne.clientOrderId,
         decisionId: ligne.decisionId,
+        runDate,
         exchangeId: ligne.exchangeId,
         side: sideFromText(ligne.side, `orders.side (${ligne.clientOrderId})`),
         asset: ligne.asset,

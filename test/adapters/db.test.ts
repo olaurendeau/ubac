@@ -645,6 +645,34 @@ describe.skipIf(URL_DE_TEST === undefined)('adapter de base, contre un Postgres 
       expect(attente[0]?.limitPrice.toFixed()).toBe('64321.09876543');
       expect(attente[0]?.side).toBe('BUY');
       expect(attente[0]?.decisionId).toBeNull();
+      expect(attente[0]?.runDate).toBeNull();
+    });
+
+    /* D5 : le jour qui decide de l'annulation est celui de la decision, lu par jointure. */
+    it('pendingOrders rend le run_date de la decision rattachee, et null sans decision', async () => {
+      const ecrite = await db.recordDecision({
+        intent: intention({ runDate: '2026-09-28' }),
+        isShadow: false,
+        verdict: { status: 'ACCEPTED', orders: [], ignored: [] },
+        gitSha: 'abc1234',
+        createdAt: CREE_LE,
+      });
+      if (ecrite.status !== 'RECORDED') throw new Error('decision non ecrite');
+      await brut.query(
+        `
+        INSERT INTO orders
+          (client_order_id, decision_id, side, asset, requested_qty, limit_price, status, created_at) VALUES
+          ('ubac-avec', $1, 'BUY', 'BTC', '0.1', '60000', 'PENDING', '2026-09-29T04:59:00Z'),
+          ('ubac-sans', NULL, 'BUY', 'ETH', '1', '3000', 'PARTIAL', '2026-09-29T05:00:00Z')`,
+        [ecrite.id],
+      );
+
+      const attente = await db.pendingOrders();
+
+      expect(attente.map((o) => [o.clientOrderId, o.decisionId, o.runDate])).toEqual([
+        ['ubac-avec', ecrite.id, '2026-09-28'],
+        ['ubac-sans', null, null],
+      ]);
     });
 
     it('refuse un sens d’ordre que le noyau ne connait pas', async () => {

@@ -9,7 +9,7 @@ import type {
 } from '../../src/adapters/coinbase.js';
 import type { PendingOrderRecord, SnapshotRecord } from '../../src/adapters/db.js';
 import type { ReconcileInput } from '../../src/jobs/reconcile.js';
-import type { Price, Quantity, UsdcAmount, Weight, Weights } from '../../src/core/types.js';
+import type { IsoDate, Price, Quantity, UsdcAmount, Weight, Weights } from '../../src/core/types.js';
 
 /**
  * Les doubles de la reconciliation. **Aucun reseau, aucune cle, aucune base** :
@@ -56,6 +56,7 @@ export function ordreEnAttente(overrides: Partial<PendingOrderRecord> = {}): Pen
   return {
     clientOrderId: 'coid-1',
     decisionId: null,
+    runDate: null,
     exchangeId: 'exch-1',
     side: 'BUY',
     asset: 'BTC',
@@ -85,6 +86,7 @@ export function statutConnu(overrides: Partial<KnownOrderStatus> = {}): KnownOrd
 
 /** L'instant du run par defaut : le lendemain des ordres fabriques ci-dessus, a la meme heure. */
 export const MAINTENANT = new Date('2026-09-11T07:00:00.000Z');
+export const JOUR_DU_RUN: IsoDate = '2026-09-11';
 
 const POIDS_NEUTRES: Weights = {
   BTC: new Decimal('0.4') as Weight,
@@ -124,6 +126,8 @@ export interface Scenario {
    */
   readonly statuts?: Readonly<Record<string, OrderStatus | Error>>;
   readonly now?: Date;
+  /** Le jour du run ; par defaut celui de `MAINTENANT`. */
+  readonly runDate?: IsoDate;
 }
 
 export interface Harnais {
@@ -182,6 +186,7 @@ export function harnais(scenario: Scenario = {}): Harnais {
         },
       },
       now: scenario.now ?? MAINTENANT,
+      runDate: scenario.runDate ?? JOUR_DU_RUN,
     },
   };
 }

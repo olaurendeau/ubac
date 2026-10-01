@@ -2410,18 +2410,24 @@ describe('E27 et E28 — ce qui est parti se dit, sur l’alerte et dans le rapp
   });
 });
 
-/** Une ligne ouverte laissee par le run de la veille, placee et confirmee. */
+/**
+ * Une ligne ouverte laissee par le run de la veille, placee et confirmee. Son
+ * `run_date` est, sauf surcharge, le jour de son `created_at` : celui du run
+ * qui l'a posee.
+ */
 function ligneDeLaVeille(overrides: Partial<PendingOrderRecord> = {}): PendingOrderRecord {
   const clientOrderId = overrides.clientOrderId ?? 'ubac-veille';
+  const createdAt = overrides.createdAt ?? new Date(`${PRICED_ON}T07:00:00.000Z`);
   return {
     clientOrderId,
     decisionId: 'decision-veille',
+    runDate: createdAt.toISOString().slice(0, 10),
     exchangeId: `ex-${clientOrderId}`,
     side: 'SELL',
     asset: 'BTC',
     requestedQty: qty('0.14'),
     limitPrice: price('50050'),
-    createdAt: new Date(`${PRICED_ON}T07:00:00.000Z`),
+    createdAt,
     ...overrides,
   };
 }
@@ -2468,7 +2474,7 @@ describe('§7 point 2 — les ordres d’un run precedent prennent leur statut r
 /** L'ordre de la veille tel que l'exchange le liste encore : au carnet, rien d'execute. */
 const AU_CARNET = ordreOuvert({ clientOrderId: 'ubac-veille', exchangeId: 'ex-ubac-veille', side: 'SELL', quantity: qty('0.14') });
 
-describe('§7 point 3 et etape 6 — aucun ordre ne s’empile sur un ordre encore ouvert (E35, E36)', () => {
+describe('annulation des ordres d’un run precedent et etape 6 — aucun ordre ne s’empile sur un ordre encore ouvert (D5, E36)', () => {
   const JOUR = '2026-10-02';
   /** Hors bande, et l'ordre de la veille pose a `heure` : le run du jour demarre a 07:00:00Z. */
   const veilleA = (heure: string, extra: Partial<Scenario> = {}): Scenario => ({
@@ -2481,13 +2487,32 @@ describe('§7 point 3 et etape 6 — aucun ordre ne s’empile sur un ordre enco
   const production = (h: Harnais) => h.table.get(`${JOUR}|rebalance|false`)?.intent.reason ?? '';
 
   /*
-   * **La sonde du lot.** Le demarrage varie de quelques minutes d'un jour a
-   * l'autre : l'ordre de la veille a 23 h 57, le §7 le laisse ouvert, et le
-   * portefeuille est toujours hors bande. Sans garde, une seconde paire part
-   * par-dessus la premiere.
+   * **La sonde du lot** (K4). Le demarrage varie de quelques minutes d'un jour a
+   * l'autre : l'ordre de la veille n'a que 23 h 55 au run du jour. Il est d'un
+   * `run_date` anterieur, donc annule avant toute decision, et la nouvelle paire
+   * part : le reequilibrage ne saute plus un jour sur deux.
    */
-  it('un ordre du run precedent encore ouvert a 23 h 57 : aucun nouvel ordre ne part', async () => {
-    const h = harnais(veilleA('07:03:00.000'));
+  it('a 23 h 55, l’ordre de la veille est annule avant toute decision, puis la nouvelle paire part', async () => {
+    const h = harnais(veilleA('07:05:00.000'));
+    await lance(h);
+
+    expect(h.appels.filter((a) => a === 'cancelOrders')).toHaveLength(1);
+    expect(h.appels.indexOf('cancelOrders')).toBeLessThan(h.appels.indexOf('recordDecision'));
+    expect(h.appels.filter((a) => a === 'placeOrder')).toHaveLength(1);
+    expect(h.lignes).toContain('annulation ubac-veille : ANNULE');
+    expect(production(h)).not.toContain(ORDRES_EN_VOL_MARKER);
+  });
+
+  /*
+   * Un ordre du **meme** `run_date` n'est jamais annule (cas du 2026-09-28
+   * 13:44). Le garde de l'etape 6 le voit encore ouvert : aucune paire ne part
+   * par-dessus, et le refus s'ecrit.
+   */
+  it('un ordre du meme run_date encore ouvert : rien n’est annule, aucun nouvel ordre ne part', async () => {
+    const h = harnais({
+      ...veilleA('07:05:00.000'),
+      enAttente: [ligneDeLaVeille({ runDate: JOUR, createdAt: new Date(`${JOUR}T06:00:00.000Z`) })],
+    });
     const result = complete(await lance(h));
 
     expect(ordresDe(result, 'rebalance')).not.toHaveLength(0);
@@ -2500,17 +2525,6 @@ describe('§7 point 3 et etape 6 — aucun ordre ne s’empile sur un ordre enco
     expect(h.table.get(`${JOUR}|rebalance_ab|true`)?.intent.reason).not.toContain(ORDRES_EN_VOL_MARKER);
     expect(h.lignes).toContain("rebalance : 1 ordre(s) d'un run precedent encore ouvert(s), aucun ordre transmis");
     expect(reported(result)).toBe(true);
-  });
-
-  it('a 24 h 01, l’ordre de la veille est annule avant toute decision, puis la nouvelle paire part', async () => {
-    const h = harnais(veilleA('06:59:00.000'));
-    await lance(h);
-
-    expect(h.appels.filter((a) => a === 'cancelOrders')).toHaveLength(1);
-    expect(h.appels.indexOf('cancelOrders')).toBeLessThan(h.appels.indexOf('recordDecision'));
-    expect(h.appels.filter((a) => a === 'placeOrder')).toHaveLength(1);
-    expect(h.lignes).toContain('annulation ubac-veille : ANNULE');
-    expect(production(h)).not.toContain(ORDRES_EN_VOL_MARKER);
   });
 
   it('une annulation refusee laisse l’ordre ouvert : le run conclut, rien ne part', async () => {
