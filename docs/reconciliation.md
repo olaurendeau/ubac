@@ -228,7 +228,7 @@ d'`eslint.config.js`, l'interdit tient par un garde-fou de `test/jobs/` : ni
 injecté donne une autre date de dénouement, et qu'un autre jour de run donne une
 autre décision d'annulation.
 
-## 3 bis. Ce qu'un exécuteur devra faire du marqueur — **à trancher avant la phase 3**
+## 3 bis. Ce qu'un exécuteur fait du marqueur — **tranché : option 1 (O6 = 1)**
 
 En phase 1 rien ne s'exécute, donc rafraîchir le cache est sans danger : le pire
 qui puisse arriver est une décision journalisée sur un portefeuille qu'un humain
@@ -261,6 +261,32 @@ choisie :
 **Échéance : avant la phase 3**, c'est-à-dire avant que la moindre ligne de
 placement n'existe. Tant que rien ne s'exécute, l'absence de décision ne coûte
 rien ; le jour où l'étape 6 est écrite, elle coûte la question entière.
+
+### La décision, et ce que le run en fait
+
+**L'opérateur a retenu l'option 1** (O6 = 1, `docs/specs/ubac-phase-3.md`,
+critère E60) : **un jour de resynchronisation refuse d'exécuter**. Le run
+réconcilie, annule les ordres d'un run antérieur encore ouverts, décide, écrit
+ses quatre lignes de `decisions`, repose sa photo et rend compte ; **l'étape 6 ne
+transmet aucun ordre**, même accepté par la couche risque. `daily.ts` journalise
+`<stratégie> : jour de resynchronisation, aucun ordre transmis (O6)`.
+
+**Le refus est écrit avec son motif, jamais déduit d'une absence d'ordre.**
+`daily.ts` ajoute au texte de `reconcile.ts` la phrase `REFUS_RESYNC`, et ce texte
+unique part partout : dans l'alerte `RECONCILIATION_DRIFT`, déjà `URGENT`, sans
+seconde alerte (T6), et en tête des quatre lignes de `decisions` par le marqueur
+`ETAT_RESYNCHRONISE`. La phrase est ajoutée par le run quotidien et non par la
+réconciliation, parce que c'est lui qui refuse : `liquidate.ts` réconcilie aussi,
+et la sortie propre cède les soldes réels un jour de resynchronisation.
+
+**Le refus ne dure qu'un jour.** La photo reposée à l'étape 7 porte les soldes
+réels ; le run suivant, sur les mêmes soldes, ne diverge plus et exécute. Deux
+cas le prolongent, et ils sont ceux du §1 bis et du §6 : une photo qui ne peut
+pas être reposée (le cache reste périmé, chaque run se resynchronise et refuse),
+et le lendemain d'une exécution, que la réconciliation prend encore pour un
+mouvement hors système — un rééquilibrage exécuté le jour J fait refuser le jour
+J+1, et le jour J+2 repart d'un état recalé. Les deux disent la même chose : on
+n'agit pas sur un état dont on vient de constater qu'on ne le comprend pas.
 
 ## 4. Le statut réel de chaque ordre : lu en S2, branché et persisté en S8a
 
