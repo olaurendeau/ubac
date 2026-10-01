@@ -56,6 +56,23 @@ Une manquante arrête le démarrage, et le message **nomme la variable sans jama
 citer sa valeur**. Elles sortent toutes du même appel : onze variables fautives
 donnent onze lignes, pas onze redémarrages.
 
+### Les huit variables du convoyeur, sur sa seule définition
+
+Le convoyeur est un autre job, `ubac-convoyeur`, avec sa propre définition
+Scaleway et ses propres secrets ([convoyeur.md](convoyeur.md) §4, qui les
+fixe). **Aucune ne va dans la définition d'Ubac**, et aucune des onze
+ci-dessus dans la sienne (CV3) :
+
+`CONVOYEUR_DATABASE_URL`, `CONVOYEUR_COINBASE_API_KEY`,
+`CONVOYEUR_COINBASE_API_SECRET`, `CONVOYEUR_PRIMARY_UUID`,
+`CONVOYEUR_DESTINATION_UUID`, `CONVOYEUR_NTFY_URL`, `CONVOYEUR_NTFY_TOPIC`,
+`CONVOYEUR_NTFY_TOKEN`.
+
+Trois portent les valeurs d'Ubac sous un autre nom (le canal ntfy), une
+recopie `COINBASE_PORTFOLIO_UUID` (`CONVOYEUR_DESTINATION_UUID`) ; la chaîne de
+base et la clé, elles, sont **propres au convoyeur** — rôle `ubac_convoyeur`,
+clé sur *Primary*.
+
 ### `COINBASE_PORTFOLIO_UUID` : à poser **avant** de déployer
 
 **C'est ce qui casse un matin.** L'image qui l'exige refuse de démarrer sans
