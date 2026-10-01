@@ -260,7 +260,7 @@ Chaque run commence par la réconciliation, avant toute décision :
 
 1. Lire les soldes réels et les ordres ouverts sur Coinbase.
 2. Mettre à jour les `orders` en `PENDING` selon leur statut réel.
-3. Annuler tout ordre limit non exécuté datant de plus de 24 h.
+3. Annuler tout ordre limit non exécuté posé par un run antérieur, quel que soit son âge ([ubac-prix-au-carnet.md](ubac-prix-au-carnet.md), D5).
 4. Comparer soldes réels et état interne. Divergence > 1 % : abandon du run et alerte.
 
 L'état de l'exchange fait toujours foi. L'état interne n'est qu'un cache.

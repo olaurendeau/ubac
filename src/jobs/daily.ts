@@ -557,14 +557,12 @@ export const ORDRES_EN_VOL_MARKER = 'ORDRES_EN_VOL';
  * Ce sont les ordres que la reconciliation a vus ouverts, moins ceux que
  * l'annulation a fermes — annules, ou deja denoues.
  *
- * La regle des 24 h ne suffit pas a elle seule, et c'est pourquoi ce garde
- * existe. Le run demarre a quelques minutes pres d'un jour sur l'autre : un ordre
- * de la veille peut avoir 23 h 57 au run du lendemain, ne pas etre annule, et le
- * portefeuille — l'USDC gele comptant encore comme detenu — etre toujours hors
- * bande. Sans ce garde, une seconde paire partirait par-dessus la premiere, puis
- * une troisieme : chaque run est plafonne, la somme des jours ne l'est pas.
- * L'ordre de 23 h 57 reste ouvert, comme le §7 le veut, et le run suivant
- * l'annule.
+ * L'annulation des ordres d'un run anterieur ne suffit pas a elle seule, et
+ * c'est pourquoi ce garde existe : une annulation peut echouer, et l'ordre reste
+ * alors ouvert, le portefeuille — l'USDC gele comptant encore comme detenu —
+ * toujours hors bande. Sans ce garde, une seconde paire partirait par-dessus la
+ * premiere, puis une troisieme : chaque run est plafonne, la somme des jours ne
+ * l'est pas. L'ordre reste ouvert, et le run suivant retente l'annulation.
  */
 function ordresEnVol(
   ordres: readonly PendingOrderReconciliation[],
@@ -739,7 +737,7 @@ async function executeRun(run: DailyRun, parti: ExecutionDeStrategie[]): Promise
    * indulgence, c'est la sortie de l'impasse — un abandon ne posait aucune photo,
    * donc le run suivant relisait la meme photo perimee et abandonnait de nouveau.
    */
-  const reconciled = await reconcile({ exchange: ports.exchange, db: ports.db, now: clock.instant() });
+  const reconciled = await reconcile({ exchange: ports.exchange, db: ports.db, now: clock.instant(), runDate });
   const { resync } = reconciled;
   const { holdings } = reconciled.balances;
   log(`soldes reconcilies (${reconciled.balances.comparedTo})`);
@@ -763,8 +761,8 @@ async function executeRun(run: DailyRun, parti: ExecutionDeStrategie[]): Promise
   }
 
   /*
-   * 2ter. Le §7, point 3 : les ordres ouverts de plus de 24 h s'annulent (E35).
-   * La reconciliation a decide, `execute.ts` applique (T4, E11). Deja denoue
+   * 2ter. Les ordres encore ouverts d'un run anterieur s'annulent, quel que soit
+   * leur age (`docs/specs/ubac-prix-au-carnet.md`, D5). La reconciliation a decide, `execute.ts` applique (T4, E11). Deja denoue
    * n'est pas une erreur (E36), un echec non plus — mais l'ordre reste ouvert,
    * et l'etape 6 ne placera rien par-dessus.
    */

@@ -237,7 +237,7 @@ function exchangeAnnulant(options: { fermes?: readonly string[]; bloques?: reado
   };
 }
 
-const intention = (exchangeId: string) => ({ clientOrderId: `c-${exchangeId}`, exchangeId, ageMs: 90_000_000 });
+const intention = (exchangeId: string) => ({ clientOrderId: `c-${exchangeId}`, exchangeId, placedOn: '2026-09-10' });
 
 describe('execute — annuler (§7 point 3, E36)', () => {
   /*

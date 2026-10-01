@@ -355,25 +355,25 @@ et dans cet ordre : les **alertes push** ([alertes.md](alertes.md)), puis le
 le **ping du healthcheck** ([healthcheck.md](healthcheck.md)). Le ping est en
 dernier parce qu'il rapporte le sort des deux autres.
 
-### L'annulation des ordres de plus de 24 h, et aucun ordre par-dessus un ordre ouvert (S8b)
+### L'annulation des ordres d'un run antérieur, et aucun ordre par-dessus un ordre ouvert (S8b)
 
 **Étape 2ter**, après la persistance des statuts et avant toute décision : les
-ordres ouverts de **plus de 24 h** — comptées sur `orders.created_at` contre
-`--at` — s'annulent, une ligne de journal par ordre (`ANNULE`, `DEJA_DENOUE`,
-`ECHEC`). « Déjà dénoué » n'est pas une erreur ; un échec non plus, mais l'ordre
-reste ouvert.
+ordres ouverts d'un `run_date` **antérieur** à celui du run s'annulent, **quel
+que soit leur âge** ([ubac-prix-au-carnet.md](specs/ubac-prix-au-carnet.md), D5),
+une ligne de journal par ordre (`ANNULE`, `DEJA_DENOUE`, `ECHEC`). Un ordre du
+même `run_date` — second run du jour — n'est pas annulé. « Déjà dénoué » n'est
+pas une erreur ; un échec non plus, mais l'ordre reste ouvert.
 
 **Tant qu'un ordre d'un run précédent reste ouvert, l'étape 6 ne place rien** :
 la production porte `ORDRES_EN_VOL` en tête de sa `reason`, et le journal le dit.
-Sans ce garde, un ordre de 23 h 57 — le démarrage varie de quelques minutes —
-échapperait à l'annulation, et une seconde paire s'empilerait sur la première.
-Le motif et la conséquence — un ordre vit entre 24 et 48 h — sont dans
-[reconciliation.md](reconciliation.md) section 3.
+Sans ce garde, une annulation en échec laisserait une seconde paire s'empiler sur
+la première. Le motif est dans [reconciliation.md](reconciliation.md) section 3.
 
-Conséquence pour ce point d'entrée : `--at` est l'instant que `ReconcileInput`
-reçoit (`now`) ; il date le dénouement des ordres que la réconciliation constate,
-et c'est contre lui que l'âge d'un ordre se compte. Un rejeu lancé avec un `--at`
-ancien annule donc moins, jamais plus.
+Conséquence pour ce point d'entrée : `--run-date` est le `run_date` que
+`ReconcileInput` reçoit (`runDate`) ; c'est contre lui que le jour d'un ordre se
+compare. `--at` reste l'instant (`now`) qui date le dénouement des ordres que la
+réconciliation constate. Un rejeu lancé avec un `--run-date` ancien annule donc
+moins, jamais plus.
 
 ### Les ordres d'un run précédent prennent leur statut réel (S8a)
 

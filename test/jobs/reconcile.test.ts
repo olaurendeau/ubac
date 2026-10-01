@@ -384,75 +384,124 @@ describe('E37 et E38 — l’issue d’un ordre denoue est lue, et rendue a ecri
   });
 });
 
-describe('§7 point 3 — les ordres de plus de 24 h sont rendus a annuler (E35)', () => {
-  const HEURE = 3_600_000;
-  const posesIlYA = (heures: number, ms = 0): Date => new Date(MAINTENANT.getTime() - heures * HEURE - ms);
-  const ouvertDepuis = (heures: number, ms = 0) => ({
-    pending: [ordreEnAttente({ createdAt: posesIlYA(heures, ms) })],
+describe('D5 — les ordres ouverts d’un run anterieur sont rendus a annuler, quel que soit leur age', () => {
+  const MINUTE = 60_000;
+  /** Pose `minutes` avant l'instant du run, `MAINTENANT` (2026-09-11 07:00Z). */
+  const poseIlYA = (minutes: number): Date => new Date(MAINTENANT.getTime() - minutes * MINUTE);
+  const ouvert = (order: Partial<Parameters<typeof ordreEnAttente>[0]>) => ({
+    pending: [ordreEnAttente(order)],
     open: [ordreOuvert()],
   });
 
-  it('un ordre ouvert de 25 h est rendu a annuler, un de 23 h ne l’est pas', async () => {
-    expect((await lance(ouvertDepuis(25))).cancellations).toEqual([
-      { clientOrderId: 'coid-1', exchangeId: 'exch-1', ageMs: 25 * HEURE },
-    ]);
-    expect((await lance(ouvertDepuis(23))).cancellations).toEqual([]);
+  /*
+   * **La sonde de K4.** L'ordre de la veille n'a que 23 h 55 : la regle des
+   * 24 h le laissait ouvert, et l'etape 6 ne placait rien par-dessus. Son
+   * `run_date` est anterieur : il s'annule.
+   */
+  it('un ordre de la veille age de 23 h 55 est rendu a annuler', async () => {
+    const result = await lance(ouvert({ runDate: '2026-09-10', createdAt: poseIlYA(23 * 60 + 55) }));
+    expect(result.cancellations).toEqual([{ clientOrderId: 'coid-1', exchangeId: 'exch-1', placedOn: '2026-09-10' }]);
   });
 
-  it('strictement plus de 24 h : 24 h pile reste, une milliseconde de plus s’annule', async () => {
-    expect((await lance(ouvertDepuis(24))).cancellations).toEqual([]);
-    expect((await lance(ouvertDepuis(24, 1))).cancellations.map((c) => c.ageMs)).toEqual([24 * HEURE + 1]);
+  it('un ordre de plusieurs jours est rendu a annuler aussi', async () => {
+    const result = await lance(ouvert({ runDate: '2026-09-01', createdAt: poseIlYA(10 * 24 * 60) }));
+    expect(result.cancellations.map((c) => c.placedOn)).toEqual(['2026-09-01']);
+  });
+
+  /* Le second run du jour (cas du 2026-09-28 13:44) n'annule pas l'ordre du premier. */
+  it('un ordre du meme run_date n’est pas annule par un second run du jour', async () => {
+    const result = await lance({
+      ...ouvert({ runDate: '2026-09-11', createdAt: poseIlYA(60) }),
+      now: new Date('2026-09-11T13:44:00.000Z'),
+    });
+    expect(result.cancellations).toEqual([]);
   });
 
   /*
-   * L'age vient de `orders.created_at`, ecrit par le run avec son instant — pas
-   * du `created_time` de l'exchange. Les deux sont ici en desaccord de sept
-   * heures, dans les deux sens : seule la base decide.
+   * La regle compare des jours, jamais des instants : un ordre pose une minute
+   * avant minuit UTC la veille s'annule, un ordre du jour pose a minuit pile ne
+   * s'annule pas, quel que soit l'ecart reel entre les deux.
    */
-  it('compte l’age sur created_at de la base, jamais sur l’horodatage de l’exchange', async () => {
-    const jeune = await lance({
-      pending: [ordreEnAttente({ createdAt: posesIlYA(23) })],
-      open: [ordreOuvert({ createdAt: posesIlYA(30) })],
+  it('compare le run_date de l’ordre au jour du run, pas l’age de l’ordre', async () => {
+    const veille = await lance({
+      ...ouvert({ runDate: '2026-09-10', createdAt: new Date('2026-09-10T23:59:00.000Z') }),
+      now: new Date('2026-09-11T00:01:00.000Z'),
     });
-    const vieux = await lance({
-      pending: [ordreEnAttente({ createdAt: posesIlYA(25) })],
-      open: [ordreOuvert({ createdAt: posesIlYA(18) })],
-    });
-    expect(jeune.cancellations).toEqual([]);
-    expect(vieux.cancellations).toHaveLength(1);
+    const duJour = await lance(ouvert({ runDate: '2026-09-11', createdAt: new Date('2026-09-11T00:00:00.000Z') }));
+    expect(veille.cancellations).toHaveLength(1);
+    expect(duJour.cancellations).toEqual([]);
   });
 
-  it('l’horloge est celle du run, injectee : le meme ordre, deux instants, deux reponses', async () => {
-    const scenario = { pending: [ordreEnAttente({ createdAt: posesIlYA(20) })], open: [ordreOuvert()] };
+  /* Le `run_date` de la decision fait foi, meme quand `created_at` dirait un autre jour. */
+  it('le run_date de la decision prime sur le jour de created_at', async () => {
+    const result = await lance(ouvert({ runDate: '2026-09-11', createdAt: new Date('2026-09-10T23:00:00.000Z') }));
+    expect(result.cancellations).toEqual([]);
+  });
+
+  it('le jour du run est injecte : le meme ordre, deux jours de run, deux reponses', async () => {
+    const scenario = ouvert({ runDate: '2026-09-11', createdAt: poseIlYA(60) });
     expect((await lance(scenario)).cancellations).toEqual([]);
-    const plusTard = new Date(MAINTENANT.getTime() + 5 * HEURE);
-    expect((await lance({ ...scenario, now: plusTard })).cancellations).toHaveLength(1);
+    expect((await lance({ ...scenario, runDate: '2026-09-12' })).cancellations).toHaveLength(1);
+  });
+
+  /*
+   * Ajustement technique 1 du plan : une ligne sans decision rattachee prend
+   * pour jour celui, en UTC, de son `created_at`. Jamais le `created_time` de
+   * l'exchange, ici en desaccord d'un jour dans les deux sens.
+   */
+  it('sans decision, le jour est celui de created_at en UTC, jamais celui de l’exchange', async () => {
+    const veille = await lance({
+      pending: [ordreEnAttente({ runDate: null, createdAt: new Date('2026-09-10T23:59:59.999Z') })],
+      open: [ordreOuvert({ createdAt: new Date('2026-09-11T06:00:00.000Z') })],
+    });
+    const duJour = await lance({
+      pending: [ordreEnAttente({ runDate: null, createdAt: new Date('2026-09-11T00:00:00.000Z') })],
+      open: [ordreOuvert({ createdAt: new Date('2026-09-09T06:00:00.000Z') })],
+    });
+    expect(veille.cancellations.map((c) => c.placedOn)).toEqual(['2026-09-10']);
+    expect(duJour.cancellations).toEqual([]);
   });
 
   it('un ordre partiellement execute est « non execute » : il s’annule aussi', async () => {
     const result = await lance({
-      pending: [ordreEnAttente({ createdAt: posesIlYA(25) })],
+      pending: [ordreEnAttente({ runDate: '2026-09-10' })],
       open: [ordreOuvert({ filled: qty('0.2') })],
     });
     expect(result.cancellations.map((c) => c.clientOrderId)).toEqual(['coid-1']);
   });
 
-  it('un ordre denoue ou indeterminable ne s’annule pas, quel que soit son age', async () => {
+  it('un ordre denoue ou indeterminable ne s’annule pas, quel que soit son jour', async () => {
     const denoue = await lance({
-      pending: [ordreEnAttente({ createdAt: posesIlYA(72) })],
+      pending: [ordreEnAttente({ runDate: '2026-09-01' })],
       open: [],
       statuts: { 'exch-1': statutConnu() },
     });
-    const inconnu = await lance({ pending: [ordreEnAttente({ createdAt: posesIlYA(72) })], open: [] });
+    const inconnu = await lance({ pending: [ordreEnAttente({ runDate: '2026-09-01' })], open: [] });
     expect(denoue.cancellations).toEqual([]);
     expect(inconnu.cancellations).toEqual([]);
   });
 
   it('annule par l’identifiant des ordres ouverts une ligne dont le placement n’a pas ete ecrit', async () => {
     const result = await lance({
-      pending: [ordreEnAttente({ exchangeId: null, createdAt: posesIlYA(26) })],
+      pending: [ordreEnAttente({ exchangeId: null, runDate: '2026-09-10' })],
       open: [ordreOuvert({ exchangeId: 'exch-9' })],
     });
     expect(result.cancellations.map((c) => c.exchangeId)).toEqual(['exch-9']);
+  });
+
+  it('rend les annulations dans l’ordre de la base, sans celles du jour', async () => {
+    const result = await lance({
+      pending: [
+        ordreEnAttente({ clientOrderId: 'a', exchangeId: 'ex-a', runDate: '2026-09-09' }),
+        ordreEnAttente({ clientOrderId: 'b', exchangeId: 'ex-b', runDate: '2026-09-11' }),
+        ordreEnAttente({ clientOrderId: 'c', exchangeId: 'ex-c', runDate: '2026-09-10' }),
+      ],
+      open: [
+        ordreOuvert({ clientOrderId: 'a', exchangeId: 'ex-a' }),
+        ordreOuvert({ clientOrderId: 'b', exchangeId: 'ex-b' }),
+        ordreOuvert({ clientOrderId: 'c', exchangeId: 'ex-c' }),
+      ],
+    });
+    expect(result.cancellations.map((c) => c.clientOrderId)).toEqual(['a', 'c']);
   });
 });
