@@ -73,6 +73,11 @@ permission qui touche au retrait, on prend la lecture la plus défavorable :
 déjà — « Permissions : lecture + trade. Jamais de permission de retrait. » — et
 cette ambiguïté est une raison de plus de ne pas y toucher.
 
+Ce tableau est celui de la **clé d'Ubac**. La clé du convoyeur est une autre
+clé, sur un autre portefeuille, avec `transfer` : voir
+[plus bas](#la-clé-du-convoyeur--une-autre-clé-sur-primary). Elle ne change rien
+à cette ligne.
+
 ## Procédure
 
 ### 0. Ne pas se tromper de produit
@@ -261,6 +266,31 @@ fixtures — la réponse réelle de la clé de phase 1, et une réponse **fabriq
 avec `can_trade` vrai, déclarée comme telle dans le test. Le bout en bout contre
 la nouvelle clé reste à faire, et à reporter ici comme le contrôle du
 2026-09-11.
+
+## La clé du convoyeur : une autre clé, sur *Primary*
+
+Le convoyeur ([spec](specs/ubac-convoyeur.md)) a **sa propre clé**, à côté de
+celle d'Ubac et jamais à sa place (D1, D2) :
+
+| | Clé d'Ubac | Clé du convoyeur |
+|---|---|---|
+| Portefeuille | `ubac-agent` (`CONSUMER`) | *Primary* (`DEFAULT`) |
+| Permissions | `view` (+ `trade` en phase 3) | `view` + `trade` + `transfer` |
+| `can_transfer` | **`false`, toujours** | `true`, exigé au démarrage (CV1) |
+| Variables | `COINBASE_*` | `CONVOYEUR_*` |
+| Contrôlée par | `permissionsFrom`, à chaque run | `verifierCle`, à chaque passage |
+
+**Chacune refuse l'autre** : la clé du convoyeur posée dans Ubac est arrêtée
+par `permissionsFrom` avant toute lecture (`can_transfer` n'est pas `false`),
+et celle d'Ubac posée dans le convoyeur par `verifierCle` (ni *Primary*, ni
+`transfer`).
+
+La procédure — liste blanche d'adresses activée et vide **avant** la clé,
+création, rangement hors dépôt en `chmod 600`, vérification par
+`key_permissions` — est dans [convoyeur.md](convoyeur.md#2-op1--la-liste-blanche-puis-la-clé).
+Elle suit celle-ci, avec un piège inversé : *Primary*, sélectionné par défaut,
+est cette fois le bon portefeuille, et la case `transfer` est celle qu'on
+coche — pour cette clé-là seulement.
 
 ## Ce qui reste à décider plus tard
 
