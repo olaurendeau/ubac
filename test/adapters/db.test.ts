@@ -2,7 +2,7 @@ import { Decimal } from 'decimal.js';
 import pg from 'pg';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
-import { openDatabase } from '../../src/adapters/db.js';
+import { cashFlowOriginFromText, openDatabase } from '../../src/adapters/db.js';
 import type { UbacDatabase } from '../../src/adapters/db.js';
 import { DbFrontierError } from '../../src/adapters/schema.js';
 import type { Intent, Price, Quantity, UsdcAmount, Weight, Weights } from '../../src/core/types.js';
@@ -80,7 +80,7 @@ describe.skipIf(URL_DE_TEST === undefined)('adapter de base, contre un Postgres 
   });
 
   beforeEach(async () => {
-    await brut.query('TRUNCATE decisions, orders, snapshots, cash_flows');
+    await brut.query('TRUNCATE decisions, orders, snapshots, cash_flows, convoyeur_journal');
   });
 
   /**
@@ -585,6 +585,17 @@ describe.skipIf(URL_DE_TEST === undefined)('adapter de base, contre un Postgres 
       expect(flux[0]?.id).toMatch(/^[0-9a-f-]{36}$/);
     });
 
+    it('les flux relus portent leur origine, OPERATEUR par defaut', async () => {
+      await brut.query(`
+        INSERT INTO cash_flows (occurred_at, amount_usdc, origin, natural_key) VALUES
+          ('2026-09-05T10:00:00Z', '1000', DEFAULT, NULL),
+          ('2026-09-06T17:00:05Z', '99.5', 'CONVOYEUR', 'CONVOYEUR:conv-2026-09-06')`);
+
+      const flux = await db.recentCashFlows(new Date('2026-09-01T00:00:00Z'));
+
+      expect(flux.map((f) => f.origin)).toEqual(['OPERATEUR', 'CONVOYEUR']);
+    });
+
     /*
      * Quatre apports et deux retraits, le plus recent des flux etant un retrait :
      * les retraits restent, signe compris, et la borne laisse tomber le plus
@@ -644,5 +655,19 @@ describe.skipIf(URL_DE_TEST === undefined)('adapter de base, contre un Postgres 
 
       await expect(db.pendingOrders()).rejects.toThrow(DbFrontierError);
     });
+  });
+});
+
+/**
+ * La frontiere de l'origine, sans base : la contrainte de la base refuse deja
+ * une origine inconnue, et la casser pour la sonde serait la seule autre voie.
+ */
+describe('cashFlowOriginFromText', () => {
+  it.each(['OPERATEUR', 'CONVOYEUR', 'DETECTE'])('accepte %s', (origine) => {
+    expect(cashFlowOriginFromText(origine, 'cash_flows.origin')).toBe(origine);
+  });
+
+  it.each(['convoyeur', 'EXCHANGE', '', ' OPERATEUR'])('refuse "%s" a la frontiere', (origine) => {
+    expect(() => cashFlowOriginFromText(origine, 'cash_flows.origin')).toThrow(DbFrontierError);
   });
 });

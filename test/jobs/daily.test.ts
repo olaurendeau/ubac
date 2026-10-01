@@ -102,6 +102,7 @@ function flux(occurredOn: string, amount: string, note: string | null = null): C
     occurredOn,
     amount: new Decimal(amount) as UsdcAmount,
     note,
+    origin: 'OPERATEUR',
   };
 }
 

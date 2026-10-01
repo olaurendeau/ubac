@@ -136,6 +136,22 @@ TTY, donc la confirmation apparaît. La chaîne vient du `.env` du poste ou de
 l'interface Neon — **jamais du dépôt**. `make db-push` vise la base de
 développement, pas Neon : il recopie `UBAC_DEV_DATABASE_URL`.
 
+**Après tout `push` qui touche `cash_flows` ou `convoyeur_journal`**, rejouer le
+script du rôle du convoyeur, qui ne vit pas dans le schéma
+([base-de-donnees.md](base-de-donnees.md) section 5) :
+
+```sh
+DATABASE_URL='postgresql://…' docker compose run --rm --no-deps -e DATABASE_URL \
+  -v "$PWD/scripts:/scripts:ro" db sh -c 'psql "$DATABASE_URL" -f /scripts/role-convoyeur.sql'
+```
+
+Le `push` qui ajoute `origin` et `natural_key` à `cash_flows` touche des lignes
+réelles : **compter `cash_flows` avant et après**, constater que chaque ligne
+existante a pris `OPERATEUR`, et le rapporter. Le rôle se crée **par ce script**,
+jamais depuis la console Neon (un rôle de console hérite de `neon_superuser`) ;
+son mot de passe se pose ensuite par `\password ubac_convoyeur` dans `psql`, hors
+du dépôt.
+
 ## 3. Construire l'image
 
 ```sh

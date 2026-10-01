@@ -19,8 +19,9 @@ import type {
   Weight,
   Weights,
 } from '../core/types.js';
-import type { BenchmarksText, LegText, PositionsText, WeightsText } from './schema.js';
+import type { BenchmarksText, CashFlowOrigin, LegText, PositionsText, WeightsText } from './schema.js';
 import {
+  CASH_FLOW_ORIGINS,
   cashFlows,
   DbFrontierError,
   DECISIONS_UNIQUE_INDEX,
@@ -187,6 +188,8 @@ export interface CashFlowRecord {
   /** Positif = apport, negatif = retrait. */
   readonly amount: UsdcAmount;
   readonly note: string | null;
+  /** Saisie de l'operateur, apport du convoyeur ou flux detecte (DC7). Le noyau ne la lit pas. */
+  readonly origin: CashFlowOrigin;
 }
 
 /**
@@ -390,7 +393,21 @@ function cashFlowRecord(ligne: typeof cashFlows.$inferSelect): CashFlowRecord {
     occurredOn: utcDay(ligne.occurredAt),
     amount: ligne.amountUsdc as UsdcAmount,
     note: ligne.note,
+    origin: cashFlowOriginFromText(ligne.origin, `cash_flows.origin (${ligne.id})`),
   };
+}
+
+/**
+ * L'origine relue, validee comme `side` : la contrainte de la base refuse deja
+ * une valeur hors liste, mais une contrainte retiree par un `push` ou une
+ * colonne elargie ne doit pas faire passer une origine inconnue pour l'une des
+ * trois. Exportee pour que la sonde de frontiere n'ait pas a casser la base.
+ */
+export function cashFlowOriginFromText(raw: string, contexte: string): CashFlowOrigin {
+  if (!(CASH_FLOW_ORIGINS as readonly string[]).includes(raw)) {
+    throw new DbFrontierError(`${contexte} : ${CASH_FLOW_ORIGINS.join(', ')} attendu, recu "${raw}".`);
+  }
+  return raw as CashFlowOrigin;
 }
 
 function sideFromText(raw: string, contexte: string): Side {

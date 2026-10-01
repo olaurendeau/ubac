@@ -29,15 +29,41 @@ Neon reste la cible de la phase 2. Rien dans ce lot n'en dépend :
 
 ## 2. Le schéma
 
-Quatre tables, conformes au SQL du §4. Le DDL réellement appliqué est celui
-qu'affiche `make db-push` ; `src/adapters/schema.ts` en est la seule source.
+Les quatre tables du §4, et le journal du convoyeur. Le DDL réellement
+appliqué est celui qu'affiche `make db-push` ; `src/adapters/schema.ts` en est
+la seule source.
 
 | Table | Clé | Ce qu'elle porte |
 |---|---|---|
 | `decisions` | `id` uuid, **index unique `(run_date, strategy, is_shadow)`** | journal immuable de chaque run, runs sans action compris |
-| `orders` | `client_order_id` | ordres ; vide en phase 1, rien n'est placé |
+| `orders` | `client_order_id` | ordres placés et leurs transitions |
 | `snapshots` | `run_date` | photo quotidienne : valeur, poids, positions, benchmarks |
-| `cash_flows` | `id` uuid | apports (positif) et retraits (négatif) |
+| `cash_flows` | `id` uuid, **index unique `natural_key`** | apports (positif) et retraits (négatif), avec leur origine |
+| `convoyeur_journal` | `id` uuid, **index unique `(convoyage, step)`** et **un `ACHAT_DEMANDE` par `day`** | les étapes de chaque convoyage, en ajout seul |
+
+### `cash_flows` : origine et clé naturelle (DC7 du convoyeur)
+
+- `origin` vaut `OPERATEUR` (**défaut**), `CONVOYEUR` ou `DETECTE` (réservée au
+  flux que l'exchange révélera, N8 du plan des flux ; personne ne l'écrit). Le
+  défaut garde passant l'`INSERT` que l'opérateur tape aujourd'hui, et donne aux
+  lignes déjà saisies l'origine qui est la leur. Une origine hors liste est
+  refusée par la base (`cash_flows_origin_check`) **et** à la lecture
+  (`cashFlowOriginFromText`, comme `side`).
+- `natural_key` est nulle pour une saisie de l'opérateur, et obligatoire pour
+  une ligne `CONVOYEUR` (`cash_flows_convoyeur_natural_key_check`). Son index
+  unique, `cash_flows_natural_key_key`, est ce qui rend l'écriture du convoyeur
+  idempotente : la seconde bute en `23505` sur ce nom, sans lecture préalable.
+  La clé ne remplace pas `id`, qui reste la clé primaire.
+
+### `convoyeur_journal` : une ligne par étape, écrite avant l'appel
+
+Étapes : `ACHAT_DEMANDE`, `ACHETE`, `TRANSFERT_DEMANDE`, `TRANSFERE`,
+`ENREGISTRE`, `EN_PANNE`. L'état d'un convoyage est sa dernière étape ; une
+étape déjà écrite bute sur `convoyeur_journal_convoyage_step_key`, et un second
+convoyage ouvert le même jour UTC sur `convoyeur_journal_day_key` (index
+partiel sur `ACHAT_DEMANDE`) : « un passage, un convoyage » (DC8) est une
+propriété de la base. Les colonnes de grandeur (`amount_usdc`, `debited_eur`,
+`fees_eur`) sont des `numeric(20, 8)`, nulles aux étapes qui ne les portent pas.
 
 ### L'index unique est la garantie d'idempotence
 
@@ -257,6 +283,41 @@ l'accident le plus probable — la cible recopiée dans un workflow — et rien
 d'autre. Il ne protège pas d'un script qui ne pose pas `CI`, ni d'un `npm run
 db:push` appelé directement : la garantie reste la règle ci-dessus, pas ce test.
 
+### Le rôle du convoyeur : rejouer le script après chaque `push`
+
+Le convoyeur écrit sous son propre rôle, `ubac_convoyeur` (Q9) : `INSERT` sur
+`cash_flows`, `SELECT` et `INSERT` sur `convoyeur_journal`, rien d'autre — ni
+`SELECT` sur `cash_flows`, ni `UPDATE`, ni `DELETE`, ni `CREATE`, ni table
+temporaire. **Ces droits ne sont pas dans le schéma** : `drizzle-kit push` ne
+connaît pas les `GRANT`, et un `push` qui recrée une table les efface. Ils
+vivent dans `scripts/role-convoyeur.sql`, idempotent, sans mot de passe, qui
+se rejoue **après tout `push` qui touche `cash_flows` ou le journal** :
+
+```sh
+docker compose run --rm --no-deps -e DATABASE_URL -v "$PWD/scripts:/scripts:ro" \
+  db sh -c 'psql "$DATABASE_URL" -f /scripts/role-convoyeur.sql'
+```
+
+Le `psql` est celui de l'image `db` : le poste n'en a pas. Le script retire ce
+que `PUBLIC` donne à tout rôle (tables, séquences, `EXECUTE` sur les fonctions,
+`CREATE` sur `public`, `TEMPORARY` sur la base), y compris pour ce qu'un `push`
+futur créerait (`ALTER DEFAULT PRIVILEGES` du propriétaire des tables, **sous sa
+forme globale** : Postgres accorde `EXECUTE` à `PUBLIC` par un défaut global,
+qu'un défaut par schéma ne peut pas retirer). `CONNECT` reste à `PUBLIC`. Ces
+`REVOKE` valent pour toute la base : le propriétaire des tables garde ses droits
+de propriétaire. La sonde CV19, `test/adapters/role-convoyeur.test.ts`, tourne
+sous `make test-db` et éprouve le rôle par `SET ROLE`.
+
+**Deux limites constatées de `push`**, sur la base locale, le 2026-09-28 :
+
+- **Pas de RLS hors du schéma.** Une politique « le rôle n'écrit que des lignes
+  `CONVOYEUR` positives » posée en SQL est retirée au `push` suivant
+  (`DISABLE ROW LEVEL SECURITY`, `DROP POLICY`), sans question. Elle n'est donc
+  pas retenue : le rôle est borné par ses `GRANT` et par les contraintes.
+- **Une contrainte `CHECK` modifiée sous le même nom n'est pas vue** (« No
+  changes detected »). Changer le corps d'une contrainte exige de la renommer ;
+  en retirer une, en revanche, est bien appliqué.
+
 ### Le type SQL s'écrit `numeric(20, 8)`, avec l'espace
 
 C'est sous cette forme que `drizzle-kit` relit la colonne depuis la base. Écrit
@@ -310,15 +371,16 @@ une erreur d'écriture d'une autre nature aussi — la rendre en `ALREADY_RECORD
 ferait croire au job que sa décision est enregistrée alors qu'aucune ligne
 n'existe.
 
-### Ce que ce lot n'écrit pas
+### Ce que l'adapter d'Ubac n'écrit pas
 
-**Aucune écriture de `cash_flows` ni d'`orders`.** Les ordres ne sont pas écrits
-parce que la phase 1 n'en place aucun. Les flux de trésorerie n'ont pas encore
-de source : ils viendront de l'exchange, avec l'identifiant de transfert qui
-servira de clé naturelle. Un `recordCashFlow()` écrit maintenant serait sans clé
-naturelle, donc non idempotent — un second run le même jour doublerait l'apport
-et fausserait le time-weighted return, exactement ce que la table est censée
-empêcher. Les tests alimentent ces deux tables en SQL direct.
+**Aucune écriture de `cash_flows`.** Les flux sont saisis par l'opérateur, et
+l'apport automatique est écrit par le convoyeur, sous son propre rôle et hors
+de `UbacDatabase`. L'exchange ne donne pas d'identifiant de transfert (S7 du
+convoyeur) : la clé naturelle du convoyeur est dérivée de son ordre d'achat,
+`CONVOYEUR:<client_order_id>`. Un écrivain sans clé naturelle ne serait pas
+idempotent — un rejeu doublerait l'apport et fausserait le time-weighted return.
+Les lectures (`recentCashFlows`, `latestDeposits`) rendent l'origine de chaque
+ligne ; le noyau ne la lit pas. Les tests alimentent la table en SQL direct.
 
 ---
 
