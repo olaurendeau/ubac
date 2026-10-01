@@ -1,0 +1,4 @@
+// Un nom de methode construit echappe a toute enumeration.
+export function appel(exchange, version) {
+  return exchange[`${version}PrivateGetAccounts`]();
+}

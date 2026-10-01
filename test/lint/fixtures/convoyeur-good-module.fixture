@@ -1,0 +1,6 @@
+import { Decimal } from 'decimal.js';
+import type { Quantity } from '../core/types.js';
+import { openHttp } from '../adapters/http.js';
+import { cashFlows } from '../adapters/schema.js';
+import { marketBuyBody } from './coinbase.js';
+export const ok = (q: Quantity) => [new Decimal(q), openHttp, cashFlows, marketBuyBody];
