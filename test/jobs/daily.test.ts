@@ -109,8 +109,8 @@ interface Scenario {
   readonly balances?: readonly AssetBalance[];
   readonly snapshot?: SnapshotRecord | undefined;
   readonly cashFlows?: readonly CashFlowRecord[];
-  /** Ce que rend `latestDeposits`, deja filtre et ordonne comme la base le ferait. */
-  readonly apports?: readonly CashFlowRecord[];
+  /** Ce que rend `latestCashFlows`, deja ordonne comme la base le ferait. */
+  readonly mouvements?: readonly CashFlowRecord[];
   readonly closes?: Readonly<Record<'BTC' | 'ETH', string>>;
   /** Remplace la serie rendue : sert a produire une serie mal bornee. */
   readonly serie?: (asset: string, window: DailyWindow) => readonly DailyCandle[];
@@ -127,7 +127,7 @@ interface Scenario {
    * la derniere ecriture. `recordPlacement` leve a la **deuxieme** issue
    * seulement : la premiere jambe est placee et ecrite, la seconde placee et non ecrite.
    */
-  readonly panne?: 'keyPermissions' | 'dailyCandles' | 'latestDeposits' | 'recordSnapshot' | 'recordPlacement';
+  readonly panne?: 'keyPermissions' | 'dailyCandles' | 'latestCashFlows' | 'recordSnapshot' | 'recordPlacement';
   /** La cle de phase 1, qui ne peut pas trader. Par defaut : celle de phase 3. */
   readonly sansTrade?: true;
   /** Les `client_order_id` que l'exchange rejette, comme un post-only qui croiserait. */
@@ -397,10 +397,10 @@ function harnais(scenario: Scenario = {}): Harnais {
           depuis.push(since);
           return Promise.resolve(scenario.cashFlows ?? []);
         },
-        latestDeposits: (limit) => {
-          appels.push(`latestDeposits:${String(limit)}`);
-          if (scenario.panne === 'latestDeposits') return Promise.reject(new Error(PANNE));
-          return Promise.resolve((scenario.apports ?? []).slice(0, limit));
+        latestCashFlows: (limit) => {
+          appels.push(`latestCashFlows:${String(limit)}`);
+          if (scenario.panne === 'latestCashFlows') return Promise.reject(new Error(PANNE));
+          return Promise.resolve((scenario.mouvements ?? []).slice(0, limit));
         },
         recordDecision: (input) => {
           appels.push('recordDecision');
@@ -583,9 +583,9 @@ describe('§8 etapes 1 a 5 — l’enchainement du run', () => {
       // lecture posterieure aux ecritures ferait echouer, apres coup, un run qui
       // a deja tout ecrit.
       'snapshotSeries',
-      // Les derniers apports du rapport, au meme endroit et pour le meme motif ;
-      // trois demandes, le nombre que la section affiche.
-      'latestDeposits:3',
+      // Les derniers mouvements du rapport, au meme endroit et pour le meme motif ;
+      // cinq demandes, le nombre que la section affiche.
+      'latestCashFlows:5',
       'recordDecision',
       'recordDecision',
       'recordDecision',
@@ -1309,33 +1309,35 @@ describe('§9 — le rapport quotidien part par Brevo', () => {
    * etat que le run n'aurait finalement pas ecrit.
    */
   /*
-   * Les derniers apports : un historique court, lu par le run et rendu par le
+   * Les derniers mouvements : un historique court, lu par le run et rendu par le
    * rapport. `test/report/daily-report.test.ts` tient la section ligne a ligne,
-   * `test/adapters/db.test.ts` le filtre et l'ordre contre Postgres ; ce qui est
+   * `test/adapters/db.test.ts` l'ordre et la borne contre Postgres ; ce qui est
    * etabli ici est le branchement, et la panne qui ne coupe pas le run.
    */
-  it('porte les derniers apports lus jusqu’au courrier, note comprise', async () => {
+  it('porte les derniers mouvements lus jusqu’au courrier, retrait signe et note compris', async () => {
+    const retrait = flux('2026-09-27', '-300', 'retrait vers le compte courant');
     const apport = flux('2026-09-26', '1000', 'virement initial');
-    const h = harnais({ balances: DANS_LA_BANDE, apports: [apport] });
+    const h = harnais({ balances: DANS_LA_BANDE, mouvements: [retrait, apport] });
     const result = complete(await lance(h));
 
-    expect(result.latestDeposits).toEqual({ status: 'READ', deposits: [apport] });
+    expect(result.latestCashFlows).toEqual({ status: 'READ', movements: [retrait, apport] });
     const html = courrier(h).htmlContent;
-    expect(html).toContain('Derniers apports');
+    expect(html).toContain('Derniers mouvements');
+    expect(html).toMatch(/>2026-09-27<\/td><td[^>]*>-300\.00 USDC<\/td><td[^>]*>retrait vers le compte courant</);
     expect(html).toMatch(/>2026-09-26<\/td><td[^>]*>1000\.00 USDC<\/td><td[^>]*>virement initial</);
   });
 
-  it('une lecture des apports en panne ne coupe pas le run : le rapport part et le dit', async () => {
-    const h = harnais({ balances: DANS_LA_BANDE, panne: 'latestDeposits' });
+  it('une lecture des mouvements en panne ne coupe pas le run : le rapport part et le dit', async () => {
+    const h = harnais({ balances: DANS_LA_BANDE, panne: 'latestCashFlows' });
     const result = complete(await lance(h));
 
-    expect(result.latestDeposits).toEqual({ status: 'UNREADABLE', reason: PANNE });
+    expect(result.latestCashFlows).toEqual({ status: 'UNREADABLE', reason: PANNE });
     // Tout ce qui suit la lecture a eu lieu : decisions, photo, courrier, ping.
     expect(h.appels).toContain('recordSnapshot');
     expect(result.report.mail.status).toBe('SENT');
     expect(reported(result)).toBe(true);
-    expect(courrier(h).htmlContent).toContain(`Les derniers apports n'ont pas pu etre lus : ${PANNE}.`);
-    expect(h.lignes).toContain(`derniers apports non lus : ${PANNE}`);
+    expect(courrier(h).htmlContent).toContain(`Les derniers mouvements n'ont pas pu etre lus : ${PANNE}.`);
+    expect(h.lignes).toContain(`derniers mouvements non lus : ${PANNE}`);
   });
 
   it('part apres les alertes, et apres la derniere ecriture', async () => {
@@ -2624,7 +2626,7 @@ describe('DRY_RUN — des ports inertes a la place des vrais (E14, E15, E16)', (
     const essai = harnais(JOURNEE);
     const result = complete(await enDryRun(essai));
 
-    for (const lecture of ['pendingOrders', 'latestSnapshot', 'snapshotSeries', 'recentCashFlows', 'latestDeposits:3']) {
+    for (const lecture of ['pendingOrders', 'latestSnapshot', 'snapshotSeries', 'recentCashFlows', 'latestCashFlows:5']) {
       expect(essai.appels, lecture).toContain(lecture);
     }
     expect(result.previousSnapshot?.runDate).toBe(PRICED_ON);

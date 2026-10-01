@@ -57,8 +57,8 @@ seul : conversion, transfert, enregistrement de l'apport.
   `scripts/entrypoint-job.sh`, qui lance `daily-main.js`. La question M1 du plan
   des flux (une surcharge de commande Scaleway remplace-t-elle l'entrypoint ?)
   n'est pas mesurée.
-- **K8. Le rapport montre déjà les apports.** La section « Derniers apports »
-  (#73) lit les trois dernières lignes positives de `cash_flows`, note comprise :
+- **K8. Le rapport montre déjà les apports.** La section « Derniers mouvements »
+  (#73, élargie aux retraits) lit les cinq dernières lignes de `cash_flows`, note comprise :
   l'apport du convoyeur y apparaîtra sans rien toucher au rapport.
 
 ## Ce que dit la documentation officielle (vérifiée le 2026-09-28)
@@ -112,7 +112,7 @@ plus défavorable, comme `docs/cle-coinbase.md` l'a toujours fait — une clé
 
 Décidé sans question et annoncé à l'opérateur en passe 2 : les notifications
 passent par **ntfy**, sur le canal d'Ubac, préfixées « convoyeur » ; **pas
-d'email**. L'apport apparaît déjà dans « Derniers apports » du rapport d'Ubac
+d'email**. L'apport apparaît déjà dans « Derniers mouvements » du rapport d'Ubac
 (K8).
 
 ### Prises par ce cadrage
@@ -272,7 +272,7 @@ permanent : l'apport mensuel.
 | **N2** (origine et clé naturelle de `cash_flows`) | **Modifié et prérequis** : une troisième origine, celle du convoyeur (DC7) ; la clé naturelle du convoyeur est l'identifiant d'ordre |
 | **N3, N4** (commande de saisie manuelle, dans l'image) | **Rendus inutiles pour l'apport** ; restent l'outil des retraits (F16, moitié retrait). Peuvent attendre |
 | **N5 à N8** (résidu, frontière, alertes, écriture détectée) | **Hors du chemin de l'apport** : un apport enregistré par le convoyeur a un résidu nul (D2 des flux). Gardent leur objet — vol, retrait non annoncé, oubli — et deviennent le filet si le convoyeur échoue sans alerter |
-| **N9** (rapport des flux) | **Partiellement fait** par #73 (« Derniers apports ») ; reste l'origine et les retraits |
+| **N9** (rapport des flux) | **Partiellement fait** par #73 et « Derniers mouvements » (retraits compris) ; reste l'origine |
 | **N10** (une alerte par fait) | **Modifié** : sa part « divergence entièrement expliquée par des flux **enregistrés** » ne dépend plus de N8 et devient le prérequis de Q4 = 1 (CV15). La part « flux détecté » garde sa dépendance à N8. Dépend toujours de S13 (F21 cite E60) |
 | **G1** (horodatage d'une saisie) | Sans objet pour le convoyeur (DC5) |
 | **G2** (clé naturelle d'une saisie) | Inchangée pour la saisie ; le convoyeur a la sienne (DC7) |
