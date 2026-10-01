@@ -1,6 +1,6 @@
 import type { Decimal } from 'decimal.js';
 
-import type { CoinbaseReader, ExecutionPort } from '../adapters/coinbase.js';
+import type { Carnet, CoinbaseReader, ExecutionPort } from '../adapters/coinbase.js';
 import type {
   CashFlowRecord,
   RecordDecisionOutcome,
@@ -19,6 +19,7 @@ import { clientOrderId } from '../core/order-id.js';
 import type { Holdings, PricedAsset, Prices, ValuationIssue } from '../core/portfolio.js';
 import { valuate } from '../core/portfolio.js';
 import { validate } from '../core/risk.js';
+import type { MidPrices } from '../core/risk.js';
 import { DCA_DEFAULTS, decide as decideDca } from '../core/strategy/dca.js';
 import type { LadderDecision } from '../core/strategy/ladder.js';
 import { NO_ANCHORS, decide as decideLadder } from '../core/strategy/ladder.js';
@@ -30,6 +31,7 @@ import type {
   Intent,
   IsoDate,
   Order,
+  Price,
   StrategyName,
   UsdcAmount,
   Verdict,
@@ -40,6 +42,7 @@ import type { AlertInput, RebalanceExecuted } from './alerts.js';
 import { alertsFor } from './alerts.js';
 import type { IssueDAnnulation, IssueDeJambe } from './execute.js';
 import { annuler, auCarnet, placer } from './execute.js';
+import { prixLimite } from './liquidate.js';
 import type { PendingOrderReconciliation, ReconcileObservations, Resynchronization } from './reconcile.js';
 import { reconcile } from './reconcile.js';
 import type { ExecutionDeStrategie } from './suivi.js';
@@ -188,7 +191,7 @@ function shiftDay(date: IsoDate, jours: number, champ: string): IsoDate {
  * l'objet a `reconcile`, seul fichier de `src/jobs/` autorise a lire les soldes.
  */
 export interface DailyPorts {
-  readonly exchange: Pick<CoinbaseReader, 'keyPermissions' | 'balances' | 'openOrders' | 'orderStatus'>;
+  readonly exchange: Pick<CoinbaseReader, 'keyPermissions' | 'balances' | 'openOrders' | 'orderStatus' | 'bestBidAsk'>;
   readonly market: Pick<MarketReader, 'dailyCandles'>;
   readonly db: Pick<
     UbacDatabase,
@@ -581,6 +584,57 @@ function motifEnVol(enVol: readonly string[]): string {
   );
 }
 
+/**
+ * Le carnet des deux paires, lu en un appel (`docs/specs/ubac-prix-au-carnet.md`,
+ * D1). Une lecture en echec ne fait pas echouer le run : les deux paires sont
+ * alors inexploitables, et la couche risque rejette la production en
+ * `PRICE_SANITY`. La ligne du journal est celle que l'operateur relit (O1).
+ */
+async function lireCarnet(exchange: Pick<CoinbaseReader, 'bestBidAsk'>, log: RunLogger): Promise<Carnet> {
+  let carnet: Carnet;
+  try {
+    carnet = await exchange.bestBidAsk();
+  } catch (error) {
+    const lecture = { kind: 'INEXPLOITABLE', reason: `lecture du carnet en echec — ${texte(error)}` } as const;
+    carnet = { BTC: lecture, ETH: lecture };
+  }
+  const paires = PRICED.map((asset) => {
+    const cote = carnet[asset];
+    return cote.kind === 'COTE'
+      ? `${asset}-USDC bid=${cote.bid.toFixed()} ask=${cote.ask.toFixed()}`
+      : `${asset}-USDC inexploitable : ${cote.reason}`;
+  });
+  log(`carnet — ${paires.join(' ; ')}`);
+  return carnet;
+}
+
+/**
+ * Les jambes de la production **posees au carnet avant `validate`** (D2, D3) :
+ * meilleur acheteur a l'achat, meilleur vendeur a la vente, par `prixLimite`. Le
+ * mid en direct de chaque actif cote devient sa reference de `PRICE_SANITY` ; un
+ * actif au carnet inexploitable n'en a pas, et la couche risque rejette la jambe.
+ * Son motif precede celui de la strategie, comme un marqueur : il se lit alors
+ * dans `decisions` et dans le rapport, pas seulement dans le journal.
+ * La cloture reste la reference de tout le reste — valorisation, poids, bandes.
+ */
+function poserAuCarnet(intent: Intent, carnet: Carnet): { readonly intent: Intent; readonly mids: MidPrices } {
+  const mids: Partial<Record<PricedAsset, Price>> = {};
+  const motifs = new Set<string>();
+  for (const asset of PRICED) {
+    const cote = carnet[asset];
+    if (cote.kind === 'COTE') mids[asset] = cote.bid.add(cote.ask).div(2) as Price;
+    else if (intent.legs.some((leg) => leg.asset === asset)) motifs.add(`carnet inexploitable : ${cote.reason}`);
+  }
+  const legs = intent.legs.map((leg) => {
+    // Un actif hors des deux paires garde son prix : `screenLeg` le rejettera.
+    const cote = PRICED.find((asset) => asset === leg.asset);
+    const lu = cote === undefined ? undefined : carnet[cote];
+    return lu?.kind === 'COTE' ? { ...leg, limitPrice: prixLimite(leg.side, lu) } : leg;
+  });
+  const reason = [...motifs, intent.reason].join('\n');
+  return { intent: { ...intent, legs, reason }, mids };
+}
+
 interface Decided {
   readonly strategy: StrategyName;
   readonly isShadow: boolean;
@@ -848,14 +902,25 @@ async function executeRun(run: DailyRun, parti: ExecutionDeStrategie[]): Promise
     return { status: 'ABORTED', runDate, abort: decided.abort, suspension: step.suspension, resync };
   }
 
+  /*
+   * Le carnet n'est lu que si la production rend au moins une jambe : un jour
+   * `NONE` n'ajoute ni appel ni mode de panne (D1). Les ombres ne placent rien :
+   * leurs jambes restent a la cloture, comme le rejeu.
+   */
+  const aPoser = decided.decided.some(({ isShadow, intent }) => !isShadow && intent.legs.length > 0);
+  const carnet = aPoser ? await lireCarnet(ports.exchange, log) : undefined;
+
   const outcomes: StrategyOutcome[] = [];
   for (const { strategy, isShadow, intent: decide } of decided.decided) {
     // La suspension de l'etape 6 ne concerne que la production, seule a placer.
     const retenue = isShadow || suspendue === undefined ? decide : { ...decide, reason: `${suspendue}\n${decide.reason}` };
-    const intent = marquer(retenue, resync);
+    const { intent, mids } =
+      isShadow || carnet === undefined
+        ? { intent: marquer(retenue, resync), mids: prices }
+        : poserAuCarnet(marquer(retenue, resync), carnet);
     const verdict = validate(intent, {
       makeClientOrderId: clientOrderId,
-      mids: prices,
+      mids,
       /*
        * Aucun reequilibrage complet n'a jamais abouti : rien n'est place en
        * phase 1, donc le cooldown de A n'a pas d'ancre. Meme motif que celui de B.
@@ -889,6 +954,10 @@ async function executeRun(run: DailyRun, parti: ExecutionDeStrategie[]): Promise
     log(
       `${strategy}${isShadow ? ' (shadow)' : ''} : ${intent.trigger}, ${intent.legs.length} jambe(s), risque ${verdict.status} — ${recorded.status}`,
     );
+    // Les motifs de la production, seule a placer : un jour sans ordre doit dire pourquoi.
+    if (!isShadow && verdict.status === 'REJECTED') {
+      for (const rejet of verdict.rejections) log(`${strategy} : ${rejet.code} — ${rejet.reason}`);
+    }
     outcomes.push({ strategy, isShadow, intent, verdict, recorded });
   }
 
@@ -916,7 +985,8 @@ async function executeRun(run: DailyRun, parti: ExecutionDeStrategie[]): Promise
       log(`${strategy} : ${String(enVol.length)} ordre(s) d'un run precedent encore ouvert(s), aucun ordre transmis`);
       continue;
     }
-    const ordres = verdict.orders.map((ordre) => auCarnet(ordre, prices));
+    // Le prix est celui que la couche risque a accepte : `auCarnet` n'arrondit que la quantite.
+    const ordres = verdict.orders.map(auCarnet);
     /*
      * Le tampon est ici, et le `finally` le lit **meme si `placer` leve** : une
      * issue non ecrite a la deuxieme jambe ne doit pas taire la premiere, deja

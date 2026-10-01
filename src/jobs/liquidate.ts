@@ -1,10 +1,10 @@
 import { Decimal } from 'decimal.js';
 
-import type { OpenOrder } from '../adapters/coinbase.js';
+import type { Carnet, Fourchette, OpenOrder } from '../adapters/coinbase.js';
 import { exitClientOrderId } from '../core/order-id.js';
 import type { Holdings } from '../core/portfolio.js';
 import { MIN_LEG_USDC, QUOTE } from '../core/risk.js';
-import type { MidPrices, TradableAsset } from '../core/risk.js';
+import type { TradableAsset } from '../core/risk.js';
 import type { IsoDate, Order, Price, Quantity, Side, UsdcAmount } from '../core/types.js';
 import type { ReconciledBalances } from './reconcile.js';
 
@@ -72,13 +72,11 @@ export const PHASE_D_APPLICATION = 3;
 // --- Parametres d'execution, spec §7 ----------------------------------------
 
 /**
- * Le mid ± 0,1 % du §7. Une vente se pose **au-dessus** du mid : c'est ce qui la
- * laisse au repos dans le carnet, donc ce qui la rend acceptable en post-only.
- * Une vente sous le mid croiserait le carnet et l'exchange la refuserait — le
- * signe de cette marge est la moitie utile du post-only, la seconde etant le
- * drapeau lui-meme.
+ * Le pas de prix de BTC-USDC et d'ETH-USDC : `quote_increment` 0,01 USDC. Un
+ * prix plus fin est refuse par l'exchange. Constante, et non lue : si Coinbase
+ * le changeait, les ordres seraient rejetes — journalises, sans rien placer de faux.
  */
-export const MARGE_LIMITE_PCT = new Decimal('0.001');
+const PAS_DE_PRIX = 2;
 
 /** Le cron du §8, celui que l'etape 3 desarme. */
 export const CRON_QUOTIDIEN = '0 7 * * *';
@@ -132,8 +130,8 @@ export interface IntentionDeCession {
   readonly product: string;
   /** Toujours vrai, et du type `true` : le §7 n'admet aucun autre ordre. */
   readonly postOnly: true;
-  /** Le mid qui a servi de reference, pour que le prix limite soit verifiable. */
-  readonly mid: Price;
+  /** Le carnet qui a servi de reference, pour que le prix limite soit verifiable. */
+  readonly fourchette: Fourchette;
   readonly ordre: Order;
 }
 
@@ -210,7 +208,8 @@ export interface SortieInput {
   readonly soldes: ReconciledBalances;
   /** Les ordres ouverts lus sur l'exchange, tels quels. */
   readonly ouverts: readonly OpenOrder[];
-  readonly mids: MidPrices;
+  /** Le carnet des deux paires, lu en direct : chaque cession vend au meilleur vendeur. */
+  readonly carnet: Carnet;
 }
 
 /**
@@ -254,29 +253,29 @@ function paire(asset: TradableAsset): string {
   return `${asset}-${QUOTE}`;
 }
 
-function midDe(asset: TradableAsset, mids: MidPrices): Price {
-  const mid = mids[asset];
-  if (mid === undefined) {
-    throw new SortieError(
-      `${asset} : aucun prix de reference, le prix limite de la cession n'est calculable a rien.`,
-    );
+/** Un carnet inexploitable ne cote rien : la sortie refuse au lieu de deviner un prix. */
+function fourchetteDe(asset: TradableAsset, carnet: Carnet): Fourchette {
+  const cote = carnet[asset];
+  if (cote.kind === 'INEXPLOITABLE') {
+    throw new SortieError(`${asset} : carnet inexploitable, le prix limite de la cession n'est calculable a rien — ${cote.reason}`);
   }
-  if (!mid.isFinite() || mid.lte(ZERO)) {
-    throw new SortieError(
-      `${asset} : prix de reference a ${mid.toString()}, un mid nul, negatif ou non fini ne cote rien.`,
-    );
-  }
-  return mid;
+  return cote;
 }
 
 /**
- * Mid ± 0,1 %, **du cote qui ne croise pas le carnet** : sous le mid a l'achat,
- * au-dessus a la vente — au repos, donc acceptable en post-only. La seule
- * definition du depot (T3) : l'etape 6 du run quotidien la partage.
+ * Le meilleur acheteur a l'achat, le meilleur vendeur a la vente, sans marge
+ * (`docs/specs/ubac-prix-au-carnet.md`, D2) : le post-only garantit deja que
+ * l'ordre ne croise pas. Arrondi au pas **en s'eloignant du mid** — vers le bas
+ * a l'achat, vers le haut a la vente — : arrondir vers le mid pourrait faire
+ * croiser l'ordre, et l'exchange le rejetterait. La seule definition du depot
+ * (T3) : l'etape 5 du run quotidien la partage.
  */
-export function prixLimite(side: Side, mid: Price): Price {
-  const marge = side === 'BUY' ? MARGE_LIMITE_PCT.neg() : MARGE_LIMITE_PCT;
-  return mid.mul(new Decimal(1).add(marge)) as Price;
+export function prixLimite(side: Side, fourchette: Fourchette): Price {
+  return (
+    side === 'BUY'
+      ? fourchette.bid.toDecimalPlaces(PAS_DE_PRIX, Decimal.ROUND_DOWN)
+      : fourchette.ask.toDecimalPlaces(PAS_DE_PRIX, Decimal.ROUND_UP)
+  ) as Price;
 }
 
 function quantiteDe(asset: TradableAsset, holdings: Holdings): Quantity {
@@ -333,7 +332,7 @@ interface Cessions {
  * plutot qu'execute. Une sortie qui laisse 12 USDC de poussiere est une sortie
  * propre ; une sortie qui emet un ordre irrecevable ne l'est pas.
  */
-function cessions(runDate: IsoDate, holdings: Holdings, mids: MidPrices): Cessions {
+function cessions(runDate: IsoDate, holdings: Holdings, carnet: Carnet): Cessions {
   const intentions: IntentionDeCession[] = [];
   const lignes: LigneDeCession[] = [];
   const residus: LigneDeResidu[] = [];
@@ -342,15 +341,16 @@ function cessions(runDate: IsoDate, holdings: Holdings, mids: MidPrices): Cessio
     const quantity = quantiteDe(asset, holdings);
     if (quantity.isZero()) continue;
 
-    const mid = midDe(asset, mids);
-    const valeur = quantity.mul(mid) as UsdcAmount;
+    const fourchette = fourchetteDe(asset, carnet);
+    const limitPrice = prixLimite('SELL', fourchette);
+    const valeur = quantity.mul(limitPrice) as UsdcAmount;
     // Strict, comme `risk.ts` : une ligne a 200 USDC pile se cede.
     if (valeur.lt(MIN_LEG_USDC)) {
       residus.push({
         asset,
         quantity,
         valeurUsdc: valeur,
-        motif: `${valeur.toString()} USDC au mid, sous le minimum de ${MIN_LEG_USDC.toString()} USDC : l'ordre serait refuse.`,
+        motif: `${valeur.toString()} USDC au prix limite, sous le minimum de ${MIN_LEG_USDC.toString()} USDC : l'ordre serait refuse.`,
       });
       continue;
     }
@@ -366,7 +366,6 @@ function cessions(runDate: IsoDate, holdings: Holdings, mids: MidPrices): Cessio
      * cession de reprendre l'identifiant d'une jambe du reequilibrage du jour.
      */
     const legIndex = intentions.length;
-    const limitPrice = prixLimite('SELL', mid);
     const identifiant = exitClientOrderId({ runDate, asset, side: 'SELL', legIndex });
     const ordre: Order = {
       clientOrderId: identifiant,
@@ -377,12 +376,12 @@ function cessions(runDate: IsoDate, holdings: Holdings, mids: MidPrices): Cessio
       limitPrice,
     };
 
-    intentions.push({ etape: 'CESSION', product: paire(asset), postOnly: true, mid, ordre });
+    intentions.push({ etape: 'CESSION', product: paire(asset), postOnly: true, fourchette, ordre });
     lignes.push({
       asset,
       quantity,
       limitPrice,
-      produitUsdc: quantity.mul(limitPrice) as UsdcAmount,
+      produitUsdc: valeur,
       clientOrderId: identifiant,
     });
   }
@@ -418,7 +417,7 @@ function declencheur(): IntentionDeDeclencheur {
 export function planifierSortie(entree: SortieInput): PlanDeSortie {
   const runDate = jourUtc(entree.runDate);
   const retraits = annulations(entree.ouverts);
-  const cedees = cessions(runDate, entree.soldes.holdings, entree.mids);
+  const cedees = cessions(runDate, entree.soldes.holdings, entree.carnet);
 
   const produitTotalUsdc = cedees.lignes.reduce<Decimal>(
     (total, ligne) => total.add(ligne.produitUsdc),

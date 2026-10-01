@@ -239,15 +239,16 @@ describe('portefeuille non valorisable', () => {
       ),
     ).toThrow(/non valorisable/);
   });
+  /*
+   * Le mid ne peut plus s'ecarter de la cloture : c'est une limite a 2 % pile
+   * au-dessus, sur un achat soixante fois plus grand que le portefeuille, qui
+   * projette un total negatif (1 000 - 60 000 x 0,02 / 1,02).
+   */
   it('refuse un etat projete a valeur non positive', () => {
-    const absurd = price('1000000000000000000');
     expect(() =>
       validate(
-        intent([leg({ amount: usdc('2000'), limitPrice: absurd })]),
-        context({
-          holdings: { BTC: qty('0'), ETH: qty('0'), USDC: qty('1000') },
-          mids: { BTC: absurd, ETH },
-        }),
+        intent([leg({ amount: usdc('60000'), limitPrice: price('61200') })]),
+        context({ holdings: { BTC: qty('0'), ETH: qty('0'), USDC: qty('1000') } }),
       ),
     ).toThrow(/etat projete non valorisable/);
   });

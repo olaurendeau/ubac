@@ -134,7 +134,9 @@ Aucune variable `UBAC_RISK_*` n'est acceptée : les seuils de risque vivent dans
 5. **Les quatre stratégies** — `rebalance`, `rebalance_ab`, `ladder`, `dca` —
    décidées, validées par la couche risque, puis journalisées. Une ligne par
    stratégie et par run, `trigger NONE` comprise : un run sans action laisse une
-   trace.
+   trace. Si la production rend au moins une jambe, le **carnet** des deux
+   paires est lu entre la décision et la validation, et ses jambes y sont
+   posées : section 4, point 1.
 6. **L'exécution.** Les ordres d'un verdict `ACCEPTED` de la **seule
    production** passent par `src/jobs/execute.ts` ; une ombre n'y passe jamais
    (E18). Section 4.
@@ -320,14 +322,23 @@ jamais ouvert (A24) ; le port journalisant le remplace, section 8.
 
 Pour chaque jambe, dans l'ordre :
 
-1. **Prix au carnet** : mid ± 0,1 % du côté qui ne croise pas — sous le mid à
-   l'achat, au-dessus à la vente —, arrondi au pas de 0,01 USDC en s'éloignant
-   du mid ; quantité arrondie à 1e-8 vers le bas. **Ce sens n'est pas un biais
-   à corriger** : arrondir le prix vers le mid pourrait le faire croiser le
-   carnet, et l'exchange rejetterait l'ordre post-only ; arrondir la quantité
-   vers le haut engagerait plus que ce que la couche risque a validé. Le mid
-   est la clôture du dernier jour clos, celle que la couche risque a validée.
-   La marge est celle de la sortie (`prixLimite`, `src/jobs/liquidate.ts`), pas une copie.
+1. **Prix au carnet**, posé à l'étape 5, **avant** la couche risque
+   ([ubac-prix-au-carnet.md](specs/ubac-prix-au-carnet.md), D1 à D3). Le
+   carnet (`best_bid_ask`, un appel pour BTC-USDC et ETH-USDC) n'est lu que si
+   la production rend une jambe, et il est journalisé : `carnet — BTC-USDC
+   bid=… ask=… ; ETH-USDC …`. Achat au meilleur acheteur, vente au meilleur
+   vendeur, sans marge — le post-only garantit déjà que l'ordre ne croise pas —,
+   arrondi au pas de 0,01 USDC en s'éloignant du mid. `PRICE_SANITY` compare
+   alors ce prix au mid en direct, `(bid + ask) / 2`, et ce mid à la clôture,
+   2 % chacun : **le prix validé est le prix placé**. Un carnet inexploitable —
+   appel en échec, paire absente, côté vide, `bid >= ask` — ne fait pas échouer
+   le run : la jambe est rejetée en `PRICE_SANITY`, et le motif du carnet
+   précède celui de la stratégie dans `decisions` et le rapport. Les ombres
+   restent à la clôture, comme le rejeu. La définition est celle de la sortie
+   (`prixLimite`, `src/jobs/liquidate.ts`), pas une copie. Ici, seule la
+   quantité est arrondie, à 1e-8 vers le bas (`auCarnet`) : **ce sens n'est pas
+   un biais à corriger**, l'arrondir vers le haut engagerait plus que ce que la
+   couche risque a validé.
 2. **Écriture `PENDING`** dans `orders`, `decision_id` posé : c'est le seul lien
    de l'ordre à son `run_date` (E23).
 3. **Placement** en limit post-only. Accepté, la ligne reçoit son
@@ -461,7 +472,7 @@ est un run réel, et c'est là qu'on le voit.
 
 C'est la distinction qui décide si le mode vaut quelque chose. **Un `DRY_RUN`
 lit la vraie base et le vrai exchange** : clé, soldes, ordres ouverts, bougies,
-et en base `latestSnapshot`, `snapshotSeries`, `recentCashFlows`,
+carnet, et en base `latestSnapshot`, `snapshotSeries`, `recentCashFlows`,
 `latestCashFlows` et `pendingOrders`. Couper ces lectures ferait tourner le run sur une journée vide
 — pas de photo de la veille, pas de flux, pas de réconciliation — qui ne
 rejouerait rien et ne prouverait rien.

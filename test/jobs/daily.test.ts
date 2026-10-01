@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type {
   AssetBalance,
+  Carnet,
   CreateOrderBody,
   KeyPermissions,
   OpenOrder,
@@ -154,6 +155,12 @@ interface Scenario {
    * l'annulation. `PANNE` : l'envoi leve.
    */
   readonly annulation?: 'REFUSEE' | 'DEJA_DENOUE' | 'PANNE';
+  /**
+   * Ce que rend `bestBidAsk`. Par defaut : le meilleur vendeur a la cloture, le
+   * meilleur acheteur un centime dessous — une vente part au prix de la cloture.
+   * `PANNE` : la lecture leve.
+   */
+  readonly carnet?: Carnet | 'PANNE';
 }
 
 /** Ce que leve le port en panne. Reconnaissable, et sans rapport avec le metier. */
@@ -316,6 +323,12 @@ function harnais(scenario: Scenario = {}): Harnais {
     openOrders: () => {
       appels.push('openOrders');
       return Promise.resolve(scenario.ouverts ?? []);
+    },
+    bestBidAsk: () => {
+      appels.push('bestBidAsk');
+      if (scenario.carnet === 'PANNE') return Promise.reject(new Error(PANNE));
+      const cote = (close: string) => ({ kind: 'COTE', bid: price(close).sub('0.01') as Price, ask: price(close) }) as const;
+      return Promise.resolve(scenario.carnet ?? { BTC: cote(closes.BTC), ETH: cote(closes.ETH) });
     },
     orderStatus: (exchangeId) => {
       appels.push('orderStatus');
@@ -2210,7 +2223,7 @@ describe('§8 etape 6 — seule la production transmet ses ordres (E18)', () => 
 });
 
 describe('§8 etape 6 — l’execution armee (E7, E20, E23, E24, E26)', () => {
-  it('ecrit la ligne PENDING rattachee a la decision du jour, puis place au-dessus du mid a la vente', async () => {
+  it('ecrit la ligne PENDING rattachee a la decision du jour, puis place au meilleur vendeur a la vente', async () => {
     const h = harnais({ balances: JUSTE_HORS_BANDE, runDate: '2026-10-01' });
     const result = complete(await lance(h));
     const [corps] = h.corps;
@@ -2222,7 +2235,7 @@ describe('§8 etape 6 — l’execution armee (E7, E20, E23, E24, E26)', () => {
     expect(corps?.side).toBe('SELL');
     expect(corps?.order_configuration.limit_limit_gtc).toEqual({
       base_size: '0.14',
-      limit_price: '50050',
+      limit_price: '50000',
       post_only: true,
     });
     expect(h.lignesOrdres.get(corps?.client_order_id ?? '')).toBe(`PLACED ex-${corps?.client_order_id ?? ''}`);
@@ -2269,6 +2282,87 @@ describe('§8 etape 6 — l’execution armee (E7, E20, E23, E24, E26)', () => {
     expect(rejeu.outcomes.find((o) => o.strategy === 'rebalance')?.recorded.status).toBe('RECORDED');
     expect(h.appels.filter((a) => a === 'placeOrder')).toHaveLength(1);
     expect(rejeu.placements.map((p) => p.kind)).toEqual(['ALREADY_RECORDED']);
+  });
+});
+
+// --- Le prix au carnet (docs/specs/ubac-prix-au-carnet.md, lot L1) ----------
+
+const cote = (bid: string, ask: string) => ({ kind: 'COTE', bid: price(bid), ask: price(ask) }) as const;
+const CARNET_ETH = cote('2499.99', '2500');
+
+describe('§8 etape 5 — le prix de la production est lu au carnet, et valide tel quel', () => {
+  it('critere 3 : un jour NONE ne lit pas le carnet', async () => {
+    const h = harnais({ balances: DANS_LA_BANDE });
+    await lance(h);
+
+    expect(h.appels).not.toContain('bestBidAsk');
+    expect(h.lignes.some((l) => l.startsWith('carnet'))).toBe(false);
+  });
+
+  it('critere 3 : un jour de jambes le lit une fois, avant toute decision ecrite, et le journalise', async () => {
+    const h = harnais({ balances: JUSTE_HORS_BANDE, runDate: '2026-10-01' });
+    await lance(h);
+
+    expect(h.appels.filter((a) => a === 'bestBidAsk')).toHaveLength(1);
+    expect(h.appels.indexOf('bestBidAsk')).toBeLessThan(h.appels.indexOf('recordDecision'));
+    expect(h.lignes).toContain('carnet — BTC-USDC bid=49999.99 ask=50000 ; ETH-USDC bid=2499.99 ask=2500');
+  });
+
+  it('criteres 5 et 6 : la vente part au meilleur vendeur arrondi au centime superieur, le prix valide est le prix place', async () => {
+    const h = harnais({
+      balances: JUSTE_HORS_BANDE,
+      runDate: '2026-10-01',
+      carnet: { BTC: cote('49999.994', '50000.004'), ETH: CARNET_ETH },
+    });
+    const result = complete(await lance(h));
+    const [accepte] = ordresDe(result, 'rebalance');
+    const [corps] = h.corps;
+
+    expect(accepte?.limitPrice.toFixed()).toBe('50000.01');
+    expect(corps?.order_configuration.limit_limit_gtc.limit_price).toBe(accepte?.limitPrice.toFixed());
+    expect(h.table.get('2026-10-01|rebalance|false')?.intent.legs[0]?.limitPrice.toFixed()).toBe('50000.01');
+    // La quantite suit le prix valide (montant / limite), arrondie vers le bas au pas.
+    expect(accepte?.quantity.toFixed()).toBe(new Decimal('7000').div('50000.01').toFixed());
+    expect(corps?.order_configuration.limit_limit_gtc.base_size).toBe('0.13999997');
+    // L'ombre ne place rien : sa jambe reste a la cloture, comme le rejeu.
+    expect(ordresDe(result, 'rebalance_ab')[0]?.limitPrice.toFixed()).toBe(BTC_CLOSE);
+  });
+
+  it('critere 7 : un mid en direct a plus de 2 % de la cloture rejette la production, pas l’ombre', async () => {
+    const h = harnais({
+      balances: JUSTE_HORS_BANDE,
+      runDate: '2026-10-01',
+      carnet: { BTC: cote('51010', '51010.01'), ETH: CARNET_ETH },
+    });
+    const result = complete(await lance(h));
+    const verdicts = result.outcomes.map((o) => (o.verdict.status === 'ACCEPTED' ? 'ACCEPTED' : o.verdict.rejections.map((r) => r.code).join()));
+
+    expect(verdicts.slice(0, 2)).toEqual(['PRICE_SANITY', 'ACCEPTED']);
+    expect(h.appels).not.toContain('placeOrder');
+    expect(h.lignes.some((l) => /^rebalance : PRICE_SANITY — mid en direct 51010.005 a 2.0200 % de la cloture 50000/.test(l))).toBe(true);
+  });
+
+  it.each([
+    ['inexploitable pour BTC', { BTC: { kind: 'INEXPLOITABLE', reason: 'best_bid_ask[BTC-USDC] : asks : cote vide' }, ETH: CARNET_ETH } as const, /asks : cote vide/],
+    ['illisible', 'PANNE' as const, /lecture du carnet en echec — panne simulee/],
+  ])('critere 8 : un carnet %s rejette la production en PRICE_SANITY, et le run conclut', async (_nom, carnet, motif) => {
+    const h = harnais({ balances: JUSTE_HORS_BANDE, runDate: '2026-10-01', carnet });
+    const result = await lance(h);
+    const production = complete(result).outcomes.find((o) => o.strategy === 'rebalance');
+    const ecrite = h.table.get('2026-10-01|rebalance|false');
+
+    const rejets = production?.verdict.status === 'REJECTED' ? production.verdict.rejections : [];
+    // Illisible, le carnet manque aussi a la petite jambe ETH : elle est rejetee au meme motif.
+    expect(new Set(rejets.map((r) => r.code))).toEqual(new Set(['PRICE_SANITY']));
+    expect(rejets[0]).toEqual({ code: 'PRICE_SANITY', reason: expect.stringMatching(/^aucun prix de reference pour BTC/) as unknown as string, legIndex: 0 });
+    expect(ecrite?.verdict.status).toBe('REJECTED');
+    expect(ecrite?.intent.reason).toMatch(motif);
+    expect(h.lignes.some((l) => l.startsWith('carnet — BTC-USDC inexploitable') && motif.test(l))).toBe(true);
+    expect(h.lignes.some((l) => l.startsWith('rebalance : PRICE_SANITY — aucun prix de reference pour BTC'))).toBe(true);
+    expect(courrier(h).htmlContent).toContain('REJECTED:PRICE_SANITY');
+    expect(courrier(h).htmlContent).toMatch(motif);
+    expect(h.appels).not.toContain('placeOrder');
+    expect(corpsDuPing(h)).toContain(RUN_MARKER);
   });
 });
 
@@ -2662,7 +2756,7 @@ describe('DRY_RUN — des ports inertes a la place des vrais (E14, E15, E16)', (
     expect(essai.lignes.filter((l) => l.startsWith('ordre non place'))).toEqual(
       ordres.map(
         (o) =>
-          `ordre non place (port journalisant) : client_order_id=${o.clientOrderId} paire=BTC-USDC cote=SELL quantite=0.14 prix_limite=50050 post_only=true`,
+          `ordre non place (port journalisant) : client_order_id=${o.clientOrderId} paire=BTC-USDC cote=SELL quantite=0.14 prix_limite=50000 post_only=true`,
       ),
     );
   });
@@ -2674,6 +2768,14 @@ describe('DRY_RUN — des ports inertes a la place des vrais (E14, E15, E16)', (
     expect(essai.appels).toContain('orderStatus');
     expect(essai.appels).not.toContain('recordTransition');
     expect(essai.lignes).toContain('base inerte : transition FILLED de ubac-veille non ecrite');
+  });
+
+  it('critere 4 : lit le carnet pour de vrai, et l’ordre reste RETENU', async () => {
+    const essai = harnais(JOURNEE);
+    const result = complete(await enDryRun(essai));
+
+    expect(essai.appels).toContain('bestBidAsk');
+    expect(result.placements.map((p) => p.kind)).toEqual(['RETENU']);
   });
 
   /* L'identifiant du portefeuille n'est pas un secret : E8 le journalise a chaque run. */
@@ -2735,7 +2837,7 @@ describe('DRY_RUN — le journal dit « retenu », jamais « parti » (E15, E16)
       'ladder (shadow) : NONE, 0 jambe(s), risque ACCEPTED — RETENU',
       'dca (shadow) : NONE, 0 jambe(s), risque ACCEPTED — RETENU',
       `rebalance : ${ORDRE} RETENU`,
-      'alerte REBALANCE_EXECUTED : retenue, non envoyee (cle-facf1f2eb92f)',
+      'alerte REBALANCE_EXECUTED : retenue, non envoyee (cle-17f612ea44a2)',
       'alerte RECONCILIATION_DRIFT : retenue, non envoyee (cle-265248ae2ee3)',
       `rapport quotidien : retenu, non envoye — ${RAPPORT}`,
       'healthcheck : retenu, non envoye (CONCLU)',
@@ -2762,7 +2864,7 @@ describe('DRY_RUN — le journal dit « retenu », jamais « parti » (E15, E16)
       'ladder (shadow) : NONE, 0 jambe(s), risque ACCEPTED — RECORDED',
       'dca (shadow) : NONE, 0 jambe(s), risque ACCEPTED — RECORDED',
       `rebalance : ${ORDRE} PLACED`,
-      'alerte REBALANCE_EXECUTED : partie (cle-facf1f2eb92f)',
+      'alerte REBALANCE_EXECUTED : partie (cle-17f612ea44a2)',
       'alerte RECONCILIATION_DRIFT : partie (cle-265248ae2ee3)',
       `rapport quotidien : parti (HTTP 201) — ${RAPPORT}`,
       'healthcheck : pingue (CONCLU)',

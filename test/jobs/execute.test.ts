@@ -1,11 +1,12 @@
 import { Decimal } from 'decimal.js';
 import { describe, expect, it } from 'vitest';
 
-import type { CancelOutcome, CreateOrderBody, ExecutionPort, KnownOrderStatus } from '../../src/adapters/coinbase.js';
+import type { CancelOutcome, CreateOrderBody, ExecutionPort, Fourchette, KnownOrderStatus } from '../../src/adapters/coinbase.js';
 import type { OrderToRecord, PlacementToRecord, RecordOrderOutcome } from '../../src/adapters/db.js';
 import type { Order, Price, Quantity, UsdcAmount } from '../../src/core/types.js';
 import type { Annulation, Execution, IssueDeJambe } from '../../src/jobs/execute.js';
 import { annuler, auCarnet, ExecutionError, placer } from '../../src/jobs/execute.js';
+import { prixLimite } from '../../src/jobs/liquidate.js';
 
 /**
  * Le port et la base sont des doubles qui journalisent **le debut et la fin**
@@ -148,28 +149,29 @@ describe('execute — la cle primaire d’orders, seconde ligne de defense d’E
   });
 });
 
-describe('auCarnet — mid ± 0,1 %, du cote qui ne croise pas (E20)', () => {
-  const MIDS = { ETH: new Decimal('3000') as Price, BTC: new Decimal('64321.09') as Price };
+describe('prixLimite — au meilleur cote du carnet, sans marge (D2, critere 5)', () => {
+  const fourchette = (bid: string, ask: string): Fourchette => ({ bid: new Decimal(bid) as Price, ask: new Decimal(ask) as Price });
 
-  it('achete sous le mid et vend au-dessus : le signe, pas seulement l’ecart', () => {
-    const achat = auCarnet(ordre('a', 'BUY'), MIDS);
-    const vente = auCarnet(ordre('b', 'SELL'), MIDS);
-    expect(achat.limitPrice.lt(MIDS.ETH)).toBe(true);
-    expect(vente.limitPrice.gt(MIDS.ETH)).toBe(true);
-    expect(achat.limitPrice.toFixed()).toBe('2997');
-    expect(vente.limitPrice.toFixed()).toBe('3003');
+  it('achete au meilleur acheteur et vend au meilleur vendeur', () => {
+    const carnet = fourchette('2604.11', '2604.12');
+    expect(prixLimite('BUY', carnet).toFixed()).toBe('2604.11');
+    expect(prixLimite('SELL', carnet).toFixed()).toBe('2604.12');
   });
 
-  it('arrondit au pas en s’eloignant du mid, et la quantite vers le bas', () => {
-    const btc = { ...ordre('a', 'BUY'), asset: 'BTC' as const, quantity: new Decimal('0.123456789') as Quantity };
-    expect(auCarnet(btc, MIDS).limitPrice.toFixed()).toBe('64256.76');
-    expect(auCarnet({ ...btc, side: 'SELL' }, MIDS).limitPrice.toFixed()).toBe('64385.42');
-    expect(auCarnet(btc, MIDS).quantity.toFixed()).toBe('0.12345678');
+  it('arrondit au centime en s’eloignant du mid : vers le bas a l’achat, vers le haut a la vente', () => {
+    const carnet = fourchette('64321.0999', '64321.1001');
+    expect(prixLimite('BUY', carnet).toFixed()).toBe('64321.09');
+    expect(prixLimite('SELL', carnet).toFixed()).toBe('64321.11');
   });
+});
 
-  it('refuse un ordre sans mid exploitable', () => {
-    expect(() => auCarnet(ordre('a'), { BTC: MIDS.BTC })).toThrow(ExecutionError);
-    expect(() => auCarnet(ordre('a'), { ETH: new Decimal(0) as Price })).toThrow(ExecutionError);
+describe('auCarnet — la quantite au pas, le prix intouche (D3)', () => {
+  it('garde le prix valide et arrondit la quantite vers le bas', () => {
+    const btc = { ...ordre('a', 'BUY'), asset: 'BTC' as const, quantity: new Decimal('0.123456789') as Quantity, limitPrice: new Decimal('64321.09') as Price };
+    const parti = auCarnet(btc);
+    expect(parti.limitPrice).toBe(btc.limitPrice);
+    expect(parti.quantity.toFixed()).toBe('0.12345678');
+    expect(auCarnet({ ...btc, side: 'SELL' }).quantity.toFixed()).toBe('0.12345678');
   });
 });
 

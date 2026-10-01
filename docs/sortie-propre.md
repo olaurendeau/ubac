@@ -117,9 +117,15 @@ Le jour où l'une se ferme, son test devient rouge — c'est le signal.
   le type `Order` du noyau la fige sur le littéral `'USDC'` : `quote: 'EUR'` ne
   compile pas. Un solde EUR à l'entrée ne produit aucune ligne ; un ordre ouvert
   sur une paire `*-EUR` est retiré, ce qui n'est pas une cession.
-- **Limit post-only, mid + 0,1 % (§7).** Le signe de la marge est la moitié utile
-  du post-only : une vente sous le mid croiserait le carnet et serait rejetée.
-  Le drapeau `postOnly` est du type `true` ; `false` ne compile pas.
+- **Limit post-only, au meilleur vendeur du carnet (§7).** `SortieInput.carnet`
+  porte le carnet lu en direct des deux paires ; chaque cession vend au meilleur
+  vendeur, arrondi au centime supérieur, sans marge
+  ([ubac-prix-au-carnet.md](specs/ubac-prix-au-carnet.md), D6) : c'est le
+  post-only qui garantit que l'ordre ne croise pas, et une marge l'éloignait de
+  l'exécution. `MARGE_LIMITE_PCT` n'existe plus ; `prixLimite` est la seule
+  définition, partagée avec le run quotidien. Un carnet inexploitable pour un
+  actif détenu arrête le plan avec son motif. Le drapeau `postOnly` est du type
+  `true` ; `false` ne compile pas.
 - **`client_order_id` déterministe (§7).** Dérivé de `src/core/order-id.ts`,
   dans le domaine propre de la sortie, jamais recalculé.
 - **Plancher de `MIN_LEG_USDC`.** Sous 200 USDC, la ligne devient un **résidu**
@@ -130,7 +136,7 @@ Le jour où l'une se ferme, son test devient rouge — c'est le signal.
   montants sont des `Decimal` marqués. Les seuls `number` du module sont des
   compteurs et des rangs — numéros de phase, `leg_index`, nombre d'ordres
   retirés — comme le noyau tient déjà ses comptes de jours.
-  Un solde ou un mid non fini arrête le plan : `Decimal.lt` et
+  Un solde non fini arrête le plan : `Decimal.lt` et
   `Decimal.gt` répondent tous deux `false` sur `NaN`, donc aucun seuil ne mordrait
   et la cession sortirait avec une quantité indéfinie — même piège que le total
   non fini de `portfolio.ts`.

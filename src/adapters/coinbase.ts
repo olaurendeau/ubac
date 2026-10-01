@@ -2,6 +2,7 @@ import { Decimal } from 'decimal.js';
 import ccxt from 'ccxt';
 
 import type { Secrets } from '../config/env.js';
+import type { TradableAsset } from '../core/risk.js';
 import type { Order, Price, Quantity, Side, UsdcAmount } from '../core/types.js';
 
 /**
@@ -122,7 +123,7 @@ export function requireUsdcQuote(productId: string, contexte: string): ProductPa
   return { base, quote };
 }
 
-// --- Les six requetes -------------------------------------------------------
+// --- Les sept requetes ------------------------------------------------------
 
 /**
  * Les seules lectures que ce module sait formuler. Aucune ne place, n'annule ni
@@ -140,9 +141,10 @@ export type CoinbaseRoute =
       readonly endSeconds: number;
     }
   | { readonly kind: 'order'; readonly exchangeId: string }
-  | { readonly kind: 'fills'; readonly exchangeId: string; readonly cursor?: string };
+  | { readonly kind: 'fills'; readonly exchangeId: string; readonly cursor?: string }
+  | { readonly kind: 'best_bid_ask'; readonly products: readonly string[] };
 
-/** Les six `kind` ci-dessus, enumerables a l'execution pour le test de surface. */
+/** Les sept `kind` ci-dessus, enumerables a l'execution pour le test de surface. */
 export const READ_ROUTES = [
   'key_permissions',
   'accounts',
@@ -150,6 +152,7 @@ export const READ_ROUTES = [
   'daily_candles',
   'order',
   'fills',
+  'best_bid_ask',
 ] as const;
 
 /**
@@ -285,6 +288,9 @@ export function ccxtTransport(
             limit: PAGE_SIZE,
             ...(route.cursor === undefined ? {} : { cursor: route.cursor }),
           });
+        case 'best_bid_ask':
+          // Un seul appel pour les deux paires : `product_ids` repete dans la requete.
+          return exchange.v3PrivateGetBrokerageBestBidAsk({ product_ids: [...route.products] });
       }
     },
     async write(route: CoinbaseWriteRoute): Promise<unknown> {
@@ -448,8 +454,27 @@ export interface OrderFill {
   readonly tradeTime: Date;
 }
 
+/** Le meilleur acheteur et le meilleur vendeur d'une paire, en `Decimal`, `bid < ask`. */
+export interface Fourchette {
+  readonly bid: Price;
+  readonly ask: Price;
+}
+
 /**
- * La surface de lecture de Coinbase pour le reste du programme : cinq lectures
+ * Le carnet d'un actif, ou la raison pour laquelle il est inexploitable : paire
+ * absente, cote vide, prix non numerique ou non positif, `bid >= ask`. Ce n'est
+ * pas une erreur : la couche risque rejette alors la jambe en `PRICE_SANITY`
+ * (`docs/specs/ubac-prix-au-carnet.md`, D1).
+ */
+export type CoteAuCarnet =
+  | ({ readonly kind: 'COTE' } & Fourchette)
+  | { readonly kind: 'INEXPLOITABLE'; readonly reason: string };
+
+/** Le carnet des deux paires negociables, lu en un appel. */
+export type Carnet = Readonly<Record<TradableAsset, CoteAuCarnet>>;
+
+/**
+ * La surface de lecture de Coinbase pour le reste du programme : six lectures
  * et une fermeture. L'ecriture a la sienne, `ExecutionPort`, en fin de module.
  */
 export interface CoinbaseReader {
@@ -460,6 +485,8 @@ export interface CoinbaseReader {
   orderStatus(exchangeId: string): Promise<OrderStatus>;
   /** Ses executions, toutes pages suivies. */
   orderFills(exchangeId: string): Promise<readonly OrderFill[]>;
+  /** Le meilleur acheteur et le meilleur vendeur de BTC-USDC et ETH-USDC, en direct. */
+  bestBidAsk(): Promise<Carnet>;
   close(): Promise<void>;
 }
 
@@ -787,6 +814,52 @@ function fillFrom(raw: unknown, exchangeId: string): OrderFill {
   };
 }
 
+/** Les paires du carnet, dans l'ordre de la requete. */
+const PAIRES_DU_CARNET: Readonly<Record<TradableAsset, string>> = { BTC: 'BTC-USDC', ETH: 'ETH-USDC' };
+
+/** Le premier niveau d'un cote : `best_bid_ask` n'en rend qu'un. */
+function meilleurPrix(pricebook: Readonly<Record<string, unknown>>, cote: 'bids' | 'asks', contexte: string): Price {
+  const [niveau] = asList(pricebook[cote], `${contexte}.${cote}`);
+  if (niveau === undefined) throw new CoinbaseFrontierError(`${contexte}.${cote} : cote vide`);
+  const prix = decimalFromApi(asRecord(niveau, `${contexte}.${cote}[0]`)['price'], `${contexte}.${cote}[0].price`);
+  if (!prix.gt(0)) throw new CoinbaseFrontierError(`${contexte}.${cote}[0].price : prix non positif (${prix.toString()})`);
+  return prix as Price;
+}
+
+/**
+ * Une paire du carnet. Toute anomalie la rend `INEXPLOITABLE` avec son motif,
+ * et seulement elle : l'autre paire reste lisible, et le run conclut (D1).
+ */
+function coteDe(pricebooks: readonly unknown[], paire: string): CoteAuCarnet {
+  const contexte = `best_bid_ask[${paire}]`;
+  try {
+    const trouves = pricebooks.filter((brut) => asRecord(brut, 'best_bid_ask.pricebooks[]')['product_id'] === paire);
+    const [brut] = trouves;
+    if (brut === undefined || trouves.length > 1) {
+      return { kind: 'INEXPLOITABLE', reason: `${contexte} : ${String(trouves.length)} carnet(s) dans la reponse, un attendu` };
+    }
+    const pricebook = asRecord(brut, contexte);
+    const bid = meilleurPrix(pricebook, 'bids', contexte);
+    const ask = meilleurPrix(pricebook, 'asks', contexte);
+    if (bid.gte(ask)) {
+      return { kind: 'INEXPLOITABLE', reason: `${contexte} : bid ${bid.toFixed()} >= ask ${ask.toFixed()}, carnet croise` };
+    }
+    return { kind: 'COTE', bid, ask };
+  } catch (error) {
+    if (!(error instanceof CoinbaseFrontierError)) throw error;
+    return { kind: 'INEXPLOITABLE', reason: error.message };
+  }
+}
+
+/**
+ * Une reponse qui n'est pas un objet a `pricebooks` leve, comme toute lecture :
+ * c'est le run (`daily.ts`) qui en fait un carnet inexploitable pour les deux.
+ */
+function carnetFrom(raw: unknown): Carnet {
+  const pricebooks = asList(asRecord(raw, 'best_bid_ask')['pricebooks'], 'best_bid_ask.pricebooks');
+  return { BTC: coteDe(pricebooks, PAIRES_DU_CARNET.BTC), ETH: coteDe(pricebooks, PAIRES_DU_CARNET.ETH) };
+}
+
 // --- Pagination -------------------------------------------------------------
 
 /** `has_next` et `cursor` : la forme des soldes et des ordres. */
@@ -905,6 +978,12 @@ export function openCoinbase(transport: CoinbaseTransport, attendue: ExpectedKey
         curseurSeul,
       );
       return bruts.map((brut) => fillFrom(brut, exchangeId));
+    },
+
+    async bestBidAsk(): Promise<Carnet> {
+      await lirePermissions();
+      const products = [PAIRES_DU_CARNET.BTC, PAIRES_DU_CARNET.ETH];
+      return carnetFrom(await transport.read({ kind: 'best_bid_ask', products }));
     },
 
     close: () => transport.close(),
