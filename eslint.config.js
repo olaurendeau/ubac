@@ -96,6 +96,83 @@ const JOBS_IMPORT_PATTERN = {
     "jobs/ est le point d'entree executable : il compose les autres couches, aucune ne l'importe.",
 };
 
+// --- Le convoyeur (lot Y3 de ubac-convoyeur) ---------------------------------
+
+/**
+ * Un second arbre, pas un module d'Ubac (plan, point 1) : rien d'autre dans
+ * `src/` ne l'importe ; lui n'importe d'`adapters/` que `schema.ts` et
+ * `http.ts`, et de `core/` que des types. Ses fichiers purs prennent les regles
+ * du noyau (Y2, piege 3) ; seul le transport tient une instance ccxt.
+ * `test/convoyeur/frontiere.test.ts` tient chaque regle par sa fixture.
+ */
+const CONVOYEUR = ['src/convoyeur/**/*.ts'];
+const CONVOYEUR_PUR = ['src/convoyeur/regles.ts', 'src/convoyeur/types.ts'];
+const CONVOYEUR_TRANSPORT = ['src/convoyeur/coinbase.ts'];
+
+const CONVOYEUR_IMPORT_PATTERN = {
+  regex: '(^|/)convoyeur(/|$)',
+  message:
+    "le convoyeur est un agent distinct : aucune couche d'Ubac ne l'importe (ubac-convoyeur, point 1).",
+};
+
+/**
+ * La variante `@typescript-eslint` : son `allowTypeImports` admet `import type`
+ * depuis `core/`, et son nom n'ecrase pas les `no-restricted-imports` que les
+ * blocs d'Ubac posent deja (le dernier bloc gagne, regle par regle).
+ */
+function convoyeurImports(modulesNus) {
+  const nus = modulesNus.map((nom) => `(?!${nom.replace(/[.]/g, '\\.')}$)`).join('');
+  return [
+    'error',
+    {
+      patterns: [
+        {
+          regex: String.raw`^(\.\./)+(?!(adapters/(schema|http)|core/[\w/-]+)\.js$)`,
+          message:
+            "le convoyeur n'importe d'Ubac que adapters/schema.js, adapters/http.js et des types de core/.",
+        },
+        {
+          regex: String.raw`^(\.\./)+core/`,
+          allowTypeImports: true,
+          message: 'le convoyeur ne prend de core/ que des types : import type.',
+        },
+        {
+          regex: `^(?!\\.)${nus}`,
+          message: `module hors liste pour ce fichier du convoyeur (admis : ${modulesNus.join(', ')}).`,
+        },
+      ],
+    },
+  ];
+}
+
+/**
+ * CV4 : ni route v2 (envoi, retrait), ni `request` / `fetch` / `fetch2` de ccxt,
+ * qui signent n'importe quel chemin, ni ses sorties unifiees `withdraw` et
+ * `transfer`. Les litteraux attrapent `x['v2…']` et les chemins `/v2/`.
+ */
+const CONVOYEUR_SYNTAX = [
+  {
+    selector: [
+      'MemberExpression[property.name=/^(v2|request$|fetch$|fetch2$|withdraw$|transfer$)/]',
+      'MemberExpression[property.value=/^(v2|request$|fetch$|fetch2$|withdraw$|transfer$)/]',
+      'Property[key.name=/^v2/]',
+    ].join(', '),
+    message: 'CV4 : ni membre v2, ni requete generique, ni sortie unifiee de ccxt dans le convoyeur.',
+  },
+  {
+    selector: 'Literal[value=/^v2|\\x2Fv2\\x2F/], TemplateElement[value.raw=/^v2|\\x2Fv2\\x2F/]',
+    message: "CV4 : aucune route de l'API v2 dans le convoyeur, meme en chaine.",
+  },
+  {
+    selector: 'ImportExpression',
+    message: "le convoyeur n'importe pas dynamiquement : la liste des modules s'esquiverait.",
+  },
+];
+
+const CONVOYEUR_GLOBALS = ['fetch', 'XMLHttpRequest', 'WebSocket', 'globalThis', 'require'].map(
+  (name) => ({ name, message: 'le convoyeur ne parle au reseau que par son transport enumere.' }),
+);
+
 export default tseslint.config(
   {
     ignores: ['node_modules/**', 'coverage/**', 'dist/**'],
@@ -108,7 +185,8 @@ export default tseslint.config(
     },
   },
   {
-    files: CORE,
+    // Les regles pures du convoyeur prennent celles du noyau telles quelles.
+    files: [...CORE, ...CONVOYEUR_PUR],
     rules: {
       'no-restricted-imports': [
         'error',
@@ -126,6 +204,7 @@ export default tseslint.config(
               message:
                 'core ne connait que des interfaces : aucun import depuis adapters/ ou jobs/.',
             },
+            CONVOYEUR_IMPORT_PATTERN,
           ],
         },
       ],
@@ -186,9 +265,48 @@ export default tseslint.config(
       'src/jobs/**/*.ts',
       'src/replay/**/*.ts',
       'src/fixture/**/*.ts',
+      ...CONVOYEUR_PUR,
     ],
     rules: {
-      'no-restricted-imports': ['error', { patterns: [JOBS_IMPORT_PATTERN] }],
+      'no-restricted-imports': ['error', { patterns: [JOBS_IMPORT_PATTERN, CONVOYEUR_IMPORT_PATTERN] }],
+    },
+  },
+
+  {
+    files: ['src/jobs/**/*.ts', 'src/replay/**/*.ts', 'src/fixture/**/*.ts'],
+    rules: { 'no-restricted-imports': ['error', { patterns: [CONVOYEUR_IMPORT_PATTERN] }] },
+  },
+
+  {
+    files: CONVOYEUR,
+    plugins: { '@typescript-eslint': tseslint.plugin },
+    rules: { '@typescript-eslint/no-restricted-imports': convoyeurImports(['decimal.js']) },
+    linterOptions: { noInlineConfig: true },
+  },
+  {
+    files: CONVOYEUR_PUR,
+    rules: { '@typescript-eslint/no-restricted-imports': convoyeurImports(['decimal.js', 'node:crypto']) },
+  },
+  {
+    files: CONVOYEUR,
+    ignores: CONVOYEUR_PUR,
+    rules: {
+      'no-restricted-syntax': ['error', ...CONVOYEUR_SYNTAX],
+      'no-restricted-globals': ['error', ...CONVOYEUR_GLOBALS],
+    },
+  },
+  {
+    files: CONVOYEUR_TRANSPORT,
+    rules: {
+      '@typescript-eslint/no-restricted-imports': convoyeurImports(['decimal.js', 'ccxt']),
+      'no-restricted-syntax': [
+        'error',
+        ...CONVOYEUR_SYNTAX,
+        {
+          selector: "MemberExpression[computed=true][property.type!='Literal']",
+          message: "CV4 : aucun acces calcule dans le transport, l'instance ccxt s'y lirait par un nom construit.",
+        },
+      ],
     },
   },
 

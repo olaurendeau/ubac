@@ -1,0 +1,12 @@
+// CV4 : chaque ligne est une facon d'atteindre la v2 ou une sortie de ccxt.
+export async function sortie(exchange) {
+  await exchange.v2PrivatePostAccountsAccountIdTransactions({ to: 'ailleurs' });
+  await exchange.v2_private_get_accounts();
+  await exchange['v2PrivateGetAccounts']();
+  const { v2PrivateGetAccountsAccountIdTransactions } = exchange;
+  await exchange.request('accounts', ['v2', 'private'], 'POST');
+  await exchange.fetch2('/v2/accounts');
+  await exchange.withdraw('USDC', 1, 'adresse');
+  await exchange.transfer('USDC', 1, 'a', 'b');
+  return `${'x'}/v2/accounts`;
+}
