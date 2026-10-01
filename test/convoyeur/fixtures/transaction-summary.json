@@ -1,0 +1,10 @@
+{
+  "_fabrique": "FABRIQUEE, PAS CAPTUREE (T2, lot Y3 de ubac-convoyeur). La cle du convoyeur n'existe pas encore : forme calquee sur la documentation CDP citee par la spec (S5 a S7) et sur les captures d'Ubac. A remplacer par une capture apres le premier convoyage reel (OP6).",
+  "total_volume": 0,
+  "total_fees": 0,
+  "fee_tier": {
+    "pricing_tier": "Advanced 1",
+    "taker_fee_rate": "0.006",
+    "maker_fee_rate": "0.004"
+  }
+}

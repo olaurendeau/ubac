@@ -1,0 +1,22 @@
+{
+  "_fabrique": "FABRIQUEE, PAS CAPTUREE (T2, lot Y3 de ubac-convoyeur). La cle du convoyeur n'existe pas encore : forme calquee sur la documentation CDP citee par la spec (S5 a S7) et sur les captures d'Ubac. A remplacer par une capture apres le premier convoyage reel (OP6).",
+  "accounts": [
+    {
+      "uuid": "00000000-0000-4000-8000-0000000000e1",
+      "currency": "EUR",
+      "available_balance": { "value": "250.07", "currency": "EUR" },
+      "hold": { "value": "0.1", "currency": "EUR" },
+      "retail_portfolio_id": "00000000-0000-4000-8000-0000000000a1"
+    },
+    {
+      "uuid": "00000000-0000-4000-8000-0000000000e2",
+      "currency": "USDC",
+      "available_balance": { "value": "0.2", "currency": "USDC" },
+      "hold": { "value": "0", "currency": "USDC" },
+      "retail_portfolio_id": "00000000-0000-4000-8000-0000000000a1"
+    }
+  ],
+  "has_next": false,
+  "cursor": "",
+  "size": 2
+}

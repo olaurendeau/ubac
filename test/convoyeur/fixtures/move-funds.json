@@ -1,0 +1,5 @@
+{
+  "_fabrique": "FABRIQUEE, PAS CAPTUREE (T2, lot Y3 de ubac-convoyeur). La cle du convoyeur n'existe pas encore : forme calquee sur la documentation CDP citee par la spec (S5 a S7) et sur les captures d'Ubac. A remplacer par une capture apres le premier convoyage reel (OP6).",
+  "source_portfolio_uuid": "00000000-0000-4000-8000-0000000000a1",
+  "target_portfolio_uuid": "00000000-0000-4000-8000-0000000000a2"
+}
