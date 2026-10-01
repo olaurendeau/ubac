@@ -24,7 +24,7 @@ Ce que le dépôt porte déjà, et qu'aucun lot ne refait :
 | Refus de toute clé qui transfère | `src/adapters/coinbase.ts`, `permissionsFrom` | K1 : la clé du convoyeur posée dans Ubac est refusée avant toute lecture. **CV3 cite la sonde existante**, aucun lot ne la réécrit |
 | Fenêtre de flux faite d'instants | `src/jobs/snapshot.ts`, `netFlow()` | K3 : une ligne horodatée à l'instant du transfert tombe dans `]photo, run]` quelle que soit l'heure (CV12) |
 | Gel de A sur tout apport | `src/core/strategy/rebalance.ts`, `lastFunding()` | K4 : la ligne du convoyeur gèle déjà (CV14). **Le noyau n'est pas touché** |
-| « Derniers apports » | `src/report/daily-report.ts` (#73) | K8 : l'apport du convoyeur apparaît au rapport sans rien toucher |
+| « Derniers mouvements » | `src/report/daily-report.ts` (#73, #76) | K8 : l'apport du convoyeur apparaît au rapport sans rien toucher |
 | Idempotence par la base | `src/adapters/db.ts`, `isUniqueViolation` | le motif de l'index **nommé et exporté**, repris pour `cash_flows` et pour le journal |
 | Ports inertes, mode au seul point de composition | `src/adapters/inertes.ts`, `src/jobs/daily-main.ts` (S5) | la forme du `DRY_RUN` du convoyeur (CV16) |
 | Canal ntfy et client HTTP borné | `src/adapters/notifier.ts`, `src/adapters/http.ts` | le canal d'Ubac, et `HttpSend` avec son délai |
@@ -187,7 +187,7 @@ spec du convoyeur rend nécessaire.
 | N1 | suite optionnelle | inutile à l'apport (DC1) ; utile pour une devise égarée |
 | N3, N4, M1 | suite optionnelle | outil des retraits (F16, moitié retrait). M1 est sans objet pour le convoyeur (Q7) |
 | N5 à N8 | suite optionnelle | hors du chemin de l'apport ; filet de U9 |
-| N9 | suite optionnelle | partiellement fait par #73 |
+| N9 | suite optionnelle | partiellement fait par #73 et #76 (retraits compris) ; reste l'origine |
 | N10, part « flux détecté » | suite optionnelle | dépend de N8 |
 
 **Les questions G1 à G4 ne sont pas reposées**, aucune n'étant nécessaire à un
@@ -881,7 +881,7 @@ aucun lockfile ni fichier généré attendu.
 Non replanifiée ici. Le plan `docs/plans/ubac-flux-non-enregistres.md` (branche
 `olaurendeau/ubac-flux-cadrage`) reste l'hypothèse de départ, à revoir contre ce
 qui aura été livré : **N1** (devise égarée), **N3, N4** (saisie des retraits),
-**N5 à N8** (détection, filet de U9), **N9** (origine et retraits au rapport),
+**N5 à N8** (détection, filet de U9), **N9** (origine au rapport ; les retraits y sont depuis #76),
 **N10**, part « flux détecté ». Ses questions **G1 à G4** et sa mesure **M1** ne
 se posent qu'avec eux. Rien de ce plan ne les bloque, et Y1 leur donne le schéma.
 
