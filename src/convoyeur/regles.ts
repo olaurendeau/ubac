@@ -363,8 +363,8 @@ export interface CompteRendu {
   /** Derniere etape ecrite ; absente si rien n'a ete ecrit (refus avant tout). */
   readonly etape: Etape | undefined;
   readonly achat: Achat | undefined;
-  /** L'EUR disponible laisse dans *Primary* a la fin du passage. */
-  readonly eurLaisse: EurAmount;
+  /** L'EUR disponible laisse dans *Primary*, au dernier solde lu ; absent si aucun ne l'a ete. */
+  readonly eurLaisse: EurAmount | undefined;
   readonly motif: string | undefined;
 }
 
@@ -374,8 +374,8 @@ export interface Notification {
   readonly priorite: Priorite;
 }
 
-function montant(valeur: Decimal | undefined, devise: string): string {
-  return valeur === undefined ? 'aucun' : `${valeur.toFixed()} ${devise}`;
+function montant(valeur: Decimal | undefined, devise: string, absent = 'aucun'): string {
+  return valeur === undefined ? absent : `${valeur.toFixed()} ${devise}`;
 }
 
 /**
@@ -399,7 +399,7 @@ export function notification(compteRendu: CompteRendu, marque?: string): Notific
     `USDC recu : ${montant(achat?.filledSize, 'USDC')}`,
     `frais : ${montant(achat?.totalFees, 'EUR')}`,
     `etape atteinte : ${etape ?? 'aucune'}`,
-    `EUR laisse dans Primary : ${montant(eurLaisse, 'EUR')}`,
+    `EUR laisse dans Primary : ${montant(eurLaisse, 'EUR', 'non lu')}`,
     ...(motif === undefined ? [] : [`motif : ${motif}`]),
   ];
   if (etape !== undefined) {

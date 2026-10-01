@@ -33,7 +33,9 @@ function ruleCounts(result: ESLint.LintResult): Record<string, number> {
 }
 
 const TRANSPORT = 'src/convoyeur/coinbase.ts';
-const AUTRE = 'src/convoyeur/passage.ts';
+/** Un fichier du convoyeur sans bloc propre (le futur point d'entree d'Y5). */
+const AUTRE = 'src/convoyeur/main.ts';
+const PASSAGE = 'src/convoyeur/passage.ts';
 const PUR = 'src/convoyeur/regles.ts';
 const BASE = 'src/convoyeur/base.ts';
 
@@ -198,6 +200,29 @@ describe('les regles du convoyeur sont pures : celles du noyau s’y appliquent'
       '@typescript-eslint/no-restricted-imports': 6,
       'no-restricted-imports': 2,
       'no-restricted-syntax': 2,
+    });
+  });
+});
+
+describe('frontiere du convoyeur — le passage n’a pas d’horloge (Y4b)', () => {
+  it('refuse l’horloge, l’aleatoire et l’acces calcule a Date ou Math', async () => {
+    expect(ruleCounts(await lint('bad-clock', PASSAGE))).toEqual({ 'no-restricted-syntax': 5 });
+    expect((await lint('bad-clock', AUTRE)).messages).toEqual([]);
+  });
+
+  it('refuse les minuteurs et les globales d’horloge ou d’IO', async () => {
+    for (const nom of ['setTimeout', 'setInterval', 'setImmediate', 'performance', 'process', 'crypto', 'console']) {
+      const [result] = await eslint.lintText(`export const x = ${nom};`, { filePath: resolve(ROOT, PASSAGE) });
+      expect(result === undefined ? {} : ruleCounts(result), nom).toEqual({ 'no-restricted-globals': 1 });
+    }
+  });
+
+  it('garde la regle v2 et la liste des imports du convoyeur', async () => {
+    expect(ruleCounts(await lint('convoyeur-bad-v2', PASSAGE))).toEqual({ 'no-restricted-syntax': 12 });
+    expect((await lint('convoyeur-good-module', PASSAGE)).messages).toEqual([]);
+    expect(ruleCounts(await lint('convoyeur-bad-imports', PASSAGE))).toEqual({
+      '@typescript-eslint/no-restricted-imports': 6,
+      'no-restricted-imports': 1,
     });
   });
 });

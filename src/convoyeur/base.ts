@@ -127,14 +127,19 @@ export function ligneJournal(e: EtapeAEcrire): LigneJournal {
   }
 }
 
-/** `EN_PANNE` clot un convoyage ; sinon l'etape la plus avancee est la derniere. */
+/**
+ * L'etape la plus avancee est la derniere. `EN_PANNE` clot ce que le passage
+ * avait ouvert ; `ENREGISTRE` clot tout, y compris une panne : c'est le geste
+ * de l'operateur qui a retabli DC6 (`docs/convoyeur.md` §8), et le passage, lui,
+ * n'ecrit jamais `EN_PANNE` apres `ENREGISTRE`.
+ */
 const RANG: Readonly<Record<Etape, number>> = {
   ACHAT_DEMANDE: 0,
   ACHETE: 1,
   TRANSFERT_DEMANDE: 2,
   TRANSFERE: 3,
-  ENREGISTRE: 4,
-  EN_PANNE: 5,
+  EN_PANNE: 4,
+  ENREGISTRE: 5,
 };
 
 function requis<T>(valeur: T | null | undefined, quoi: string): T {

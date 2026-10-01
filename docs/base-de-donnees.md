@@ -393,7 +393,7 @@ fichier de son arbre qui importe `drizzle-orm` et `pg` (`eslint.config.js`).
 
 | Opération | Ce qu'elle fait |
 |---|---|
-| `dernierConvoyage()` | les lignes du jour le plus récent du journal, lues en leur étape la plus avancée (`EN_PANNE` clôt) ; `undefined` si le journal est vide |
+| `dernierConvoyage()` | les lignes du jour le plus récent du journal, lues en leur étape la plus avancée (`EN_PANNE` clôt le passage, `ENREGISTRE` clôt tout, panne comprise : [convoyeur.md](convoyeur.md) §8) ; `undefined` si le journal est vide |
 | `ecrireEtape(etape)` | ajoute une ligne au journal ; `ALREADY_RECORDED` sur `convoyeur_journal_convoyage_step_key` ou `convoyeur_journal_day_key` |
 | `ecrireApport(apport)` | ajoute la ligne `cash_flows` du convoyage ; `ALREADY_RECORDED` sur `cash_flows_natural_key_key` |
 | `close()` | ferme le pool |

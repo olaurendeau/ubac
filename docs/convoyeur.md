@@ -316,7 +316,45 @@ l'opérateur agit trop tôt : un passage qui ne voit plus d'EUR ne prouve rien.
    et le transfert qu'il aurait faits), le constat que rien n'a bougé avant le
    geste, et le rapport d'Ubac du lendemain.
 
-## 8. Après une alerte `urgent` : le geste de reprise
+## 8. Le passage, et le geste de reprise après une alerte `urgent`
+
+### Le passage (`src/convoyeur/passage.ts`, Y4b)
+
+Un passage lit la clé (CV1), puis le journal, puis les soldes de *Primary*, et
+fait **une chose au plus** : finir le convoyage que le journal laisse ouvert,
+ou en commencer un (DC6, DC8). Chaque étape d'annonce est écrite **avant**
+l'appel : `ACHAT_DEMANDE` avant l'ordre, `TRANSFERT_DEMANDE` avant
+`move_funds`. Entre deux étapes, la table de reprise du
+[plan](plans/ubac-convoyeur.md#3-la-reprise-se-lit-sur-lexchange-et-linstant-dun-transfert-repris-aussi)
+relit l'exchange.
+
+- **Les tentatives** : une lecture et l'achat font quatre essais au plus, à 3 s
+  d'intervalle ; l'achat, sous le même `client_order_id`, ne crée jamais un
+  second ordre (S5). L'ordre se relit quatre fois avant d'être dit « non
+  rempli ».
+- **`move_funds` part une fois par passage au plus**, levé ou non : ensuite le
+  passage relit le solde de *Primary* (0 : fait ; `filled_size` : non
+  constaté) et ne rappelle jamais. S'il le faut, c'est le passage suivant qui
+  transfère, l'USDC étant encore là (DC3).
+- **L'instant de l'apport** (DC5) est celui de la `TRANSFERT_DEMANDE` du
+  passage qui a appelé `move_funds`. Un transfert **refait** par un passage
+  ultérieur prend l'instant de sa propre demande, pas celui de la première,
+  restée sans effet : l'apport tombe dans la fenêtre où l'USDC arrive. Un
+  transfert trouvé **fait** à la reprise prend l'instant de la demande écrite
+  au journal.
+- **Où il s'arrête** : une erreur qui survit à ses tentatives, ou un ordre
+  encore ouvert, arrête le passage sur l'étape écrite, `urgent`, et le passage
+  suivant reprend seul. Un refus d'achat de l'exchange (`success: false`) en
+  fait partie : il se retente sous le même identifiant, puis s'arrête à
+  `ACHAT_DEMANDE`. **`EN_PANNE`** est réservé à ce que la table dit incohérent
+  (USDC relu ni nul ni `filled_size`, USDC parti sans demande) et à un ordre
+  clos sans être rempli ; rien ne reprend alors sans l'opérateur.
+- **Le délai du job** : au pire 25 appels à l'exchange au délai ccxt de 10 s,
+  sept séries d'écriture en base et 117 s de pauses, environ 6 min. La
+  définition Scaleway (OP4) a un délai de **10 min** et **aucune tentative** :
+  un passage tué se reprend au suivant, jamais par un relancement automatique.
+
+### Après une alerte `urgent`
 
 En `DRY_RUN`, rien n'est écrit : seuls un refus (clé, USDC étranger) ou une
 panne de lecture peuvent être `urgent`. Ce qui suit vaut **en réel**.
@@ -342,8 +380,30 @@ journal et les soldes relus (DC3, DC6) ; le geste de l'opérateur est surtout de
 | `TRANSFERT_DEMANDE`, `TRANSFERE` | l'USDC sans sa ligne : une fausse performance, définitive (K3) | **relancer le passage avant 07:00**, en réel (§6), puis lire `ENREGISTRE` dans sa notification |
 | `EN_PANNE`, ou refus « USDC étranger » | à constater | relever *Primary* (EUR, USDC), `ubac-agent` (USDC) et les dernières lignes de `cash_flows` ; rapporter dans Orca ; **rien ne reprend seul** |
 
-La clôture d'un convoyage `EN_PANNE`, une fois l'état rétabli par l'opérateur,
-est fixée avec le passage (Y4b) et documentée ici à sa livraison.
+### Clore un convoyage `EN_PANNE`
+
+`EN_PANNE` est redit, `urgent`, à chaque passage, et aucun convoyage ne
+commence tant qu'il n'est pas clos. La clôture est **une ligne `ENREGISTRE`
+ajoutée** au convoyage en panne : le journal reste en ajout seul, et
+`ENREGISTRE` l'emporte sur `EN_PANNE` à la relecture. Dans l'ordre :
+
+1. **rétablir DC6** à la main, d'après les relevés : ou bien l'USDC acheté est
+   dans `ubac-agent` **et** a sa ligne `cash_flows` (saisie comme aujourd'hui,
+   à l'instant du transfert, **avant** le run de 07:00), ou bien ni l'un ni
+   l'autre ;
+2. **laisser *Primary* sans USDC** : le passage suivant lirait un reste comme
+   étranger (CV10) ;
+3. **clore**, avec la chaîne d'Ubac et le `psql` du §5, `<jour>` étant le
+   convoyage dit par la notification :
+
+   ```sql
+   INSERT INTO convoyeur_journal (convoyage, day, step, occurred_at, reason)
+   SELECT convoyage, day, 'ENREGISTRE', now(), 'clos par l''operateur : <constat>'
+   FROM convoyeur_journal WHERE day = '<jour>' AND step = 'EN_PANNE';
+   ```
+
+4. **rapporter dans Orca** les relevés et le constat. Le passage suivant
+   reprend le cours normal : convoyage du jour si l'EUR est là.
 
 Une alerte reçue après 07:00, ou un passage qui n'a pas tourné, laisse le run
 lire un apport sans sa ligne : c'est la panne muette (U9), visible, pas
