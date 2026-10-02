@@ -63,6 +63,9 @@ export function ordreEnAttente(overrides: Partial<PendingOrderRecord> = {}): Pen
     requestedQty: qty('0.5'),
     limitPrice: new Decimal('60000') as Price,
     createdAt: new Date('2026-09-10T07:00:00.000Z'),
+    filledQty: qty('0'),
+    filledPrice: null,
+    fees: new Decimal('0') as UsdcAmount,
     ...overrides,
   };
 }
