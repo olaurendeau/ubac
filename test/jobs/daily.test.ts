@@ -2522,6 +2522,9 @@ function ligneDeLaVeille(overrides: Partial<PendingOrderRecord> = {}): PendingOr
     requestedQty: qty('0.14'),
     limitPrice: price('50050'),
     createdAt,
+    filledQty: qty('0'),
+    filledPrice: null,
+    fees: new Decimal('0') as UsdcAmount,
     ...overrides,
   };
 }
