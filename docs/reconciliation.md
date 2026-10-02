@@ -160,6 +160,54 @@ capturé en fixture au lot Q3.
 Les soldes comparés sont `available + hold` : le gelé d'un ordre ouvert reste
 détenu, l'exclure ferait baisser la valeur du portefeuille à chaque ordre en vol.
 
+## 2 bis. Le cache inclut nos propres exécutions
+
+### Ce qui s'est passé en réel
+
+Le rapport du 2026-10-02 a déclaré `ETAT_RESYNCHRONISE` : BTC +14 %, ETH +13 %,
+USDC −24 %, « le portefeuille a bougé hors du système ». C'était faux. La veille,
+le rééquilibrage avait acheté environ 0,0047 BTC et 0,100 ETH contre environ
+659 USDC, et rien d'autre n'avait bougé.
+
+### Pourquoi
+
+La photo du jour est calculée à l'étape 4bis, sur les soldes que la
+réconciliation vient de lire, donc **avant** que l'étape 6 place quoi que ce
+soit. Elle ne contient jamais les exécutions des ordres qu'elle précède. Le
+lendemain, comparer les soldes réels à cette photo brute faisait de chaque
+exécution un mouvement extérieur : l'alerte sonnait après chaque jour
+d'exécution et ne distinguait plus un vrai mouvement extérieur.
+
+### Ce qui se passe maintenant
+
+L'état interne comparé est **la photo précédente plus ce que nos ordres ont
+exécuté depuis**. Pour chaque ordre ouvert en base dont l'exchange a rendu un
+statut lisible (section 4), la part nouvelle est la différence entre ce que
+l'exchange dit maintenant et ce que la dernière transition écrite avait déjà
+constaté (`orders.filled_qty`, `filled_price`, `fees`) :
+
+- achat : l'actif monte de la quantité nouvelle ; l'USDC baisse de la valeur
+  nouvelle (quantité × prix moyen) et des frais nouveaux ;
+- vente : l'actif baisse ; l'USDC monte de la valeur nouvelle, frais nouveaux
+  déduits.
+
+Un partiel sur deux runs ne compte donc qu'une fois. Le seuil et la comparaison
+ligne à ligne (section 2) ne changent pas, et seul l'écart restant déclenche la
+resynchronisation.
+
+### Ce que cela ne couvre pas
+
+- **Un ordre `INDETERMINABLE` n'apporte rien** : son exécution ne se devine
+  pas, et l'écart qu'il laisse doit rester visible.
+- **Les `cash_flows` ne sont pas ajoutés.** Un apport saisi à la main peut
+  dater d'avant ou d'après la photo qui le contient déjà ; l'ajouter
+  risquerait de le compter deux fois. Un apport reste donc un mouvement
+  extérieur déclaré, ce qu'il est.
+- **Les lectures de l'exchange ne sont pas atomiques.** Une exécution entre la
+  lecture des soldes et celle du statut se retrouve dans la part de l'un des
+  deux runs. L'écart est borné par une exécution partielle, et le seuil de 1 %
+  l'absorbe en pratique.
+
 ## 3. L'annulation des ordres d'un run antérieur, et le garde de l'étape 6 (S8b)
 
 **La règle ([ubac-prix-au-carnet.md](specs/ubac-prix-au-carnet.md), D5).** Tout

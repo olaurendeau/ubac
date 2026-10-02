@@ -2522,6 +2522,9 @@ function ligneDeLaVeille(overrides: Partial<PendingOrderRecord> = {}): PendingOr
     requestedQty: qty('0.14'),
     limitPrice: price('50050'),
     createdAt,
+    filledQty: qty('0'),
+    filledPrice: null,
+    fees: new Decimal('0') as UsdcAmount,
     ...overrides,
   };
 }
@@ -2838,7 +2841,7 @@ describe('DRY_RUN — le journal dit « retenu », jamais « parti » (E15, E16)
       'dca (shadow) : NONE, 0 jambe(s), risque ACCEPTED — RETENU',
       `rebalance : ${ORDRE} RETENU`,
       'alerte REBALANCE_EXECUTED : retenue, non envoyee (cle-17f612ea44a2)',
-      'alerte RECONCILIATION_DRIFT : retenue, non envoyee (cle-265248ae2ee3)',
+      'alerte RECONCILIATION_DRIFT : retenue, non envoyee (cle-6a15144a4518)',
       `rapport quotidien : retenu, non envoye — ${RAPPORT}`,
       'healthcheck : retenu, non envoye (CONCLU)',
     ]);
@@ -2865,7 +2868,7 @@ describe('DRY_RUN — le journal dit « retenu », jamais « parti » (E15, E16)
       'dca (shadow) : NONE, 0 jambe(s), risque ACCEPTED — RECORDED',
       `rebalance : ${ORDRE} PLACED`,
       'alerte REBALANCE_EXECUTED : partie (cle-17f612ea44a2)',
-      'alerte RECONCILIATION_DRIFT : partie (cle-265248ae2ee3)',
+      'alerte RECONCILIATION_DRIFT : partie (cle-6a15144a4518)',
       `rapport quotidien : parti (HTTP 201) — ${RAPPORT}`,
       'healthcheck : pingue (CONCLU)',
     ]);
