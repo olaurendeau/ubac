@@ -24,11 +24,9 @@ modifient ; les critères J1 à J9 en tiennent lieu de critères d'acceptation.
 - **D4 (date d'un ordre) = 1** : `settled_at`, ou `created_at` tant que l'ordre
   est ouvert (`PARTIAL`).
 
-Ajustement technique (pas un changement de besoin) : le **montant d'un ordre
-est `filled_qty × filled_price`, hors frais** ; les frais sont donnés dans la
-colonne Détail. Ajouter les frais au montant donnerait un nombre qui ne
-correspond à aucun prix affiché. Si l'opérateur veut le net, c'est une ligne à
-changer dans le rendu.
+- **D5 (frais) = 1**, tranchée le 2026-10-03 : le **montant d'un ordre est
+  `filled_qty × filled_price`, hors frais** ; les frais sont donnés dans la
+  colonne Détail.
 
 ## État de départ, constaté
 
@@ -131,7 +129,7 @@ le merge de #90**. #89 et #91 ne touchent aucun fichier du lot.
   - Signe d'un ordre : `usdc()` rend déjà le signe d'un négatif (figé par
     #76) ; un test fige `-412.30 USDC` pour un achat.
   - Le rendu reste sans accent (`Detail`, `a`).
-- **Décisions préalables** : D1 à D4, tranchées.
+- **Décisions préalables** : D1 à D5, tranchées.
 
 ## Couverture
 
