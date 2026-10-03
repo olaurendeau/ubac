@@ -78,8 +78,8 @@ divergence rougit **sur le poste**, pas six mois plus tard.
 ## 3. Le garde-fou : `test/ci/workflow.test.ts`
 
 Il fait partie de `make test`. Il lit les workflows, `package.json`, les deux
-`Dockerfile`, `src/config/env.ts` et les seuils de `vitest.config.ts`, et tient
-vingt-deux règles :
+`Dockerfile`, `src/config/env.ts`, les deux scripts de `scripts/deploiement/` et
+les seuils de `vitest.config.ts`, et tient vingt-quatre règles :
 
 | Règle | Ce qu'elle refuse |
 |---|---|
@@ -104,11 +104,12 @@ vingt-deux règles :
 | Provenance | un checkout sans l'historique de `main` ; un tag déployé sans `git merge-base --is-ancestor HEAD origin/main` ; un CLI `scw` non vérifié contre son empreinte ; toute action autre que `actions/checkout` |
 | Écriture | toute commande `scw` autre que les trois lectures vers un fichier de `$RUNNER_TEMP` et **la** mise à jour de la seule image |
 | Configuration du CLI | une étape qui appelle `scw` sans `SCW_DEFAULT_ORGANIZATION_ID` et `SCW_DEFAULT_PROJECT_ID` valant exactement `${{ vars.… }}` du même nom, dans l'`env` du workflow, du job ou de l'étape — sans organisation, le CLI refuse toute commande |
+| Appels | une étape `controles` ou `relecture` dont le `run` n'est pas exactement `./scripts/deploiement/controles.sh` ou `./scripts/deploiement/relecture.sh` ; un `CPU_MVCPU`, `MEMOIRE_MIO`, `DELAI_S`, `TENTATIVES`, `DECLENCHEUR` ou `FENETRE_MIN` autre que les valeurs d'Ubac (140, 256, 300, 0, `daily`, 15) ; une commande `scw` dans l'un des deux scripts |
 | Variables | une liste `VARIABLES` des contrôles différente des variables sans défaut de `src/config/env.ts` |
 | Concurrence | un groupe sans `github.ref`, ou une annulation inconditionnelle qui interromprait `main` |
 
 Chaque règle a au moins une **sonde** : une mutation du dépôt réel, appliquée
-en mémoire, qui doit la faire rougir. Soixante-six sondes, dont les quatre
+en mémoire, qui doit la faire rougir. Soixante-neuf sondes, dont les quatre
 mutations exigées par le plan — retirer `needs: test`, remplacer la couverture
 par `npm test`, écrire `drizzle-kit` dans un workflow, faire diverger la version
 de Node. Les seize sondes de R2 comprennent les trois mutations exigées par son
@@ -118,11 +119,14 @@ sien : `push` sur `main` ajouté aux déclencheurs de `deploy`, la relecture
 retirée, les variables d'environnement passées dans la mise à jour. Les quatre
 du correctif de v0.3.0 : l'organisation retirée, le projet retiré,
 l'organisation passée par un secret, la configuration posée sur la seule
-lecture avant.
+lecture avant. Les trois d'Y7a, dont la mutation exigée par son plan :
+`FENETRE_MIN` changé dans l'appel des contrôles, la relecture remplacée par une
+ligne qui ne relit rien, une écriture `scw` cachée dans un script.
 
 Le garde-fou prouve que les étapes de `deploy` sont là ; `test/ci/deploiement.test.ts`
 prouve qu'elles mordent : il **exécute** les contrôles et la relecture tels que
-le YAML les écrit, sur des lectures Scaleway fabriquées (§8).
+le YAML les appelle — le `run` de l'étape et son `env` —, sur des lectures
+Scaleway fabriquées (§8).
 
 Le garde-fou lit **ce que les fichiers disent**, pas ce que GitHub exécute : voir
 les limites.
@@ -326,6 +330,19 @@ R4, et lui seul, ouvrira `main`.
 | `mise-a-jour` | `scw jobs definition update … image-uri=…`, **et rien d'autre** : des `environment-variables` remplaceraient la table entière chez Scaleway |
 | `apres` | les trois mêmes lectures |
 | `relecture` | l'image relue est la nouvelle, et **tout le reste est identique à avant** : réglages, variables, déclencheur, secrets. Un écart se nomme par sa clé, jamais par sa valeur |
+
+**Des scripts du dépôt, des valeurs dans l'appel** (lot Y7a). Les étapes
+`controles` et `relecture` exécutent `scripts/deploiement/controles.sh` et
+`scripts/deploiement/relecture.sh`, extraits du YAML **à comportement
+constant** : mêmes lectures, mêmes motifs, mêmes sorties — les attentes de
+`test/ci/deploiement.test.ts` n'ont pas bougé d'un caractère. Les scripts sont
+paramétrés par leur environnement ; les valeurs d'Ubac (`CPU_MVCPU`,
+`MEMOIRE_MIO`, `DELAI_S`, `TENTATIVES`, `DECLENCHEUR`, `FENETRE_MIN`,
+`VARIABLES`) restent épinglées dans l'`env` de l'étape `controles`, et le
+garde-fou (§3, règle « Appels ») refuse qu'elles changent. Les scripts ne
+parlent pas à Scaleway : ils lisent les fichiers des lectures, et l'écriture de
+l'image reste la seule, dans `ci.yml`. C'est la préparation d'un second job de
+déploiement (Y7b), qui appellera les mêmes scripts avec ses propres valeurs.
 
 **L'égalité, et non la documentation.** La relecture compare à ce que la
 production portait avant, que les contrôles ont épinglé avant d'écrire. Constaté
