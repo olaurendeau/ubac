@@ -8,11 +8,12 @@ import { load } from 'js-yaml';
 import { afterAll, describe, expect, it } from 'vitest';
 
 /**
- * Les deux etapes du job `deploy` qui decident (lot R3 de la phase 2) : les
- * controles, avant la mise a jour, et la relecture, apres. Deux scripts du depot
- * (`scripts/deploiement/`, extraits en Y7a), executes tels que
- * `.github/workflows/ci.yml` les appelle — son `run`, avec son `env` et donc les
- * valeurs d'Ubac qu'il epingle —, avec le bash et le jq du poste.
+ * Les deux etapes des jobs `deploy` et `deploy-convoyeur` qui decident (lot R3
+ * de la phase 2, Y7b) : les controles, avant la mise a jour, et la relecture,
+ * apres. Deux scripts du depot (`scripts/deploiement/`, extraits en Y7a),
+ * executes tels que `.github/workflows/ci.yml` les appelle — son `run`, avec son
+ * `env` et donc les valeurs de chaque job qu'il epingle —, avec le bash et le jq
+ * du poste.
  *
  * `workflow.test.ts` prouve qu'elles sont la et a leur place ; ce fichier prouve
  * qu'elles mordent. Les lectures Scaleway sont fabriquees a la forme que rend
@@ -121,11 +122,19 @@ const DOSSIER = mkdtempSync(join(tmpdir(), 'ubac-deploy-'));
 afterAll(() => rmSync(DOSSIER, { recursive: true, force: true }));
 let executions = 0;
 
-function etape(id: string): { readonly run: string; readonly env: Json } {
+type Job = 'deploy' | 'deploy-convoyeur';
+
+/** L'image que chaque job deploie : celle que `build` lui donne en sortie. */
+const REFERENCES: Readonly<Record<Job, string>> = {
+  deploy: NOUVELLE,
+  'deploy-convoyeur': `rg.fr-par.scw.cloud/ubac/ubac-convoyeur:${'b'.repeat(40)}`,
+};
+
+function etape(id: string, job: Job): { readonly run: string; readonly env: Json } {
   const workflow = load(readFileSync(resolve(ROOT, '.github/workflows/ci.yml'), 'utf8')) as Json;
-  const deploy = (workflow['jobs'] as Json)['deploy'] as Json | undefined;
+  const deploy = (workflow['jobs'] as Json)[job] as Json | undefined;
   const trouvee = ((deploy?.['steps'] ?? []) as Json[]).find((s) => s['id'] === id);
-  if (typeof trouvee?.['run'] !== 'string') throw new Error(`deploy : aucune etape « ${id} »`);
+  if (typeof trouvee?.['run'] !== 'string') throw new Error(`${job} : aucune etape « ${id} »`);
   return { run: trouvee['run'], env: (trouvee['env'] ?? {}) as Json };
 }
 
@@ -136,7 +145,7 @@ interface Issue {
   readonly resume: string;
 }
 
-function executer(id: string, avant: Etat, apres: Etat | undefined, maintenant = LOIN_DU_RUN): Issue {
+function executer(id: string, avant: Etat, apres: Etat | undefined, maintenant = LOIN_DU_RUN, job: Job = 'deploy'): Issue {
   const temp = join(DOSSIER, String(executions++));
   mkdirSync(join(temp, 'bin'), { recursive: true });
   // Le seul `date` que l'etape voit : l'instant du test, dans le fuseau qu'elle demande.
@@ -150,7 +159,7 @@ function executer(id: string, avant: Etat, apres: Etat | undefined, maintenant =
   }
   const resume = join(temp, 'resume.md');
   writeFileSync(resume, '');
-  const { run, env } = etape(id);
+  const { run, env } = etape(id, job);
   const r = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', run], {
     encoding: 'utf8',
     cwd: ROOT,
@@ -160,7 +169,7 @@ function executer(id: string, avant: Etat, apres: Etat | undefined, maintenant =
       RUNNER_TEMP: temp,
       GITHUB_STEP_SUMMARY: resume,
       DEFINITION,
-      UBAC_REFERENCE: NOUVELLE,
+      REFERENCE: REFERENCES[job],
       FAUX_MAINTENANT: String(Date.parse(maintenant) / 1000),
     },
   });
@@ -213,6 +222,11 @@ describe('controles avant : la production est dans l etat attendu, et le run est
       'declencheurs ["daily","essai"]',
     ],
     ['un declencheur renomme', { ...production(), declencheurs: [declencheur('0 7 * * *', 'Europe/Paris', 'matin')] }, '["matin"]'],
+    [
+      'une variable du convoyeur sur la definition d Ubac (CV3)',
+      avecDefinition(production(), { environment_variables: { ...ORDINAIRES, CONVOYEUR_NTFY_URL: 'https://ntfy.exemple.invalid' } }),
+      'variable CONVOYEUR_NTFY_URL interdite',
+    ],
   ])('%s : refus, rien n est modifie', (_, avant, motif) => {
     const issue = executer('controles', avant, undefined);
     expect(issue.code).toBe(1);
@@ -283,5 +297,164 @@ describe('relecture : la nouvelle image, et tout le reste tel qu il etait', () =
     expect(issue.code).toBe(1);
     expect(issue.erreurs).toContain('RELECTURE EN ECHEC');
     expect(issue.erreurs).toContain(motif);
+  });
+});
+
+// --- Le convoyeur (lot Y7b) ----------------------------------------------------------
+
+const DEFINITION_CONVOYEUR = 'de0f0000-0000-4000-8000-00000000000c';
+const PRECEDENTE_CONVOYEUR = `rg.fr-par.scw.cloud/ubac/ubac-convoyeur:${'a'.repeat(40)}`;
+const SECRETES_CONVOYEUR = [
+  'CONVOYEUR_DATABASE_URL',
+  'CONVOYEUR_COINBASE_API_KEY',
+  'CONVOYEUR_COINBASE_API_SECRET',
+  'CONVOYEUR_PRIMARY_UUID',
+  'CONVOYEUR_DESTINATION_UUID',
+  'CONVOYEUR_NTFY_URL',
+  'CONVOYEUR_NTFY_TOPIC',
+  'CONVOYEUR_NTFY_TOKEN',
+];
+
+function declencheurConvoyeur(args: unknown, schedule = '0 19 * * *'): Json {
+  const d = declencheur(schedule, 'Europe/Paris', 'convoyeur');
+  return { ...d, job_definition_id: DEFINITION_CONVOYEUR, cron_config: { ...(d['cron_config'] as Json), args } };
+}
+
+/** La definition qu'OP4 cree (docs/convoyeur.md) : huit secrets, aucune variable ordinaire, et le mode donne. */
+function convoyeur(args: unknown = null): Etat {
+  const ubac = production();
+  return {
+    definition: {
+      ...ubac.definition,
+      id: DEFINITION_CONVOYEUR,
+      name: 'ubac-convoyeur',
+      image_uri: PRECEDENTE_CONVOYEUR,
+      environment_variables: {},
+      job_timeout: '600.000000000s',
+    },
+    declencheurs: [declencheurConvoyeur(args)],
+    secrets: {
+      secrets: SECRETES_CONVOYEUR.map((nom, i) => ({
+        secret_id: `5ec0000${i}-0000-4000-8000-00000000000c`,
+        secret_manager_id: `5ec1000${i}-0000-4000-8000-00000000000c`,
+        secret_manager_version: '1',
+        job_definition_id: DEFINITION_CONVOYEUR,
+        env_var: { name: nom },
+      })),
+      total_count: SECRETES_CONVOYEUR.length,
+    },
+  };
+}
+
+function convoyeurDeploye(args: unknown = null): Etat {
+  const etat = convoyeur(args);
+  return {
+    ...etat,
+    definition: { ...etat.definition, image_uri: REFERENCES['deploy-convoyeur'], updated_at: '2026-09-27T20:00:00Z' },
+  };
+}
+
+function controlesConvoyeur(avant: Etat, maintenant = LOIN_DU_RUN): Issue {
+  return executer('controles', avant, undefined, maintenant, 'deploy-convoyeur');
+}
+
+function relectureConvoyeur(avant: Etat, apres: Etat): Issue {
+  return executer('relecture', avant, apres, LOIN_DU_RUN, 'deploy-convoyeur');
+}
+
+describe('controles avant du convoyeur : ses valeurs, sa fenetre, et le mode dit sans jamais refuser', () => {
+  it.each([
+    ['sans argument (null, ce que rend le SDK)', null, 'DRY_RUN'],
+    ['avec un tableau vide', [], 'DRY_RUN'],
+    ['avec --reel', ['--reel'], 'REEL'],
+    ['avec --reel parmi d autres', ['--verbeux', '--reel'], 'REEL'],
+    ['avec --real, que main.ts refuse : ni reel ni refus ici', ['--real'], 'DRY_RUN'],
+  ])('la definition d OP4 %s passe, et le mode est dit : %s', (_, args, mode) => {
+    const issue = controlesConvoyeur(convoyeur(args));
+    expect(issue.code).toBe(0);
+    expect(issue.sortie).toContain(`mode du convoyeur : ${mode}`);
+    expect(issue.resume).toContain(`### Mode du convoyeur\n\n${mode}\n`);
+    expect(issue.resume).toContain(`image-uri=${PRECEDENTE_CONVOYEUR}`);
+  });
+
+  it.each([
+    ['une variable d Ubac en clair', avecDefinition(convoyeur(), { environment_variables: { NTFY_URL: 'https://ntfy.exemple.invalid' } }), 'variable NTFY_URL interdite'],
+    ['un secret d Ubac', { ...convoyeur(), secrets: production().secrets }, 'variable DATABASE_URL interdite'],
+    ['un reglage d Ubac', avecDefinition(convoyeur(), { environment_variables: { UBAC_STRATEGY: 'x' } }), 'variable UBAC_STRATEGY interdite'],
+    ['une variable du convoyeur absente', sansSecret(convoyeur(), 'CONVOYEUR_PRIMARY_UUID'), 'variable CONVOYEUR_PRIMARY_UUID absente'],
+    ['le delai d Ubac', avecDefinition(convoyeur(), { job_timeout: '300.000000000s' }), 'job-timeout 300.000000000s, attendu 600s'],
+    ['une tentative', avecDefinition(convoyeur(), { retry_policy: { max_retries: 1 } }), 'max-retries 1, attendu 0'],
+    ['le declencheur d Ubac', { ...convoyeur(), declencheurs: [declencheur('0 7 * * *', 'Europe/Paris')] }, 'attendu le seul « convoyeur »'],
+    ['la definition d Ubac elle-meme', production(), 'attendu le seul « convoyeur »'],
+  ])('%s : refus, rien n est modifie', (_, avant, motif) => {
+    const issue = controlesConvoyeur(avant);
+    expect(issue.code).toBe(1);
+    expect(issue.erreurs).toContain("REFUS, rien n'a ete modifie");
+    expect(issue.erreurs).toContain(motif);
+  });
+
+  it('un refus dit le mode quand meme', () => {
+    const issue = controlesConvoyeur(avecDefinition(convoyeur(['--reel']), { cpu_limit: 100 }));
+    expect([issue.code, issue.sortie]).toEqual([1, expect.stringContaining('mode du convoyeur : REEL')]);
+  });
+
+  it.each([
+    ['des arguments en chaine', '--reel'],
+    ['des arguments qui ne sont pas des chaines', { reel: true }],
+  ])('%s : refus, forme non lue, plutot qu un DRY_RUN mal dit', (_, args) => {
+    const issue = controlesConvoyeur(convoyeur(args));
+    expect([issue.code, issue.erreurs]).toEqual([1, expect.stringContaining('arguments du declencheur « convoyeur », forme non lue')]);
+    expect(issue.sortie).not.toContain('mode du convoyeur');
+  });
+
+  it('un declencheur sans cle args : refus, forme non lue', () => {
+    const d = declencheurConvoyeur(null);
+    const { args: _, ...sansArgs } = d['cron_config'] as Json;
+    const issue = controlesConvoyeur({ ...convoyeur(), declencheurs: [{ ...d, cron_config: sansArgs }] });
+    expect([issue.code, issue.erreurs]).toEqual([1, expect.stringContaining('forme non lue')]);
+  });
+
+  // Le passage est a 19:00 a Paris, 17:00 UTC en ete. Ubac, a 07:00, est loin.
+  it.each([
+    ['18:50 a Paris : refus du convoyeur', '2026-09-28T16:50:00Z', 1],
+    ['19:15 a Paris : refus du convoyeur', '2026-09-28T17:15:00Z', 1],
+    ['19:16 a Paris : deploiement', '2026-09-28T17:16:00Z', 0],
+    ['06:55 a Paris, la fenetre d Ubac : le convoyeur se deploie', '2026-09-28T04:55:00Z', 0],
+  ])('%s', (_, maintenant, code) => {
+    expect(controlesConvoyeur(convoyeur(), maintenant).code).toBe(code);
+  });
+
+  it('un tag a 18:50 deploie Ubac et refuse le convoyeur', () => {
+    const maintenant = '2026-09-28T16:50:00Z';
+    expect(executer('controles', production(), undefined, maintenant).code).toBe(0);
+    expect(controlesConvoyeur(convoyeur(), maintenant).erreurs).toContain('a 10 min du run « 0 19 * * * »');
+  });
+});
+
+describe('relecture du convoyeur : sa nouvelle image, et le mode inchange', () => {
+  it.each([
+    [null, 'DRY_RUN'],
+    [['--reel'], 'REEL'],
+  ])('arguments %j : la relecture passe et dit le mode %s', (args, mode) => {
+    const issue = relectureConvoyeur(convoyeur(args), convoyeurDeploye(args));
+    expect(issue.code).toBe(0);
+    expect(issue.sortie).toContain(`relu : ${REFERENCES['deploy-convoyeur']}, cpu 140, memoire 256, delai 600.000000000s, tentatives 0, variables \n`);
+    expect(issue.resume).toContain(`mode du convoyeur relu, inchange : ${mode}`);
+  });
+
+  it.each([
+    ['passe en reel pendant le deploiement', null, ['--reel'], 'mode du convoyeur DRY_RUN avant, REEL apres'],
+    ['revenu au DRY_RUN pendant le deploiement', ['--reel'], [], 'mode du convoyeur REEL avant, DRY_RUN apres'],
+  ])('%s : la relecture rougit', (_, avant, apres, motif) => {
+    const issue = relectureConvoyeur(convoyeur(avant), convoyeurDeploye(apres));
+    expect(issue.code).toBe(1);
+    expect(issue.erreurs).toContain('RELECTURE EN ECHEC');
+    expect(issue.erreurs).toContain(motif);
+    expect(issue.erreurs).toContain('declencheur convoyeur');
+  });
+
+  it('l image d Ubac posee sur la definition du convoyeur : la relecture rougit', () => {
+    const apres = avecDefinition(convoyeurDeploye(), { image_uri: NOUVELLE });
+    expect(relectureConvoyeur(convoyeur(), apres).erreurs).toContain(`attendu « ${REFERENCES['deploy-convoyeur']} »`);
   });
 });

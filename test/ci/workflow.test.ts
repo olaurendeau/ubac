@@ -81,8 +81,11 @@ const CIBLES = ['convoyeur', 'ubac'];
 /** Ce que le job ne refait pas : construire autrement, ou recopier les controles des scripts. */
 const SECONDE_DEFINITION = /docker\s+(?:buildx\s+)?build\b|--push\b|docker\s+(?:image\s+)?inspect\b|docker\s+tag\b|UBAC_GIT_SHA/;
 
-/** Le job qui repointe la definition Scaleway (lot R3). */
+/** Le job qui repointe la definition Scaleway d'Ubac (lot R3), et le nom de leur file commune. */
 const JOB_DEPLOI = 'deploy';
+
+/** Le job qui repointe celle du convoyeur (lot Y7b), apres celui d'Ubac. */
+const JOB_DEPLOI_CONVOYEUR = 'deploy-convoyeur';
 
 /** La rampe de R3 a R4 : un tag v*, jamais main. R4, qui livre la barriere de migration, ouvrira main. */
 const SI_TAG = "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')";
@@ -110,10 +113,41 @@ const VALEURS_UBAC: Readonly<Record<string, string>> = {
   TENTATIVES: '0',
   DECLENCHEUR: 'daily',
   FENETRE_MIN: '15',
+  // Aucune variable du convoyeur sur la definition d'Ubac (Y7b, CV3).
+  INTERDITES: 'CONVOYEUR_*',
 };
 
+/** Celles du convoyeur (Y7b), fixees a OP4 par docs/convoyeur.md : 10 min, aucune tentative, 19:00. */
+const VALEURS_CONVOYEUR: Readonly<Record<string, string>> = {
+  CPU_MVCPU: '140',
+  MEMOIRE_MIO: '256',
+  DELAI_S: '600',
+  TENTATIVES: '0',
+  DECLENCHEUR: 'convoyeur',
+  FENETRE_MIN: '15',
+};
+
+/** L'argument du declencheur qui met le convoyeur en reel (DP5 = 2) : lu, jamais epingle. */
+const ARGUMENT_REEL = '--reel';
+
+/**
+ * Les deux deploiements : chacun sa definition, designee par une variable de
+ * forge, son image, sortie de `build`, et ses valeurs. Le mode n'est lu que
+ * pour le convoyeur, aux controles et a la relecture.
+ */
+const DEPLOIEMENTS = [
+  { job: JOB_DEPLOI, definition: 'SCW_JOB_DEFINITION_ID', sortie: 'reference', valeurs: VALEURS_UBAC, mode: {} },
+  {
+    job: JOB_DEPLOI_CONVOYEUR,
+    definition: 'SCW_CONVOYEUR_JOB_DEFINITION_ID',
+    sortie: 'reference-convoyeur',
+    valeurs: VALEURS_CONVOYEUR,
+    mode: { ARGUMENT_REEL, DECLENCHEUR: 'convoyeur' },
+  },
+] as const;
+
 /** La seule ecriture admise chez Scaleway : l'image. Des environment-variables remplaceraient toute la table. */
-const MISE_A_JOUR = 'scw jobs definition update "$DEFINITION" image-uri="$UBAC_REFERENCE" region=fr-par -o json > /dev/null';
+const MISE_A_JOUR = 'scw jobs definition update "$DEFINITION" image-uri="$REFERENCE" region=fr-par -o json > /dev/null';
 
 /** Les seules lectures admises, chacune dans un fichier : la definition porte ses variables en clair. */
 const LECTURE = /^scw jobs (?:definition get "\$DEFINITION"|(?:trigger|secret) list job-definition-id="\$DEFINITION") region=fr-par -o json > "\$RUNNER_TEMP\/(?:avant|apres)-\w+\.json"$/;
@@ -127,6 +161,9 @@ const CONFIGURATION_SCW = ['SCW_DEFAULT_ORGANIZATION_ID', 'SCW_DEFAULT_PROJECT_I
 
 /** Ou vivent les variables que l'image exige au demarrage. */
 const ENV = 'src/config/env.ts';
+
+/** Ou vivent celles du convoyeur (Y5). */
+const ENV_CONVOYEUR = 'src/convoyeur/env.ts';
 
 /**
  * Ce que la porte execute, dans l'ordre. La couverture et non `npm test` : elle
@@ -165,6 +202,7 @@ function depotReel(): Depot {
       .map((nom) => `${WORKFLOWS}/${nom}`),
     'package.json',
     ENV,
+    ENV_CONVOYEUR,
     ...NODE_DES_DOCKERFILES.map((d) => d.fichier),
     ...Object.values(APPELS_DEPLOI).map(cheminDeScript),
   ];
@@ -213,9 +251,20 @@ function jobImage(depot: Depot): Objet | undefined {
   return estObjet(job) ? job : undefined;
 }
 
-function jobDeploi(depot: Depot): Objet | undefined {
-  const job = jobs(porte(depot), PORTE)[JOB_DEPLOI];
+function jobDeploi(depot: Depot, nom: string = JOB_DEPLOI): Objet | undefined {
+  const job = jobs(porte(depot), PORTE)[nom];
   return estObjet(job) ? job : undefined;
+}
+
+/** La valeur d'une cle d'un `env`, ou `undefined`. */
+function envDe(bloc: Objet | undefined, nom: string): unknown {
+  const env = bloc?.['env'];
+  return estObjet(env) ? env[nom] : undefined;
+}
+
+/** Les mots d'une liste de l'`env` des controles d'un job. */
+function liste(depot: Depot, job: string, nom: string): readonly string[] {
+  return String(envDe(etape(jobDeploi(depot, job), 'controles'), nom) ?? '').split(/\s+/).filter((v) => v !== '');
 }
 
 function etape(job: Objet | undefined, id: string): Objet | undefined {
@@ -253,6 +302,13 @@ function variablesExigees(depot: Depot): readonly string[] {
   return [...schema.matchAll(/^ {2}([A-Z][A-Z0-9_]*):/gm)]
     .map((m) => m[1] ?? '')
     .filter((nom) => !nom.startsWith('UBAC_'));
+}
+
+/** Les huit variables du convoyeur : `VARIABLES_CONVOYEUR` de son chargeur. */
+function variablesConvoyeur(depot: Depot): readonly string[] {
+  const liste = /^export const VARIABLES_CONVOYEUR = \[\n([\s\S]*?)^\] as const;/m.exec(texte(depot, ENV_CONVOYEUR))?.[1];
+  if (liste === undefined) throw new Error(`${ENV_CONVOYEUR} : VARIABLES_CONVOYEUR introuvable`);
+  return [...liste.matchAll(/'([A-Z][A-Z0-9_]*)'/g)].map((m) => m[1] ?? '');
 }
 
 function manifeste(depot: Depot): Objet {
@@ -397,11 +453,18 @@ const REGLES = {
     },
   },
   needs: {
-    nom: 'build attend test, deploy attend build, et tout job passe par test',
+    nom: 'build attend test, deploy attend build, deploy-convoyeur attend les deux, et tout job passe par test',
     verifier: (depot) => {
       const tous = jobs(porte(depot), PORTE);
       const motifs: string[] = [];
-      for (const [job, besoin] of [['build', JOB_PORTE], ['deploy', 'build']] as const) {
+      const ordre = [
+        ['build', JOB_PORTE],
+        [JOB_DEPLOI, 'build'],
+        // build pour son image ; deploy pour l'ordre : un echec d'Ubac n'atteint pas le convoyeur.
+        [JOB_DEPLOI_CONVOYEUR, 'build'],
+        [JOB_DEPLOI_CONVOYEUR, JOB_DEPLOI],
+      ] as const;
+      for (const [job, besoin] of ordre) {
         if (job in tous && !besoins(tous[job]).includes(besoin)) {
           motifs.push(`job ${job} sans « needs: ${besoin} »`);
         }
@@ -594,45 +657,48 @@ const REGLES = {
     },
   },
   rampe: {
-    nom: 'deploy ne part que d un tag v*, jamais d un push sur main ni d une PR',
-    verifier: (depot) => {
-      const si = jobDeploi(depot)?.['if'];
-      return si === SI_TAG
-        ? []
-        : [`job ${JOB_DEPLOI} : if ${JSON.stringify(si)}, attendu « ${SI_TAG} » : main n'ouvre le deploiement qu'en R4`];
-    },
+    nom: 'chaque deploiement ne part que d un tag v*, jamais d un push sur main ni d une PR, ni apres un echec',
+    verifier: (depot) =>
+      DEPLOIEMENTS.flatMap(({ job }) => {
+        const si = jobDeploi(depot, job)?.['if'];
+        return si === SI_TAG
+          ? []
+          : [`job ${job} : if ${JSON.stringify(si)}, attendu « ${SI_TAG} » : main n'ouvre le deploiement qu'en R4`];
+      }),
   },
   deploiement: {
-    nom: 'deploy lit, controle, ecrit l image, relit, dans cet ordre et sans rien sauter',
-    verifier: (depot) => {
-      const job = jobDeploi(depot);
-      if (job === undefined) return [`aucun job « ${JOB_DEPLOI} » : l'image ne se deploie plus`];
-      const motifs: string[] = [];
-      if (job['environment'] !== 'production') motifs.push(`environment ${JSON.stringify(job['environment'])}, attendu production`);
-      const vus = steps(job).flatMap((s) => (ETAPES_DEPLOI.includes(String(s['id'])) ? [String(s['id'])] : []));
-      if (!isDeepStrictEqual(vus, ETAPES_DEPLOI)) {
-        motifs.push(`etapes ${JSON.stringify(vus)}, attendu ${JSON.stringify(ETAPES_DEPLOI)}`);
-      }
-      for (const bloc of [job, ...ETAPES_DEPLOI.map((id) => etape(job, id) ?? {})]) {
-        const ou = bloc === job ? `job ${JOB_DEPLOI}` : `etape ${String(bloc['id'])}`;
-        if (bloc !== job && 'if' in bloc) motifs.push(`${ou} : un if la saute`);
-        if (bloc['continue-on-error'] !== undefined) motifs.push(`${ou} : continue-on-error avale l'echec`);
-      }
-      const [avant, apres] = [etape(job, 'avant')?.['run'], etape(job, 'apres')?.['run']];
-      if (typeof avant !== 'string' || apres !== avant.replaceAll('avant-', 'apres-')) {
-        motifs.push('la lecture apres ne relit pas exactement ce que la lecture avant a lu');
-      }
-      const file = job['concurrency'];
-      if (!estObjet(file) || file['group'] !== JOB_DEPLOI || file['cancel-in-progress'] !== false) {
-        motifs.push(`concurrency ${JSON.stringify(file)}, attendu un seul deploiement a la fois, jamais annule`);
-      }
-      return motifs;
-    },
+    nom: 'chaque deploiement lit, controle, ecrit l image, relit, dans cet ordre et sans rien sauter',
+    verifier: (depot) =>
+      DEPLOIEMENTS.flatMap(({ job: nom }) => {
+        const job = jobDeploi(depot, nom);
+        if (job === undefined) return [`aucun job « ${nom} » : l'image ne se deploie plus`];
+        const motifs: string[] = [];
+        if (job['environment'] !== 'production') motifs.push(`${nom} : environment ${JSON.stringify(job['environment'])}, attendu production`);
+        const vus = steps(job).flatMap((s) => (ETAPES_DEPLOI.includes(String(s['id'])) ? [String(s['id'])] : []));
+        if (!isDeepStrictEqual(vus, ETAPES_DEPLOI)) {
+          motifs.push(`${nom} : etapes ${JSON.stringify(vus)}, attendu ${JSON.stringify(ETAPES_DEPLOI)}`);
+        }
+        for (const bloc of [job, ...ETAPES_DEPLOI.map((id) => etape(job, id) ?? {})]) {
+          const ou = bloc === job ? `job ${nom}` : `${nom} : etape ${String(bloc['id'])}`;
+          if (bloc !== job && 'if' in bloc) motifs.push(`${ou} : un if la saute`);
+          if (bloc['continue-on-error'] !== undefined) motifs.push(`${ou} : continue-on-error avale l'echec`);
+        }
+        const [avant, apres] = [etape(job, 'avant')?.['run'], etape(job, 'apres')?.['run']];
+        if (typeof avant !== 'string' || apres !== avant.replaceAll('avant-', 'apres-')) {
+          motifs.push(`${nom} : la lecture apres ne relit pas exactement ce que la lecture avant a lu`);
+        }
+        // Une seule file pour les deux jobs : deux relectures croisees se tromperaient.
+        const file = job['concurrency'];
+        if (!estObjet(file) || file['group'] !== JOB_DEPLOI || file['cancel-in-progress'] !== false) {
+          motifs.push(`${nom} : concurrency ${JSON.stringify(file)}, attendu un seul deploiement a la fois, jamais annule`);
+        }
+        return motifs;
+      }),
   },
   provenance: {
-    nom: 'deploy ne deploie qu un commit de main, avec un CLI scw a empreinte epinglee et sans action tierce',
-    verifier: (depot) => {
-      const job = jobDeploi(depot) ?? {};
+    nom: 'chaque deploiement ne deploie qu un commit de main, avec un CLI scw a empreinte epinglee et sans action tierce',
+    verifier: (depot) => DEPLOIEMENTS.flatMap(({ job: nom }) => {
+      const job = jobDeploi(depot, nom) ?? {};
       const motifs: string[] = [];
       const checkout = steps(job).find((s) => String(s['uses']).startsWith('actions/checkout@'));
       const avec = estObjet(checkout?.['with']) ? checkout['with'] : {};
@@ -650,25 +716,28 @@ const REGLES = {
       for (const step of steps(job).filter((s) => s['uses'] !== undefined && s !== checkout)) {
         motifs.push(`« uses: ${String(step['uses'])} » : aucune action tierce ne tourne a cote de la cle Scaleway`);
       }
-      return motifs;
-    },
+      return motifs.map((m) => `${nom} : ${m}`);
+    }),
   },
   ecriture: {
     nom: 'chez Scaleway, la chaine ne lit que vers des fichiers et n ecrit que l image',
     verifier: (depot) => {
       const motifs: string[] = [];
-      let ecritures = 0;
+      const ecritures = new Map<string, number>(DEPLOIEMENTS.map(({ job }) => [job, 0]));
       for (const [chemin, contenu] of workflows(depot)) {
         for (const [nomJob, job] of Object.entries(jobs(objet(load(contenu), chemin), chemin))) {
           for (const commande of commandes(objet(job, nomJob)).filter((c) => /^scw\s/.test(c))) {
-            if (commande === MISE_A_JOUR && nomJob === JOB_DEPLOI) ecritures += 1;
+            const deja = chemin === PORTE ? ecritures.get(nomJob) : undefined;
+            if (commande === MISE_A_JOUR && deja !== undefined) ecritures.set(nomJob, deja + 1);
             else if (!LECTURE.test(commande)) {
               motifs.push(`${chemin} > ${nomJob} : « ${commande} » n'est ni une lecture vers un fichier, ni la mise a jour de l'image seule`);
             }
           }
         }
       }
-      if (ecritures !== 1) motifs.push(`${ecritures} mise(s) a jour « ${MISE_A_JOUR} », attendu une`);
+      for (const [job, n] of ecritures) {
+        if (n !== 1) motifs.push(`${job} : ${n} mise(s) a jour « ${MISE_A_JOUR} », attendu une`);
+      }
       return motifs;
     },
   },
@@ -697,18 +766,28 @@ const REGLES = {
     },
   },
   appels: {
-    nom: 'deploy appelle les scripts de controle et de relecture avec les valeurs d Ubac epinglees',
+    nom: 'chaque deploiement appelle les scripts de controle et de relecture avec ses valeurs epinglees, et le mode lu pour le seul convoyeur',
     verifier: (depot) => {
-      const job = jobDeploi(depot);
       const motifs: string[] = [];
-      for (const [id, script] of Object.entries(APPELS_DEPLOI)) {
-        const run = etape(job, id)?.['run'];
-        if (run !== script) motifs.push(`etape ${id} : run ${JSON.stringify(run)}, attendu « ${script} »`);
-      }
-      const env = etape(job, 'controles')?.['env'];
-      for (const [nom, valeur] of Object.entries(VALEURS_UBAC)) {
-        const lue = estObjet(env) ? env[nom] : undefined;
-        if (lue !== valeur) motifs.push(`controles : ${nom} ${JSON.stringify(lue)}, attendu « ${valeur} »`);
+      for (const { job: nomJob, valeurs, mode } of DEPLOIEMENTS) {
+        const job = jobDeploi(depot, nomJob);
+        for (const [id, script] of Object.entries(APPELS_DEPLOI)) {
+          const run = etape(job, id)?.['run'];
+          if (run !== script) motifs.push(`${nomJob} : etape ${id} : run ${JSON.stringify(run)}, attendu « ${script} »`);
+        }
+        const controles = etape(job, 'controles');
+        for (const [nom, valeur] of Object.entries(valeurs)) {
+          const lue = envDe(controles, nom);
+          if (lue !== valeur) motifs.push(`${nomJob} > controles : ${nom} ${JSON.stringify(lue)}, attendu « ${valeur} »`);
+        }
+        // Le mode : lu aux controles comme a la relecture, sur le declencheur du job.
+        const attendus: Readonly<Record<string, string | undefined>> = mode;
+        for (const [id, nom] of [['controles', 'ARGUMENT_REEL'], ['relecture', 'ARGUMENT_REEL'], ['relecture', 'DECLENCHEUR']] as const) {
+          const lue = envDe(etape(job, id), nom);
+          if (lue !== attendus[nom]) {
+            motifs.push(`${nomJob} > ${id} : ${nom} ${JSON.stringify(lue)}, attendu ${JSON.stringify(attendus[nom])}`);
+          }
+        }
       }
       // Ce que les scripts ne font pas : parler a Scaleway. Ils lisent les fichiers
       // des lectures ; l'ecriture de l'image reste la seule, dans ci.yml.
@@ -721,14 +800,51 @@ const REGLES = {
     },
   },
   variables: {
-    nom: 'deploy exige les variables sans defaut de src/config/env.ts, ni plus ni moins',
+    nom: 'chaque deploiement exige les variables de son chargeur, ni plus ni moins, et refuse toutes celles de l autre',
     verifier: (depot) => {
-      const env = etape(jobDeploi(depot), 'controles')?.['env'];
-      const lues = String((estObjet(env) ? env['VARIABLES'] : undefined) ?? '').split(/\s+/).filter((v) => v !== '');
       const exigees = variablesExigees(depot);
-      return isDeepStrictEqual([...lues].sort(), [...exigees].sort())
-        ? []
-        : [`controles : VARIABLES ${JSON.stringify(lues)}, ${ENV} exige ${JSON.stringify(exigees)}`];
+      const convoyeur = variablesConvoyeur(depot);
+      // Ce que le motif CONVOYEUR_* d'Ubac couvre ; UBAC_* couvre, cote convoyeur, les variables a defaut d'Ubac.
+      const attendues: readonly (readonly [string, string, readonly string[], string])[] = [
+        [JOB_DEPLOI, 'VARIABLES', exigees, `${ENV} exige`],
+        [JOB_DEPLOI_CONVOYEUR, 'VARIABLES', convoyeur, `${ENV_CONVOYEUR} exige`],
+        [JOB_DEPLOI_CONVOYEUR, 'INTERDITES', [...exigees, 'UBAC_*'], `${ENV} fait refuser`],
+      ];
+      const motifs = attendues.flatMap(([job, nom, attendu, source]) => {
+        const lues = liste(depot, job, nom);
+        return isDeepStrictEqual([...lues].sort(), [...attendu].sort())
+          ? []
+          : [`${job} > controles : ${nom} ${JSON.stringify(lues)}, ${source} ${JSON.stringify(attendu)}`];
+      });
+      for (const nom of convoyeur.filter((n) => !n.startsWith('CONVOYEUR_'))) {
+        motifs.push(`${ENV_CONVOYEUR} : ${nom} echappe au motif CONVOYEUR_* des controles d'Ubac`);
+      }
+      return motifs;
+    },
+  },
+  definitions: {
+    nom: 'chaque deploiement repointe SA definition sur SON image, et le convoyeur sans OP4 echoue en le disant',
+    verifier: (depot) => {
+      const motifs: string[] = [];
+      const sorties = jobImage(depot)?.['outputs'];
+      for (const { job: nom, definition, sortie } of DEPLOIEMENTS) {
+        const job = jobDeploi(depot, nom);
+        const attendus = {
+          DEFINITION: `\${{ vars.${definition} }}`,
+          REFERENCE: `\${{ needs.build.outputs.${sortie} }}`,
+        };
+        for (const [cle, valeur] of Object.entries(attendus)) {
+          if (envDe(job, cle) !== valeur) motifs.push(`${nom} : ${cle} ${JSON.stringify(envDe(job, cle))}, attendu « ${valeur} »`);
+        }
+        const produite = estObjet(sorties) ? sorties[sortie] : undefined;
+        if (produite !== `\${{ steps.reference.outputs.${sortie} }}`) {
+          motifs.push(`${JOB_IMAGE} : sortie ${sortie} ${JSON.stringify(produite)}, ${nom} ne recevrait pas son image`);
+        }
+        if (!String(etape(job, 'cli')?.['run']).includes(`variable de forge ${definition} absente`)) {
+          motifs.push(`${nom} : etape cli sans le refus « variable de forge ${definition} absente »`);
+        }
+      }
+      return motifs;
     },
   },
   rafale: {
@@ -790,6 +906,9 @@ const LIRE_AVANT = 'scw jobs definition get "$DEFINITION" region=fr-par -o json 
 const ORGANISATION = 'SCW_DEFAULT_ORGANIZATION_ID: ${{ vars.SCW_DEFAULT_ORGANIZATION_ID }}';
 const PROJET = 'SCW_DEFAULT_PROJECT_ID: ${{ vars.SCW_DEFAULT_PROJECT_ID }}';
 const CLE_SCW = '          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}\n';
+const BESOINS_CONVOYEUR = '    needs: [build, deploy]\n';
+const ENTETE_CONVOYEUR = `  ${JOB_DEPLOI_CONVOYEUR}:\n${BESOINS_CONVOYEUR}`;
+const RELECTURE_CONVOYEUR = "          DECLENCHEUR: convoyeur\n          ARGUMENT_REEL: '--reel'\n        run: ./scripts/deploiement/relecture.sh\n";
 
 /** Retire une etape entiere de deploy, de son `- name:` a l'etape ou au commentaire suivant. */
 function retirerEtape(depot: Depot, nom: string): Depot {
@@ -1196,7 +1315,7 @@ const SONDES: readonly Sonde[] = [
     regle: 'ecriture',
     mutation: 'faire passer les variables d environnement dans la mise a jour',
     appliquer: (d) =>
-      muter(d, PORTE, 'image-uri="$UBAC_REFERENCE" region=fr-par', 'image-uri="$UBAC_REFERENCE" environment-variables.NTFY_URL="$NTFY_URL" region=fr-par'),
+      muter(d, PORTE, 'image-uri="$REFERENCE" region=fr-par', 'image-uri="$REFERENCE" environment-variables.NTFY_URL="$NTFY_URL" region=fr-par'),
     motif: "ni la mise a jour de l'image seule",
   },
   {
@@ -1282,6 +1401,103 @@ const SONDES: readonly Sonde[] = [
     mutation: 'la cle Scaleway exposee a tout le job deploy',
     appliquer: (d) => muter(d, PORTE, '      DEFINITION: ${{ vars.SCW_JOB_DEFINITION_ID }}\n', `      DEFINITION: \${{ vars.SCW_JOB_DEFINITION_ID }}\n${CLE_SCW.slice(4)}`),
     motif: 'deploy > env > SCW_SECRET_KEY',
+  },
+  // --- Le convoyeur (lot Y7b) ---
+  {
+    regle: 'needs',
+    mutation: 'retirer needs: deploy du job deploy-convoyeur',
+    appliquer: (d) => muter(d, PORTE, BESOINS_CONVOYEUR, '    needs: [build]\n'),
+    motif: 'job deploy-convoyeur sans « needs: deploy »',
+  },
+  {
+    regle: 'rampe',
+    mutation: 'deployer le convoyeur meme apres un echec d Ubac',
+    appliquer: (d) => muter(d, PORTE, `${ENTETE_CONVOYEUR}${SI_DEPLOI}`, `${ENTETE_CONVOYEUR}    if: always() && startsWith(github.ref, 'refs/tags/v')\n`),
+    motif: 'job deploy-convoyeur : if "always()',
+  },
+  {
+    regle: 'deploiement',
+    mutation: 'une file a part pour le convoyeur',
+    appliquer: (d) => muter(d, PORTE, 'les deux jobs compris.\n    concurrency:\n      group: deploy\n', 'les deux jobs compris.\n    concurrency:\n      group: deploy-convoyeur\n'),
+    motif: 'deploy-convoyeur : concurrency {"group":"deploy-convoyeur"',
+  },
+  {
+    regle: 'provenance',
+    mutation: 'deployer le convoyeur depuis un tag pose hors de main',
+    appliquer: (d) => muter(d, PORTE, '          fetch-depth: 0\n      - name: le commit du tag est sur main\n        id: main\n        run: git merge-base --is-ancestor HEAD origin/main\n', '          fetch-depth: 0\n'),
+    motif: 'deploy-convoyeur : aucune etape « main »',
+  },
+  {
+    regle: 'appels',
+    mutation: 'le declencheur d Ubac attendu sur la definition du convoyeur',
+    appliquer: (d) => muter(d, PORTE, '          DECLENCHEUR: convoyeur\n          FENETRE_MIN', '          DECLENCHEUR: daily\n          FENETRE_MIN'),
+    motif: 'deploy-convoyeur > controles : DECLENCHEUR "daily", attendu « convoyeur »',
+  },
+  {
+    regle: 'appels',
+    mutation: 'le delai d Ubac attendu sur la definition du convoyeur',
+    appliquer: (d) => muter(d, PORTE, "          DELAI_S: '600'\n", "          DELAI_S: '300'\n"),
+    motif: 'deploy-convoyeur > controles : DELAI_S "300", attendu « 600 »',
+  },
+  {
+    regle: 'appels',
+    mutation: 'une relecture du convoyeur qui ne lit plus le mode',
+    appliquer: (d) => muter(d, PORTE, RELECTURE_CONVOYEUR, '        run: ./scripts/deploiement/relecture.sh\n'),
+    motif: 'deploy-convoyeur > relecture : ARGUMENT_REEL undefined, attendu "--reel"',
+  },
+  {
+    regle: 'appels',
+    mutation: 'des controles d Ubac qui n interdisent plus les variables du convoyeur',
+    appliquer: (d) => muter(d, PORTE, '          INTERDITES: CONVOYEUR_*\n', ''),
+    motif: 'deploy > controles : INTERDITES undefined, attendu « CONVOYEUR_* »',
+  },
+  {
+    regle: 'variables',
+    mutation: 'les controles du convoyeur qui laissent passer les reglages UBAC_*',
+    appliquer: (d) => muter(d, PORTE, '\n            UBAC_*\n', '\n'),
+    motif: 'deploy-convoyeur > controles : INTERDITES',
+  },
+  {
+    regle: 'variables',
+    mutation: 'oublier une variable du convoyeur',
+    appliquer: (d) => muter(d, PORTE, 'CONVOYEUR_PRIMARY_UUID CONVOYEUR_DESTINATION_UUID\n', 'CONVOYEUR_DESTINATION_UUID\n'),
+    motif: `deploy-convoyeur > controles : VARIABLES`,
+  },
+  {
+    regle: 'variables',
+    mutation: 'une variable du convoyeur sans son prefixe',
+    appliquer: (d) => muter(d, ENV_CONVOYEUR, "  'CONVOYEUR_NTFY_TOKEN',\n", "  'CONVOYEUR_NTFY_TOKEN',\n  'NTFY_JETON',\n"),
+    motif: 'NTFY_JETON echappe au motif CONVOYEUR_*',
+  },
+  {
+    regle: 'definitions',
+    mutation: 'le convoyeur pointe sur la definition d Ubac',
+    appliquer: (d) => muter(d, PORTE, 'DEFINITION: ${{ vars.SCW_CONVOYEUR_JOB_DEFINITION_ID }}', 'DEFINITION: ${{ vars.SCW_JOB_DEFINITION_ID }}'),
+    motif: 'deploy-convoyeur : DEFINITION "${{ vars.SCW_JOB_DEFINITION_ID }}"',
+  },
+  {
+    regle: 'definitions',
+    mutation: 'le convoyeur recoit l image d Ubac',
+    appliquer: (d) => muter(d, PORTE, 'REFERENCE: ${{ needs.build.outputs.reference-convoyeur }}', 'REFERENCE: ${{ needs.build.outputs.reference }}'),
+    motif: 'deploy-convoyeur : REFERENCE',
+  },
+  {
+    regle: 'definitions',
+    mutation: 'build ne sort plus l image du convoyeur',
+    appliquer: (d) => muter(d, PORTE, '      reference-convoyeur: ${{ steps.reference.outputs.reference-convoyeur }}\n', ''),
+    motif: 'sortie reference-convoyeur undefined',
+  },
+  {
+    regle: 'definitions',
+    mutation: 'le convoyeur sans OP4 part sans dire quelle variable manque',
+    appliquer: (d) => muter(d, PORTE, '          [[ -n "$DEFINITION" ]] || { echo "variable de forge SCW_CONVOYEUR_JOB_DEFINITION_ID absente', '          [[ -n "$DEFINITION" ]] || { echo "definition absente'),
+    motif: 'deploy-convoyeur : etape cli sans le refus',
+  },
+  {
+    regle: 'ecriture',
+    mutation: 'une seconde ecriture dans le job du convoyeur',
+    appliquer: (d) => muter(d, PORTE, `${RELECTURE_CONVOYEUR}`, `${RELECTURE_CONVOYEUR}      - run: ${MISE_A_JOUR}\n`),
+    motif: 'deploy-convoyeur : 2 mise(s) a jour',
   },
 ];
 

@@ -71,6 +71,7 @@ jobs:
       contents: read
     outputs:
       reference: ${{ steps.reference.outputs.reference }}
+      reference-convoyeur: ${{ steps.reference.outputs.reference-convoyeur }}
     # main et un tag v* peuvent designer le meme commit. Deux executions
     # simultanees constateraient toutes deux l'absence de l'image et la
     # pousseraient deux fois : le groupe par SHA les met en file, et la seconde
@@ -87,22 +88,25 @@ jobs:
       REGISTRE: rg.fr-par.scw.cloud
       UBAC_IMAGE: rg.fr-par.scw.cloud/${{ vars.SCW_REGISTRY_NAMESPACE }}/ubac
       # L'image du convoyeur (lot Y6, Q7) : meme compilation, meme SHA, sa cible
-      # de Dockerfile.prod et son depot. deploy ne la deploie pas encore (Y7b).
+      # de Dockerfile.prod et son depot. deploy-convoyeur la deploie (Y7b).
       CONVOYEUR_IMAGE: rg.fr-par.scw.cloud/${{ vars.SCW_REGISTRY_NAMESPACE }}/ubac-convoyeur
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
       # La reference que build-image.sh construira : le meme git rev-parse, sur
-      # le meme HEAD. GITHUB_ENV vit hors de l'arbre, qui reste propre. deploy la
-      # recoit en sortie : il deploie l'image que ce job a verifiee ou trouvee.
+      # le meme HEAD. GITHUB_ENV vit hors de l'arbre, qui reste propre. Les deux
+      # jobs de deploiement les recoivent en sortie : chacun deploie l'image que
+      # ce job a verifiee ou trouvee.
       - name: reference de l'image
         id: reference
         run: |
           reference="${UBAC_IMAGE}:$(git rev-parse --verify HEAD)"
           echo "UBAC_REFERENCE=$reference" >> "$GITHUB_ENV"
           echo "reference=$reference" >> "$GITHUB_OUTPUT"
-          echo "CONVOYEUR_REFERENCE=${CONVOYEUR_IMAGE}:$(git rev-parse --verify HEAD)" >> "$GITHUB_ENV"
+          convoyeur="${CONVOYEUR_IMAGE}:$(git rev-parse --verify HEAD)"
+          echo "CONVOYEUR_REFERENCE=$convoyeur" >> "$GITHUB_ENV"
+          echo "reference-convoyeur=$convoyeur" >> "$GITHUB_OUTPUT"
       # L'utilisateur nologin, et la cle secrete par l'ENTREE STANDARD : un
       # argument de ligne de commande finit dans une trace, et le journal est
       # public. Le secret n'existe que dans l'environnement de cette etape.
@@ -197,7 +201,7 @@ jobs:
       run:
         shell: bash
     env:
-      UBAC_REFERENCE: ${{ needs.build.outputs.reference }}
+      REFERENCE: ${{ needs.build.outputs.reference }}
       DEFINITION: ${{ vars.SCW_JOB_DEFINITION_ID }}
       # Le CLI refuse toute commande sans organisation (« organization ID is
       # required », constate au premier tag v0.3.0) : des variables de forge,
@@ -264,6 +268,8 @@ jobs:
             DATABASE_URL COINBASE_API_KEY COINBASE_API_SECRET COINBASE_PORTFOLIO_UUID
             BREVO_API_KEY BREVO_SENDER BREVO_RECIPIENT NTFY_URL NTFY_TOPIC NTFY_TOKEN
             HEALTHCHECK_URL
+          # Aucune variable du convoyeur sur la definition d'Ubac (Y7b, CV3).
+          INTERDITES: CONVOYEUR_*
         run: ./scripts/deploiement/controles.sh
       # L'image, et RIEN d'autre. Une mise a jour qui passe des
       # environment-variables REMPLACE la table entiere chez Scaleway.
@@ -272,7 +278,7 @@ jobs:
         env:
           SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
           SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
-        run: scw jobs definition update "$DEFINITION" image-uri="$UBAC_REFERENCE" region=fr-par -o json > /dev/null
+        run: scw jobs definition update "$DEFINITION" image-uri="$REFERENCE" region=fr-par -o json > /dev/null
       - name: lecture apres
         id: apres
         env:
@@ -291,6 +297,113 @@ jobs:
         id: relecture
         run: ./scripts/deploiement/relecture.sh
       # Les lectures portent les variables ordinaires en clair.
+      - name: effacement des lectures
+        if: always()
+        run: rm -f "$RUNNER_TEMP"/avant-*.json "$RUNNER_TEMP"/apres-*.json
+
+  # Le deploiement du convoyeur (lot Y7b, Q7) : sa definition, designee par la
+  # variable de forge SCW_CONVOYEUR_JOB_DEFINITION_ID (OP4), repointee sur SON
+  # image, avec les memes etapes et les memes scripts que deploy, et SES valeurs.
+  # Il suit deploy : un echec d'Ubac ne deploie pas le convoyeur, et un refus du
+  # convoyeur laisse Ubac deploye. Le mode n'est pas epingle (DP5 = 2) : il est
+  # lu dans les arguments du declencheur, dit au journal et au resume, et la
+  # relecture constate qu'il n'a pas change ; aucun mode ne fait refuser.
+  deploy-convoyeur:
+    needs: [build, deploy]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: production
+    permissions:
+      contents: read
+    # Le groupe de deploy : un seul deploiement a la fois, les deux jobs compris.
+    concurrency:
+      group: deploy
+      cancel-in-progress: false
+    defaults:
+      run:
+        shell: bash
+    env:
+      REFERENCE: ${{ needs.build.outputs.reference-convoyeur }}
+      DEFINITION: ${{ vars.SCW_CONVOYEUR_JOB_DEFINITION_ID }}
+      SCW_DEFAULT_ORGANIZATION_ID: ${{ vars.SCW_DEFAULT_ORGANIZATION_ID }}
+      SCW_DEFAULT_PROJECT_ID: ${{ vars.SCW_DEFAULT_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: le commit du tag est sur main
+        id: main
+        run: git merge-base --is-ancestor HEAD origin/main
+      # Sans OP4, la variable manque : le job echoue ici, avant toute lecture,
+      # Ubac etant deja deploye (docs/integration-continue.md §8).
+      - name: CLI scw
+        id: cli
+        env:
+          SCW_VERSION: 2.62.0
+          SCW_SHA256: 7638c385c1a43a5d9022a63791769fd464e14314032a51411726f062f3053e67
+        run: |
+          [[ -n "$DEFINITION" ]] || { echo "variable de forge SCW_CONVOYEUR_JOB_DEFINITION_ID absente : OP4 n'est pas fait, Ubac est deploye, le convoyeur ne l'est pas" >&2; exit 1; }
+          mkdir -p "$RUNNER_TEMP/bin"
+          curl -fsSL -o "$RUNNER_TEMP/bin/scw" "https://github.com/scaleway/scaleway-cli/releases/download/v$SCW_VERSION/scaleway-cli_${SCW_VERSION}_linux_amd64"
+          echo "$SCW_SHA256  $RUNNER_TEMP/bin/scw" | sha256sum --check --strict
+          chmod +x "$RUNNER_TEMP/bin/scw"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: lecture avant
+        id: avant
+        env:
+          SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
+          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
+        run: |
+          scw jobs definition get "$DEFINITION" region=fr-par -o json > "$RUNNER_TEMP/avant-definition.json"
+          scw jobs trigger list job-definition-id="$DEFINITION" region=fr-par -o json > "$RUNNER_TEMP/avant-declencheurs.json"
+          scw jobs secret list job-definition-id="$DEFINITION" region=fr-par -o json > "$RUNNER_TEMP/avant-secrets.json"
+      # Les valeurs du convoyeur, epinglees ici et nulle part ailleurs : celles
+      # que docs/convoyeur.md fixe a OP4. Sa fenetre entoure SON passage, 19:00.
+      - name: controles avant
+        id: controles
+        env:
+          CPU_MVCPU: '140'
+          MEMOIRE_MIO: '256'
+          DELAI_S: '600'
+          TENTATIVES: '0'
+          DECLENCHEUR: convoyeur
+          FENETRE_MIN: '15'
+          # Les huit de src/convoyeur/env.ts, toutes secretes chez Scaleway.
+          VARIABLES: >-
+            CONVOYEUR_DATABASE_URL CONVOYEUR_COINBASE_API_KEY CONVOYEUR_COINBASE_API_SECRET
+            CONVOYEUR_PRIMARY_UUID CONVOYEUR_DESTINATION_UUID
+            CONVOYEUR_NTFY_URL CONVOYEUR_NTFY_TOPIC CONVOYEUR_NTFY_TOKEN
+          # Aucune variable d'Ubac : les exigees de deploy, et ses UBAC_* (CV3).
+          INTERDITES: >-
+            DATABASE_URL COINBASE_API_KEY COINBASE_API_SECRET COINBASE_PORTFOLIO_UUID
+            BREVO_API_KEY BREVO_SENDER BREVO_RECIPIENT NTFY_URL NTFY_TOPIC NTFY_TOKEN HEALTHCHECK_URL
+            UBAC_*
+          ARGUMENT_REEL: '--reel'
+        run: ./scripts/deploiement/controles.sh
+      - name: mise a jour
+        id: mise-a-jour
+        env:
+          SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
+          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
+        run: scw jobs definition update "$DEFINITION" image-uri="$REFERENCE" region=fr-par -o json > /dev/null
+      - name: lecture apres
+        id: apres
+        env:
+          SCW_ACCESS_KEY: ${{ secrets.SCW_ACCESS_KEY }}
+          SCW_SECRET_KEY: ${{ secrets.SCW_SECRET_KEY }}
+        run: |
+          scw jobs definition get "$DEFINITION" region=fr-par -o json > "$RUNNER_TEMP/apres-definition.json"
+          scw jobs trigger list job-definition-id="$DEFINITION" region=fr-par -o json > "$RUNNER_TEMP/apres-declencheurs.json"
+          scw jobs secret list job-definition-id="$DEFINITION" region=fr-par -o json > "$RUNNER_TEMP/apres-secrets.json"
+      # La relecture, et le mode relu : change pendant le deploiement, c'est un ecart.
+      - name: relecture
+        id: relecture
+        env:
+          DECLENCHEUR: convoyeur
+          ARGUMENT_REEL: '--reel'
+        run: ./scripts/deploiement/relecture.sh
       - name: effacement des lectures
         if: always()
         run: rm -f "$RUNNER_TEMP"/avant-*.json "$RUNNER_TEMP"/apres-*.json

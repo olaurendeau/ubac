@@ -370,6 +370,12 @@ précédent** et la commande qui y revient, à exécuter depuis le poste :
 scw jobs definition update <id-de-la-definition> image-uri=<tag précédent> region=fr-par
 ```
 
+Depuis le lot Y7b, le même tag déploie ensuite le convoyeur (job
+`deploy-convoyeur`) : son résumé porte **son** tag précédent et **sa** commande
+de retour, sur l'identifiant de la définition `ubac-convoyeur`, et le mode lu
+sur son déclencheur. Les deux retours sont indépendants : revenir en arrière sur
+l'un ne touche pas l'autre.
+
 C'est le seul endroit où le tag précédent reste écrit. Avec `latest`, il aurait fallu reconstruire depuis un commit qu'on ne
 saurait plus nommer.
 
