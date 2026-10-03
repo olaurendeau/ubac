@@ -132,6 +132,23 @@ describe('les lignes du journal', () => {
     if (lu !== undefined && 'achat' in lu) expect(lu.achat.filledValue.toFixed()).toBe('99.7');
   });
 
+  /*
+   * Y4b : la cloture d'une panne par l'operateur (`docs/convoyeur.md` §8) est
+   * une ligne `ENREGISTRE` ajoutee apres `EN_PANNE`. Elle l'emporte, a toute
+   * etape ; sans elle, `EN_PANNE` l'emporte sur toute etape du passage.
+   */
+  it('EN_PANNE l’emporte sur les etapes du passage, ENREGISTRE sur EN_PANNE', () => {
+    const ordre = ['ACHAT_DEMANDE', 'ACHETE', 'TRANSFERT_DEMANDE', 'TRANSFERE'] as const;
+    for (const jusqua of ordre) {
+      const lignes = [...ordre.slice(0, ordre.indexOf(jusqua) + 1), 'EN_PANNE' as const].map((e) =>
+        ligneJournal(etape(e)),
+      );
+      expect(dernierDepuisLignes(lignes)?.etape, jusqua).toBe('EN_PANNE');
+      const close = { ...ligneJournal(etape('ENREGISTRE')), reason: 'clos par l’operateur' };
+      expect(dernierDepuisLignes([close, ...lignes]), jusqua).toEqual({ etape: 'ENREGISTRE', convoyage: JOUR });
+    }
+  });
+
   it('un journal vide ne rend aucun convoyage', () => {
     expect(dernierDepuisLignes([])).toBeUndefined();
   });

@@ -110,6 +110,12 @@ const CONVOYEUR_PUR = ['src/convoyeur/regles.ts', 'src/convoyeur/types.ts'];
 const CONVOYEUR_TRANSPORT = ['src/convoyeur/coinbase.ts'];
 /** Seul lieu du convoyeur qui ouvre la base (Y4a) : drizzle et pg n'entrent que la. */
 const CONVOYEUR_BASE = ['src/convoyeur/base.ts'];
+/**
+ * Le passage (Y4b) agit par ses ports : aucune horloge, aucun minuteur, et de
+ * modules nus, `decimal.js` seul (bloc `CONVOYEUR`). L'instant, l'horloge des
+ * etapes et la pause sont des parametres.
+ */
+const CONVOYEUR_PASSAGE = ['src/convoyeur/passage.ts'];
 
 const CONVOYEUR_IMPORT_PATTERN = {
   regex: '(^|/)convoyeur(/|$)',
@@ -174,6 +180,23 @@ const CONVOYEUR_SYNTAX = [
 const CONVOYEUR_GLOBALS = ['fetch', 'XMLHttpRequest', 'WebSocket', 'globalThis', 'require'].map(
   (name) => ({ name, message: 'le convoyeur ne parle au reseau que par son transport enumere.' }),
 );
+
+const PASSAGE_HORLOGE = 'le passage n\'a pas d\'horloge propre : instant, horloge et pause sont injectes (Y4b, piege 1).';
+const PASSAGE_SYNTAX = [
+  "MemberExpression[object.name='Date'][property.name='now']",
+  "NewExpression[callee.name='Date'][arguments.length=0]",
+  "MemberExpression[object.name='Math'][property.name='random']",
+  'MemberExpression[computed=true][object.name=/^(Date|Math)$/]',
+].map((selector) => ({ selector, message: PASSAGE_HORLOGE }));
+const PASSAGE_GLOBALS = [
+  'setTimeout',
+  'setInterval',
+  'setImmediate',
+  'performance',
+  'process',
+  'crypto',
+  'console',
+].map((name) => ({ name, message: PASSAGE_HORLOGE }));
 
 export default tseslint.config(
   {
@@ -306,6 +329,13 @@ export default tseslint.config(
     rules: {
       'no-restricted-syntax': ['error', ...CONVOYEUR_SYNTAX],
       'no-restricted-globals': ['error', ...CONVOYEUR_GLOBALS],
+    },
+  },
+  {
+    files: CONVOYEUR_PASSAGE,
+    rules: {
+      'no-restricted-syntax': ['error', ...CONVOYEUR_SYNTAX, ...PASSAGE_SYNTAX],
+      'no-restricted-globals': ['error', ...CONVOYEUR_GLOBALS, ...PASSAGE_GLOBALS],
     },
   },
   {
