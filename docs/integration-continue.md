@@ -78,8 +78,9 @@ divergence rougit **sur le poste**, pas six mois plus tard.
 ## 3. Le garde-fou : `test/ci/workflow.test.ts`
 
 Il fait partie de `make test`. Il lit les workflows, `package.json`, les deux
-`Dockerfile`, `src/config/env.ts`, les deux scripts de `scripts/deploiement/` et
-les seuils de `vitest.config.ts`, et tient vingt-quatre règles :
+`Dockerfile`, `src/config/env.ts`, `src/convoyeur/env.ts`, les deux scripts de
+`scripts/deploiement/` et les seuils de `vitest.config.ts`, et tient vingt-six
+règles :
 
 | Règle | Ce qu'elle refuse |
 |---|---|
@@ -88,7 +89,7 @@ les seuils de `vitest.config.ts`, et tient vingt-quatre règles :
 | La couverture mord | un script `test:coverage` qui n'est plus `vitest run --coverage`, ou un seuil de `risk.ts` sous 100 % |
 | Scripts déclarés | un `npm run` vers un script absent de `package.json`, un `npx`, un `npm` autre que `ci` et `run` |
 | Node aligné | un `node-version` hors de `engines.node`, non épinglé à un majeur, ou d'un autre majeur que les deux `Dockerfile` |
-| `needs` | un `build` sans `needs: test`, un `deploy` sans `needs: build`, et tout job qui ne dépend pas, même indirectement, de `test` |
+| `needs` | un `build` sans `needs: test`, un `deploy` sans `needs: build`, un `deploy-convoyeur` sans `needs: build` **et** `deploy`, et tout job qui ne dépend pas, même indirectement, de `test` |
 | Porte inconditionnelle | un `if:` sur le job ou l'une de ses étapes — un contrôle requis **sauté compte comme réussi** —, ou un `continue-on-error` |
 | Aucun `latest` | la chaîne `latest` sur n'importe quelle ligne, commentaires compris |
 | Aucune migration | `drizzle-kit`, `db-push` ou `db:push` sur n'importe quelle ligne (`docs/base-de-donnees.md` §5) |
@@ -100,17 +101,18 @@ les seuils de `vitest.config.ts`, et tient vingt-quatre règles :
 | Aucune réécriture | une construction, une vérification ou une poussée non conditionnée par l'absence constatée dans le registre **pour son image** ; une étape `registre` ou `registre-convoyeur` qui prendrait toute erreur pour une absence, ou lirait la référence de l'autre ; un `build` sans file par `github.sha` |
 | Cibles | un `Dockerfile.prod` qui compile plus d'une fois, sans cible `ubac` ou `convoyeur`, ou dont la dernière cible n'est pas `ubac` : un build sans `--target` livrerait autre chose qu'Ubac |
 | Connexion | un `${{ secrets… }}` ailleurs que dans l'`env` d'une étape dont le script est exactement `printf '%s' "$…" \| docker login "$REGISTRE" --username nologin --password-stdin`, ou dont chaque commande est `scw` ; un `set -x` ou `xtrace` sur n'importe quelle ligne |
-| Rampe | un `deploy` dont le `if` n'est pas exactement `github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')` : `main` n'ouvre le déploiement qu'en R4 |
-| Déploiement | un `deploy` hors de l'environnement `production` ; des étapes `main`, `cli`, `avant`, `controles`, `mise-a-jour`, `apres`, `relecture` absentes, dans un autre ordre, sautées par un `if` ou avalées par `continue-on-error` ; une lecture après qui ne relit pas la lecture avant ; deux déploiements simultanés ou un déploiement annulé |
-| Provenance | un checkout sans l'historique de `main` ; un tag déployé sans `git merge-base --is-ancestor HEAD origin/main` ; un CLI `scw` non vérifié contre son empreinte ; toute action autre que `actions/checkout` |
-| Écriture | toute commande `scw` autre que les trois lectures vers un fichier de `$RUNNER_TEMP` et **la** mise à jour de la seule image |
+| Rampe | un `deploy` ou un `deploy-convoyeur` dont le `if` n'est pas exactement `github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')` : `main` n'ouvre le déploiement qu'en R4, et un `always()` ferait suivre au convoyeur un échec d'Ubac |
+| Déploiement | pour chacun des deux jobs : un job hors de l'environnement `production` ; des étapes `main`, `cli`, `avant`, `controles`, `mise-a-jour`, `apres`, `relecture` absentes, dans un autre ordre, sautées par un `if` ou avalées par `continue-on-error` ; une lecture après qui ne relit pas la lecture avant ; deux déploiements simultanés, les deux jobs partageant la file `deploy`, ou un déploiement annulé |
+| Provenance | pour chacun des deux jobs : un checkout sans l'historique de `main` ; un tag déployé sans `git merge-base --is-ancestor HEAD origin/main` ; un CLI `scw` non vérifié contre son empreinte ; toute action autre que `actions/checkout` |
+| Écriture | toute commande `scw` autre que les trois lectures vers un fichier de `$RUNNER_TEMP` et, **une fois par job de déploiement**, la mise à jour de la seule image |
 | Configuration du CLI | une étape qui appelle `scw` sans `SCW_DEFAULT_ORGANIZATION_ID` et `SCW_DEFAULT_PROJECT_ID` valant exactement `${{ vars.… }}` du même nom, dans l'`env` du workflow, du job ou de l'étape — sans organisation, le CLI refuse toute commande |
-| Appels | une étape `controles` ou `relecture` dont le `run` n'est pas exactement `./scripts/deploiement/controles.sh` ou `./scripts/deploiement/relecture.sh` ; un `CPU_MVCPU`, `MEMOIRE_MIO`, `DELAI_S`, `TENTATIVES`, `DECLENCHEUR` ou `FENETRE_MIN` autre que les valeurs d'Ubac (140, 256, 300, 0, `daily`, 15) ; une commande `scw` dans l'un des deux scripts |
-| Variables | une liste `VARIABLES` des contrôles différente des variables sans défaut de `src/config/env.ts` |
+| Appels | une étape `controles` ou `relecture` dont le `run` n'est pas exactement `./scripts/deploiement/controles.sh` ou `./scripts/deploiement/relecture.sh` ; un `CPU_MVCPU`, `MEMOIRE_MIO`, `DELAI_S`, `TENTATIVES`, `DECLENCHEUR`, `FENETRE_MIN` autre que les valeurs d'Ubac (140, 256, 300, 0, `daily`, 15) ou du convoyeur (140, 256, 600, 0, `convoyeur`, 15) ; un `INTERDITES` d'Ubac autre que `CONVOYEUR_*` ; un `ARGUMENT_REEL` absent des contrôles ou de la relecture du convoyeur, ou présent chez Ubac ; une commande `scw` dans l'un des deux scripts |
+| Variables | une liste `VARIABLES` différente des variables sans défaut de `src/config/env.ts` (Ubac) ou de `VARIABLES_CONVOYEUR` de `src/convoyeur/env.ts` (convoyeur) ; un `INTERDITES` du convoyeur autre que les variables exigées d'Ubac plus `UBAC_*` ; une variable du convoyeur sans le préfixe `CONVOYEUR_` qu'Ubac refuse |
+| Définitions | un job qui ne lit pas **sa** variable de forge (`SCW_JOB_DEFINITION_ID`, `SCW_CONVOYEUR_JOB_DEFINITION_ID`) ou ne reçoit pas **son** image de `build` (`reference`, `reference-convoyeur`) ; une étape `cli` qui ne nomme pas la variable absente |
 | Concurrence | un groupe sans `github.ref`, ou une annulation inconditionnelle qui interromprait `main` |
 
 Chaque règle a au moins une **sonde** : une mutation du dépôt réel, appliquée
-en mémoire, qui doit la faire rougir. Soixante-dix-sept sondes, dont les quatre
+en mémoire, qui doit la faire rougir. Quatre-vingt-treize sondes, dont les quatre
 mutations exigées par le plan — retirer `needs: test`, remplacer la couverture
 par `npm test`, écrire `drizzle-kit` dans un workflow, faire diverger la version
 de Node. Les seize sondes de R2 comprennent les trois mutations exigées par son
@@ -129,7 +131,17 @@ constatée sur la référence d'Ubac ; une seconde compilation, la cible
 renommée, le convoyeur en dernière cible. La mutation exigée par le plan d'Y6
 — le point d'entrée du convoyeur pointé sur `daily-main` — rougit
 `test/scripts/entrypoint-convoyeur.test.ts`, et `verifier-image.sh` dans
-l'image.
+l'image. Les seize d'Y7b, dont la mutation exigée par son plan — `needs: deploy`
+retiré du job du convoyeur — : le convoyeur déployé après un échec d'Ubac, dans
+sa propre file, depuis un tag hors de `main` ; ses valeurs remplacées par celles
+d'Ubac (déclencheur, délai), sa relecture sans le mode ; les variables du
+convoyeur plus interdites chez Ubac, les `UBAC_*` plus interdites chez le
+convoyeur, une variable du convoyeur oubliée ou sans son préfixe ; la définition
+ou l'image d'Ubac données au convoyeur, la sortie `reference-convoyeur` retirée,
+la variable absente tue ; une seconde écriture. Les deux autres mutations de son
+plan visent les scripts et rougissent `deploiement.test.ts` : le mode qui n'est
+plus écrit au résumé, et le déclencheur unique d'Ubac relâché — sa sonde « un
+second déclencheur », inchangée depuis R3.
 
 Le garde-fou prouve que les étapes de `deploy` sont là ; `test/ci/deploiement.test.ts`
 prouve qu'elles mordent : il **exécute** les contrôles et la relecture tels que
@@ -359,8 +371,54 @@ paramétrés par leur environnement ; les valeurs d'Ubac (`CPU_MVCPU`,
 `VARIABLES`) restent épinglées dans l'`env` de l'étape `controles`, et le
 garde-fou (§3, règle « Appels ») refuse qu'elles changent. Les scripts ne
 parlent pas à Scaleway : ils lisent les fichiers des lectures, et l'écriture de
-l'image reste la seule, dans `ci.yml`. C'est la préparation d'un second job de
-déploiement (Y7b), qui appellera les mêmes scripts avec ses propres valeurs.
+l'image reste la seule, dans `ci.yml`. Le second job de déploiement (Y7b)
+appelle les mêmes scripts avec ses propres valeurs.
+
+**Une règle gagnée par Ubac** (Y7b, CV3) : `INTERDITES: CONVOYEUR_*` refuse
+toute variable, ordinaire ou secrète, dont le nom commence par `CONVOYEUR_`
+sur la définition d'Ubac. Aucune autre n'est perdue : ses valeurs, ses étapes et
+les attentes de ses sondes sont celles d'Y7a. La seule retouche de son job est un
+nom : l'image attendue s'appelle `REFERENCE` dans les deux jobs, que la mise à
+jour et la relecture lisent.
+
+### Le convoyeur : le job `deploy-convoyeur`
+
+Lot **Y7b**, décisions Q7, U8, DP5 = 2. Le même tag repointe ensuite la
+définition `ubac-convoyeur`, désignée par la variable de forge
+`SCW_CONVOYEUR_JOB_DEFINITION_ID` (OP4), sur l'image `ubac-convoyeur` du même
+commit (sortie `reference-convoyeur` de `build`). Mêmes étapes, mêmes scripts,
+même environnement `production`, même file `deploy` : un seul déploiement à la
+fois, les deux jobs compris.
+
+- **Il suit `deploy`** (`needs: [build, deploy]`, sans `always()`) : un échec ou
+  un refus d'Ubac ne déploie pas le convoyeur ; un refus du convoyeur laisse Ubac
+  déployé, et le run du tag est rouge.
+- **Ses valeurs**, épinglées dans l'appel : 140 mVCPU, 256 Mio, délai 600 s,
+  aucune tentative (celles qu'OP4 pose, [convoyeur.md](convoyeur.md) §4) ; le
+  seul déclencheur `convoyeur` ; les huit variables de `src/convoyeur/env.ts` ;
+  **aucune variable d'Ubac** — ses onze variables exigées et tout `UBAC_*`.
+- **Sa fenêtre** : 15 minutes autour de **son** passage, `0 19 * * *` en
+  `Europe/Paris`. Un tag posé à 18:50 déploie Ubac et refuse le convoyeur ; c'est
+  voulu, *Re-run failed jobs* après 19:15 le reprend seul.
+- **Le mode n'est pas épinglé** (DP5 = 2). Les contrôles le **lisent** dans les
+  arguments du déclencheur (`cron_config.args` : `REEL` si l'un vaut exactement
+  `--reel`, comme `src/convoyeur/main.ts`, `DRY_RUN` sinon) et l'écrivent au
+  journal et au résumé du run — « mode du convoyeur : DRY_RUN » ou « REEL » —,
+  avant tout refus. Aucun mode ne fait refuser. La relecture le relit et rougit
+  s'il a changé pendant le déploiement (« mode du convoyeur DRY_RUN avant, REEL
+  après »). Le déploiement n'écrit jamais le mode : seule la console le change
+  (OP6).
+- **Une forme non lue** des arguments — clé `args` absente, ou autre chose qu'un
+  tableau ou `null` — refuse, sans rien modifier : une forme inattendue ne passe
+  pas pour un `DRY_RUN`. Relevé le 2026-10-03 dans le SDK du CLI 2.62.0
+  (`TriggerCronConfig.Args []string`, sans `omitempty`) : la clé est toujours
+  là, `null` quand le déclencheur n'a pas d'argument.
+- **Sans `SCW_CONVOYEUR_JOB_DEFINITION_ID`** (OP4 pas fait), l'étape `cli`
+  échoue en nommant la variable, avant toute lecture et donc sans rien écrire,
+  **après** qu'Ubac a été déployé : le run du tag est rouge. Poser la variable
+  avant le premier tag qui contient Y7b. Le premier déploiement du convoyeur
+  n'attend pas ce job : OP4 crée la définition sur l'image que `build` a déjà
+  poussée.
 
 **L'égalité, et non la documentation.** La relecture compare à ce que la
 production portait avant, que les contrôles ont épinglé avant d'écrire. Constaté
@@ -382,6 +440,7 @@ d'après le motif, et la commande de retour en arrière est au résumé du run.
 |---|---|---|
 | Environnement `production`, sans relecteur ; *Deployment branches and tags* : **Selected**, une règle de **tag** `v*` | *Settings → Environments* | `gh api repos/olaurendeau/ubac/environments/production/deployment-branch-policies --jq '[.branch_policies[] \| {name, type}]'` → `[{"name":"v*","type":"tag"}]` |
 | Variable de dépôt `SCW_JOB_DEFINITION_ID` : l'identifiant de la définition du job | *Settings → Secrets and variables → Actions* | `gh variable list` |
+| Variable de dépôt `SCW_CONVOYEUR_JOB_DEFINITION_ID` : l'identifiant de la définition `ubac-convoyeur` (OP4), **avant le premier tag qui contient Y7b** | *Settings → Secrets and variables → Actions* | `gh variable list` |
 
 Sans environnement créé à la main, le premier run le créerait **sans aucune
 règle**. R4 ajoutera `main` à la règle. `deploy` utilise les secrets
@@ -413,5 +472,9 @@ fourni pour que les défauts du CLI soient ceux du compte.
   vérifiable.
 - **Les secrets sont de portée dépôt** : un autre job du dépôt pourrait les lire.
   Les déplacer dans l'environnement `production` est un geste de console.
+- **Le mode lu n'est que celui du déclencheur.** Un lancement à la main (*Run
+  job*) ne porte pas ses arguments ([convoyeur.md](convoyeur.md) §6), et des
+  `args` posés sur la définition elle-même ne sont pas lus comme un mode — la
+  relecture constate seulement qu'ils n'ont pas changé.
 - **Le test exécute les étapes avec le jq du poste** (1.6, `Dockerfile`), le
   runner avec le sien (1.7).

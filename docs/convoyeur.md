@@ -19,7 +19,7 @@ dans Orca : on y rapporte des constats.
 | **OP1** | **au plus tard le 2026-10-09** | liste blanche activée et vide, clé créée sur *Primary*, rangée hors dépôt | [§2](#2-op1--la-liste-blanche-puis-la-clé) |
 | OP3 | avant tout tag qui contient Y4a | `db:push` sur Neon, script du rôle, mot de passe | [§5](#5-op3--le-rôle-neon-et-son-mot-de-passe) |
 | OP2 | après OP1 et Y10, avant OP4 | mesures MC1 à MC3 (CV20 à CV22), outil d'Y10 | — |
-| OP4 | après Y6, OP3 et OP2 ; le 2026-10-24 au plus tard | définition Scaleway `ubac-convoyeur`, déclencheur **sans argument**, secrets | [§4](#4-les-huit-variables-du-convoyeur) |
+| OP4 | après Y6, OP3 et OP2 ; le 2026-10-24 au plus tard | définition Scaleway `ubac-convoyeur` à 140 mVCPU, 256 Mio, délai 600 s, aucune tentative ; déclencheur `convoyeur` `0 19 * * *` Europe/Paris **sans argument**, secrets ; variable de forge `SCW_CONVOYEUR_JOB_DEFINITION_ID` | [§4](#4-les-huit-variables-du-convoyeur) |
 | OP5 | virement du ~2026-10-27 | `DRY_RUN`, puis le geste manuel une dernière fois | [§7](#7-octobre--le-dry_run-voit-leur-puis-le-geste-manuel) |
 | OP6 | après Y7b, Y8, S13, OP5, et CV20 à CV22 favorables | `--reel` ajouté au déclencheur | [§6](#6-le-mode--dry_run-par-défaut---reel-à-la-main) |
 
@@ -215,7 +215,9 @@ listes.
 | `CONVOYEUR_NTFY_TOKEN` | même valeur que `NTFY_TOKEN` | un jeton porteur, **ou** la sentinelle `CANAL-PUBLIC-SANS-JETON` ([deploiement.md](deploiement.md#ntfy_token--le-canal-ouvert-se-déclare)) |
 
 - **Chez Scaleway, seulement**, en variables **secrètes** de la définition
-  `ubac-convoyeur` (OP4). Ni dans le `.env` du poste, ni dans `.env.example`,
+  `ubac-convoyeur` (OP4), créée à **140 mVCPU, 256 Mio, délai 600 s, aucune
+  tentative** : les valeurs que `deploy-convoyeur` exige à chaque tag
+  ([integration-continue.md](integration-continue.md) §8). Ni dans le `.env` du poste, ni dans `.env.example`,
   ni dans les secrets GitHub, ni dans la définition d'Ubac — et aucune variable
   d'Ubac dans celle du convoyeur (CV3).
 - Les valeurs ntfy sont **posées deux fois**, sous deux noms : même canal,
