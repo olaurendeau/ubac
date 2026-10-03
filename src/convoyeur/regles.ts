@@ -23,6 +23,19 @@ import type {
 /** Q3, Q6 : exactement 100 EUR par passage, jamais plus, jamais moins. */
 export const MONTANT_CONVOYE = new Decimal('100') as EurAmount;
 
+/**
+ * Decision de l'operateur du 2026-10-03 (spec, DC10) : un USDC de *Primary*
+ * strictement sous ce seuil est de la poussiere. Sans convoyage ouvert, il
+ * n'est pas etranger (CV10) ; pendant un convoyage, il n'est pas l'USDC de
+ * l'achat. Il n'est jamais transfere, et il est dit dans la notification.
+ */
+export const SEUIL_POUSSIERE_USDC = new Decimal('1') as UsdcAmount;
+
+/** Un USDC lisible, positif ou nul, strictement sous `SEUIL_POUSSIERE_USDC`. */
+export function estPoussiere(usdc: UsdcAmount): boolean {
+  return usdc.isFinite() && usdc.gte(0) && usdc.lt(SEUIL_POUSSIERE_USDC);
+}
+
 /** Le surplus laisse dans *Primary* quand un convoyage commence (CV7). */
 export function surplus(eurDisponible: EurAmount): EurAmount {
   return eurDisponible.minus(MONTANT_CONVOYE) as EurAmount;
@@ -167,14 +180,53 @@ export function transfertAdmis(
 
 // --- Reprise ------------------------------------------------------------------
 
+/**
+ * Ou est l'USDC d'un achat, d'apres le solde relu de *Primary* (DC3, DC10) :
+ *
+ * - `PRESENT` : le solde est `montant` plus une poussiere, `0 <= solde - montant < 1` ;
+ * - `PARTI` : il ne reste qu'une poussiere, `0 <= solde < 1` ;
+ * - `INCOHERENT` : ni l'un ni l'autre, ou illisible.
+ *
+ * Les deux premiers sont disjoints parce que `montant >= SEUIL_POUSSIERE_USDC`,
+ * que la table exige avant de consulter ce constat. Une seule fonction, pour que
+ * la table et la relecture apres `move_funds` (Y4b) lisent le meme solde de la
+ * meme facon. La poussiere n'a pas a etre connue d'avance : les recompenses
+ * USDC la font varier, une egalite a un montant note la casserait.
+ *
+ * `minus` arrondit a 20 chiffres significatifs : un reste sous 1 le reste, sauf
+ * plus de vingt 9 apres la virgule, arrondis a 1, donc `INCOHERENT`. L'arrondi
+ * ne va que vers la panne, jamais vers un transfert.
+ */
+export type Constat =
+  | { readonly usdc: 'PRESENT' | 'PARTI'; readonly poussiere: UsdcAmount }
+  | { readonly usdc: 'INCOHERENT' };
+
+export function constater(usdcRelu: UsdcAmount, montant: UsdcAmount): Constat {
+  const reste = usdcRelu.minus(montant) as UsdcAmount;
+  if (estPoussiere(reste)) return { usdc: 'PRESENT', poussiere: reste };
+  if (estPoussiere(usdcRelu)) return { usdc: 'PARTI', poussiere: usdcRelu };
+  return { usdc: 'INCOHERENT' };
+}
+
 /** Un convoyage que le journal laisse ouvert : toute derniere etape sauf `ENREGISTRE`. */
 export type ConvoyageOuvert = Exclude<DernierConvoyage, { readonly etape: 'ENREGISTRE' }>;
 
 /** Ce que la table de reprise (plan, point 3) demande de faire ensuite. */
 export type Suite =
   | { readonly faire: 'RELIRE_ORDRE'; readonly clientOrderId: string }
-  | { readonly faire: 'TRANSFERER'; readonly montant: UsdcAmount; readonly achat: Achat }
-  | { readonly faire: 'NOTER_TRANSFERE'; readonly transfereLe: Date; readonly achat: Achat }
+  | {
+      readonly faire: 'TRANSFERER';
+      readonly montant: UsdcAmount;
+      readonly achat: Achat;
+      /** Ce que *Primary* garde en plus de l'achat : jamais transfere (DC10). */
+      readonly poussiere: UsdcAmount;
+    }
+  | {
+      readonly faire: 'NOTER_TRANSFERE';
+      readonly transfereLe: Date;
+      readonly achat: Achat;
+      readonly poussiere: UsdcAmount;
+    }
   | { readonly faire: 'ENREGISTRER'; readonly transfereLe: Date; readonly achat: Achat }
   | { readonly faire: 'PANNE'; readonly motif: string };
 
@@ -214,29 +266,32 @@ function reprendreApresAchat(
   const { achat } = ouvert;
   const montant = montantATransferer(achat);
   /*
-   * Un `filled_size` nul rendrait les deux lignes de la table vraies a la fois :
-   * USDC relu `= filled_size` et `= 0`. Transferer zero, ou croire fait un
-   * transfert jamais demande : les deux sont faux, l'achat est a constater.
+   * Un `filled_size` sous le seuil de poussiere rendrait `PRESENT` et `PARTI`
+   * vrais a la fois. Transferer une poussiere, ou croire fait un transfert
+   * jamais demande : les deux sont faux, l'achat est a constater. 100 EUR en
+   * achetent cent fois plus.
    */
-  if (!(montant.isFinite() && montant.gt(0))) {
+  if (!(montant.isFinite() && montant.gte(SEUIL_POUSSIERE_USDC))) {
     return panne(
-      `convoyage ${ouvert.convoyage} a ${ouvert.etape} avec filled_size ${montant.toFixed()} : aucun USDC a transferer.`,
+      `convoyage ${ouvert.convoyage} a ${ouvert.etape} avec filled_size ${montant.toFixed()}, sous le seuil de poussiere de ${SEUIL_POUSSIERE_USDC.toFixed()} USDC : aucun USDC a transferer.`,
     );
   }
-  if (usdcRelu.eq(montant)) {
-    return { faire: 'TRANSFERER', montant, achat };
+  const constat = constater(usdcRelu, montant);
+  if (constat.usdc === 'PRESENT') {
+    // CV8 : `filled_size`, jamais le solde ; la poussiere reste dans Primary.
+    return { faire: 'TRANSFERER', montant, achat, poussiere: constat.poussiere };
   }
-  if (usdcRelu.isZero()) {
+  if (constat.usdc === 'PARTI') {
     if (ouvert.etape === 'TRANSFERT_DEMANDE') {
       // DC5 : fait entre la demande et la panne ; son instant est celui de la demande.
-      return { faire: 'NOTER_TRANSFERE', transfereLe: ouvert.demandeLe, achat };
+      return { faire: 'NOTER_TRANSFERE', transfereLe: ouvert.demandeLe, achat, poussiere: constat.poussiere };
     }
     return panne(
       `convoyage ${ouvert.convoyage} a ACHETE : l'USDC est parti de Primary sans demande de transfert.`,
     );
   }
   return panne(
-    `convoyage ${ouvert.convoyage} a ${ouvert.etape} : ${usdcRelu.toFixed()} USDC dans Primary, ni 0 ni filled_size ${montant.toFixed()}. Aucun transfert.`,
+    `convoyage ${ouvert.convoyage} a ${ouvert.etape} : ${usdcRelu.toFixed()} USDC dans Primary, ni une poussiere ni filled_size ${montant.toFixed()} plus une poussiere (seuil ${SEUIL_POUSSIERE_USDC.toFixed()} USDC). Aucun transfert.`,
   );
 }
 
@@ -259,13 +314,20 @@ export interface EntreePassage {
  * `MONTANT_CONVOYE`. `REFUSER` et une `Suite` a `PANNE` sont `urgent`.
  */
 export type Decision =
-  | { readonly action: 'RIEN'; readonly motif: string; readonly eurDisponible: EurAmount }
+  | {
+      readonly action: 'RIEN';
+      readonly motif: string;
+      readonly eurDisponible: EurAmount;
+      /** L'USDC de *Primary*, sous le seuil (DC10) ; zero le plus souvent. */
+      readonly poussiere: UsdcAmount;
+    }
   | {
       readonly action: 'COMMENCER';
       readonly convoyage: Convoyage;
       readonly clientOrderId: string;
       readonly quoteSize: EurAmount;
       readonly eurLaisse: EurAmount;
+      readonly poussiere: UsdcAmount;
     }
   | { readonly action: 'REPRENDRE'; readonly convoyage: Convoyage; readonly suite: Suite }
   | { readonly action: 'REFUSER'; readonly motif: string };
@@ -275,8 +337,9 @@ export type Decision =
  *
  * 1. un convoyage ouvert se reprend, quel que soit l'EUR (DC6), et le passage ne
  *    commence rien d'autre ;
- * 2. sans convoyage ouvert, un USDC dans *Primary* est etranger : refus, aucun
- *    achat (CV10, DC3) ;
+ * 2. sans convoyage ouvert, un USDC dans *Primary* d'au moins
+ *    `SEUIL_POUSSIERE_USDC` est etranger : refus, aucun achat (CV10, DC3) ;
+ *    en dessous, c'est une poussiere, ignoree et dite (DC10) ;
  * 3. un convoyage deja ferme ce jour-la, ou plus tard, n'en ouvre pas un second
  *    (DC8 ; second lancement du meme jour, piege 4 d'Y4b) ;
  * 4. EUR >= 100, seuil inclusif (Q6) : exactement 100 ; sinon rien (CV5).
@@ -287,17 +350,20 @@ export function deciderPassage(entree: EntreePassage): Decision {
     const suite = reprendre(dernier, usdcRelu);
     return { action: 'REPRENDRE', convoyage: dernier.convoyage, suite };
   }
-  if (!usdcRelu.isZero()) {
+  if (!estPoussiere(usdcRelu)) {
     return {
       action: 'REFUSER',
       motif: `${usdcRelu.toFixed()} USDC dans Primary sans convoyage ouvert : USDC etranger, aucun achat.`,
     };
   }
+  // DC10 : sous le seuil, le solde entier est une poussiere, ignoree et dite.
+  const poussiere = usdcRelu;
   if (dernier !== undefined && dernier.convoyage >= jour) {
     return {
       action: 'RIEN',
       motif: `convoyage ${dernier.convoyage} deja enregistre : un passage par jour, un convoyage au plus.`,
       eurDisponible,
+      poussiere,
     };
   }
   if (!eurDisponible.isFinite()) {
@@ -310,12 +376,14 @@ export function deciderPassage(entree: EntreePassage): Decision {
       clientOrderId: clientOrderIdConvoyage(jour),
       quoteSize: MONTANT_CONVOYE,
       eurLaisse: surplus(eurDisponible),
+      poussiere,
     };
   }
   return {
     action: 'RIEN',
     motif: `${eurDisponible.toFixed()} EUR disponibles dans Primary, sous le seuil de ${MONTANT_CONVOYE.toFixed()} : rien a faire.`,
     eurDisponible,
+    poussiere,
   };
 }
 
@@ -366,6 +434,17 @@ export interface CompteRendu {
   /** L'EUR disponible laisse dans *Primary*, au dernier solde lu ; absent si aucun ne l'a ete. */
   readonly eurLaisse: EurAmount | undefined;
   readonly motif: string | undefined;
+  /** La poussiere ignoree (DC10), au dernier constat ; absente si aucun ne l'a lue. */
+  readonly poussiere: UsdcAmount | undefined;
+}
+
+/**
+ * DC10 : la ligne d'information d'une poussiere, montant compris. Rien pour
+ * une poussiere nulle ou absente. Elle ne change jamais la priorite.
+ */
+export function lignePoussiere(poussiere: UsdcAmount | undefined): string | undefined {
+  if (poussiere === undefined || poussiere.isZero()) return undefined;
+  return `poussiere ignoree dans Primary : ${poussiere.toFixed()} USDC, sous le seuil de ${SEUIL_POUSSIERE_USDC.toFixed()} USDC`;
 }
 
 export interface Notification {
@@ -382,7 +461,8 @@ function montant(valeur: Decimal | undefined, devise: string, absent = 'aucun'):
  * CV17, CV13, DP4 : le texte d'une notification. Prefixe « convoyeur » ; EUR
  * debite, USDC recu, frais, etape atteinte, EUR laisse dans *Primary*. `URGENT`
  * des qu'un refus, une panne, ou une etape autre que `ENREGISTRE` laisse
- * transfert et ligne incomplets (CV13).
+ * transfert et ligne incomplets (CV13). Une poussiere ignoree est une ligne
+ * d'information, sans effet sur la priorite (DC10).
  *
  * `marque` suit le prefixe dans le titre : le point de composition (Y5) y met le
  * nom du mode sans ecriture, et rien en reel (DP4 = 1). Ce fichier ne nomme pas
@@ -390,7 +470,8 @@ function montant(valeur: Decimal | undefined, devise: string, absent = 'aucun'):
  * voyage pas (piege 1 d'Y5).
  */
 export function notification(compteRendu: CompteRendu, marque?: string): Notification {
-  const { nature, convoyage, etape, achat, eurLaisse, motif } = compteRendu;
+  const { nature, convoyage, etape, achat, eurLaisse, motif, poussiere } = compteRendu;
+  const information = lignePoussiere(poussiere);
   const prefixe = marque === undefined ? 'convoyeur' : `convoyeur ${marque}`;
   const complet = etape === 'ENREGISTRE' && (nature === 'CONVOYAGE' || nature === 'REPRISE');
   const lignes = [
@@ -400,6 +481,7 @@ export function notification(compteRendu: CompteRendu, marque?: string): Notific
     `frais : ${montant(achat?.totalFees, 'EUR')}`,
     `etape atteinte : ${etape ?? 'aucune'}`,
     `EUR laisse dans Primary : ${montant(eurLaisse, 'EUR', 'non lu')}`,
+    ...(information === undefined ? [] : [information]),
     ...(motif === undefined ? [] : [`motif : ${motif}`]),
   ];
   if (etape !== undefined) {

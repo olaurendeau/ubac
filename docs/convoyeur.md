@@ -327,7 +327,8 @@ l'opérateur agit trop tôt : un passage qui ne voit plus d'EUR ne prouve rien.
      USDC-EUR de 100 EUR ;
    - transférer **tout** l'USDC acheté de *Primary* vers `ubac-agent` : un USDC
      laissé dans *Primary* serait lu le soir suivant comme étranger (CV10),
-     avec une alerte `urgent` ;
+     avec une alerte `urgent`, dès 1 USDC ; en dessous, c'est une poussière,
+     ignorée et dite dans la notification (DC10) ;
    - saisir la ligne `cash_flows` comme aujourd'hui (origine `OPERATEUR` par
      défaut).
 4. **Rapporter dans Orca** (CV23) : les lignes du journal du passage (l'ordre
@@ -351,8 +352,9 @@ relit l'exchange.
   second ordre (S5). L'ordre se relit quatre fois avant d'être dit « non
   rempli ».
 - **`move_funds` part une fois par passage au plus**, levé ou non : ensuite le
-  passage relit le solde de *Primary* (0 : fait ; `filled_size` : non
-  constaté) et ne rappelle jamais. S'il le faut, c'est le passage suivant qui
+  passage relit le solde de *Primary* (une poussière de moins de 1 USDC : fait ;
+  `filled_size` plus cette poussière : non constaté, DC10) et ne rappelle
+  jamais. S'il le faut, c'est le passage suivant qui
   transfère, l'USDC étant encore là (DC3).
 - **L'instant de l'apport** (DC5) est celui de la `TRANSFERT_DEMANDE` du
   passage qui a appelé `move_funds`. Un transfert **refait** par un passage
@@ -409,8 +411,9 @@ ajoutée** au convoyage en panne : le journal reste en ajout seul, et
    dans `ubac-agent` **et** a sa ligne `cash_flows` (saisie comme aujourd'hui,
    à l'instant du transfert, **avant** le run de 07:00), ou bien ni l'un ni
    l'autre ;
-2. **laisser *Primary* sans USDC** : le passage suivant lirait un reste comme
-   étranger (CV10) ;
+2. **laisser dans *Primary* moins de 1 USDC** : le passage suivant lirait un
+   reste de 1 USDC ou plus comme étranger (CV10) ; une poussière est ignorée
+   (DC10) ;
 3. **clore**, avec la chaîne d'Ubac et le `psql` du §5, `<jour>` étant le
    convoyage dit par la notification :
 

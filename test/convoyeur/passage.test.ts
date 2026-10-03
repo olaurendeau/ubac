@@ -337,3 +337,95 @@ describe('Y4b — arreter, et le dire (CV10, CV13)', () => {
     expect(pauses).toHaveLength(TENTATIVES - 1);
   });
 });
+
+describe('DC10 — une poussiere dans Primary (decision du 2026-10-03)', () => {
+  /** Le solde du premier DRY_RUN reel, le 2026-10-03 a 21:54Z, avec 0.0077 EUR. */
+  const CONSTATEE = '0.0000008962268961';
+
+  const avecPoussiere = (eur: string, poussiere: string): DoubleCoinbase => {
+    const coinbase = doubleCoinbase(eur);
+    coinbase.usdcPrimary = new Decimal(poussiere);
+    return coinbase;
+  };
+
+  it('le constat du 2026-10-03 : ni refus ni notification, une ligne de journal dit la poussiere', async () => {
+    const coinbase = avecPoussiere('0.0077', CONSTATEE);
+    const base = doubleBase();
+    const { compteRendu, logs } = await passer(coinbase, base, '2026-10-03');
+    expect(compteRendu).toBeUndefined();
+    expect(logs).toContain(`poussiere ignoree dans Primary : ${CONSTATEE} USDC, sous le seuil de 1 USDC`);
+    expect(coinbase.appels).toEqual(['keyPermissions', 'balances']);
+    expect(base.journal).toEqual([]);
+  });
+
+  it.each(['0.0000009', '0.99'])(
+    'avec %s USDC, convoie filled_size seul, laisse la poussiere, et la dit sans urgence',
+    async (poussiere) => {
+      const coinbase = avecPoussiere('230', poussiere);
+      const base = doubleBase();
+      const { compteRendu } = await passer(coinbase, base, '2026-11-27');
+      expect(etapes(base)).toEqual(['ACHAT_DEMANDE', 'ACHETE', 'TRANSFERT_DEMANDE', 'TRANSFERE', 'ENREGISTRE']);
+      expect(coinbase.transferts.map((d) => d.toFixed())).toEqual([RECU.toFixed()]);
+      expect(coinbase.usdcPrimary.toFixed()).toBe(poussiere);
+      expect(base.apports.map((l) => l.amountUsdc.toFixed())).toEqual([RECU.toFixed()]);
+      expect(compteRendu?.poussiere?.toFixed()).toBe(poussiere);
+      const note = notification(compteRendu as CompteRendu);
+      expect(note.priorite).toBe('HIGH');
+      expect(note.corps).toContain(`poussiere ignoree dans Primary : ${poussiere} USDC`);
+
+      // Le lendemain, la poussiere restee n'arrete pas le convoyage suivant.
+      expect((await passer(coinbase, base, '2026-11-28')).compteRendu?.etape).toBe('ENREGISTRE');
+      expect(coinbase.ordresCrees).toHaveLength(2);
+      expect(coinbase.transferts).toHaveLength(2);
+      expect(coinbase.usdcPrimary.toFixed()).toBe(poussiere);
+    },
+  );
+
+  it.each(['0.0000009', '0.99'])('avec %s USDC, arrete apres l’achat, le passage suivant transfere une fois', async (poussiere) => {
+    const coinbase = avecPoussiere('250', poussiere);
+    const journal = doubleBase();
+    expect((await passer(coinbase, fragile(journal, 'TRANSFERT_DEMANDE', TENTATIVES), '2026-11-27')).compteRendu?.etape).toBe('ACHETE');
+    const second = await passer(coinbase, journal, '2026-11-28');
+    expect(second.compteRendu).toMatchObject({ nature: 'REPRISE', etape: 'ENREGISTRE' });
+    expect(coinbase.ordresCrees).toHaveLength(1);
+    expect(coinbase.transferts.map((d) => d.toFixed())).toEqual([RECU.toFixed()]);
+  });
+
+  it.each(['0.0000009', '0.99'])('avec %s USDC, un transfert fait puis une panne : constate, jamais refait', async (poussiere) => {
+    const coinbase = avecPoussiere('100', poussiere);
+    coinbase.pannes.moveFunds = { fois: 1, apres: true };
+    const journal = doubleBase();
+    expect((await passer(coinbase, fragile(journal, 'TRANSFERE', TENTATIVES), '2026-11-27')).compteRendu?.etape).toBe('TRANSFERT_DEMANDE');
+    const second = await passer(coinbase, journal, '2026-11-28');
+    expect(second.compteRendu?.etape).toBe('ENREGISTRE');
+    expect(coinbase.appels.filter((m) => m === 'moveFunds')).toHaveLength(1);
+    expect(journal.apports).toHaveLength(1);
+    expect(journal.apports[0]?.occurredAt).toEqual(instantDe(journal, 'TRANSFERT_DEMANDE'));
+  });
+
+  /*
+   * La relecture apres `move_funds` lit le solde comme la table : une premiere
+   * lecture perdue laisse le solde d'avant, filled_size plus la poussiere. Une
+   * egalite a filled_size le prendrait pour un changement et arreterait le
+   * passage sans relire.
+   */
+  it('une relecture perdue apres move_funds se relit, sans second move_funds', async () => {
+    const coinbase = avecPoussiere('100', '0.99');
+    coinbase.espion = (m) => {
+      if (m === 'moveFunds') coinbase.pannes.balances = { fois: 1 };
+    };
+    const base = doubleBase();
+    const { compteRendu } = await passer(coinbase, base, '2026-11-27');
+    expect(compteRendu?.etape).toBe('ENREGISTRE');
+    expect(coinbase.appels.filter((m) => m === 'moveFunds')).toHaveLength(1);
+    expect(base.apports).toHaveLength(1);
+  });
+
+  it('1 USDC dans Primary reste etranger : refus urgent, aucun achat', async () => {
+    const coinbase = avecPoussiere('100', '1');
+    const { compteRendu } = await passer(coinbase, doubleBase(), '2026-11-27');
+    expect(compteRendu).toMatchObject({ nature: 'REFUS', poussiere: undefined });
+    expect(urgent(compteRendu)).toBe(true);
+    expect(coinbase.ordresCrees).toEqual([]);
+  });
+});
