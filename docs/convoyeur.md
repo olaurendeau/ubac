@@ -289,6 +289,20 @@ Décision **DP5 = 2**. Le point d'entrée est
 | titre de chaque notification | `convoyeur DRY_RUN — …` ou `convoyeur — …` (DP4 = 1) |
 | chaque déploiement (Y7b) | le mode lu sur le déclencheur, au résumé du run ; la relecture constate qu'il n'a pas changé pendant le déploiement |
 
+**Ce que le `DRY_RUN` journalise** (`src/convoyeur/inertes.ts`) : la clé, les
+soldes et le journal sont lus pour de vrai ; l'ordre (`coinbase inerte : ordre
+retenu, non placé`), le `move_funds` (`move_funds retenu, non appelé`) et
+chaque ligne de base (`base inerte : … non écrite`) sont retenus. Aucun prix
+n'étant lu, l'ordre retenu est dit rempli de **100 USDC fictifs, à parité et
+sans frais** : la notification d'un `DRY_RUN` porte ces montants, le réel
+transférera le `filled_size` de son ordre.
+
+**Le code de sortie** : 0 pour un passage sans convoyage, ou un convoyage
+complet notifié ; 1 pour un refus, une panne (notification `urgent`), une
+notification perdue, ou un démarrage refusé (argument, variable). Le script
+`npm run convoyeur -- --git-sha=<sha>` fabrique `--at`, comme `daily` ; il
+demande les huit variables, qui ne sont posées que chez Scaleway (§4).
+
 **Un lancement à la main hors déclencheur** (*Run job*, `scw jobs definition
 start`) ne porte pas les arguments du déclencheur : sauf à les lui redonner,
 c'est un `DRY_RUN`. Lire la première ligne du journal avant de conclure quoi que
