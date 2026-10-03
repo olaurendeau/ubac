@@ -46,7 +46,37 @@ const SI_POUSSEE = "github.event_name == 'push'";
 const ETAPES_IMAGE = ['./scripts/build-image.sh', './scripts/verifier-image.sh', 'docker push'];
 
 /** Seule l'absence constatee dans le registre ouvre la construction : rien ne s'ecrase. */
-const SI_ABSENTE = "steps.registre.outputs.existe == 'non'";
+function siAbsente(registre: string): string {
+  return `steps.${registre}.outputs.existe == 'non'`;
+}
+const SI_ABSENTE = siAbsente('registre');
+
+/**
+ * Les deux images de `build` (lot Y6, Q7) : chacune son constat dans le
+ * registre, puis ses trois appels, mot pour mot et dans cet ordre. Celle d'Ubac
+ * n'a pas change ; celle du convoyeur nomme sa cible.
+ */
+const IMAGES = [
+  {
+    registre: 'registre',
+    reference: 'UBAC_REFERENCE',
+    appels: ['./scripts/build-image.sh "$UBAC_IMAGE"', './scripts/verifier-image.sh "$UBAC_REFERENCE"', 'docker push "$UBAC_REFERENCE"'],
+  },
+  {
+    registre: 'registre-convoyeur',
+    reference: 'CONVOYEUR_REFERENCE',
+    appels: [
+      './scripts/build-image.sh "$CONVOYEUR_IMAGE" convoyeur',
+      './scripts/verifier-image.sh "$CONVOYEUR_REFERENCE" convoyeur',
+      'docker push "$CONVOYEUR_REFERENCE"',
+    ],
+  },
+] as const;
+
+/** Les cibles de Dockerfile.prod : une seule compilation, Ubac en dernier, donc sans `--target`. */
+const DOCKERFILE_PROD = 'Dockerfile.prod';
+const COMPILATION = /^RUN npm run build$/gm;
+const CIBLES = ['convoyeur', 'ubac'];
 
 /** Ce que le job ne refait pas : construire autrement, ou recopier les controles des scripts. */
 const SECONDE_DEFINITION = /docker\s+(?:buildx\s+)?build\b|--push\b|docker\s+(?:image\s+)?inspect\b|docker\s+tag\b|UBAC_GIT_SHA/;
@@ -455,17 +485,24 @@ const REGLES = {
       }),
   },
   image: {
-    nom: 'build construit et verifie par les scripts du depot avant de pousser, et rien d autre',
+    nom: 'build construit et verifie chaque image par les scripts du depot avant de la pousser, et rien d autre',
     verifier: (depot) => {
       const job = jobImage(depot);
       if (job === undefined) return [`aucun job « ${JOB_IMAGE} » : l'image ne sort plus de la chaine`];
       const vues = commandes(job);
-      const rangs = ETAPES_IMAGE.map((etape) => vues.findIndex((c) => c.startsWith(etape)));
-      const motifs = ETAPES_IMAGE.flatMap((etape, i) =>
-        rangs[i] === -1 ? [`job ${JOB_IMAGE} : aucune etape « ${etape} »`] : [],
-      );
-      if (motifs.length === 0 && !rangs.every((r, i) => i === 0 || r > (rangs[i - 1] ?? -1))) {
-        motifs.push(`job ${JOB_IMAGE} : ordre ${JSON.stringify(vues)}, attendu ${ETAPES_IMAGE.join(' puis ')}`);
+      const motifs: string[] = [];
+      for (const { appels } of IMAGES) {
+        const rangs = appels.map((appel) => vues.indexOf(appel));
+        appels.forEach((appel, i) => {
+          if (rangs[i] === -1) motifs.push(`job ${JOB_IMAGE} : aucune etape « ${appel} »`);
+        });
+        if (!rangs.includes(-1) && !rangs.every((r, i) => i === 0 || r > (rangs[i - 1] ?? -1))) {
+          motifs.push(`job ${JOB_IMAGE} : ordre ${JSON.stringify(vues)}, attendu ${appels.join(' puis ')}`);
+        }
+      }
+      const connus: readonly string[] = IMAGES.flatMap((i) => i.appels);
+      for (const commande of vues.filter((c) => ETAPES_IMAGE.some((e) => c.startsWith(e)) && !connus.includes(c))) {
+        motifs.push(`job ${JOB_IMAGE} : « ${commande} » n'est l'appel d'aucune des deux images`);
       }
       for (const commande of vues.filter((c) => SECONDE_DEFINITION.test(c))) {
         motifs.push(`job ${JOB_IMAGE} : « ${commande} » double ce que font les scripts du depot`);
@@ -487,16 +524,20 @@ const REGLES = {
     verifier: (depot) => {
       const job = jobImage(depot) ?? {};
       const motifs: string[] = [];
-      const registre = steps(job).find((s) => s['id'] === 'registre');
-      const sonde = String(registre?.['run'] ?? '');
-      if (!sonde.includes('imagetools inspect "$UBAC_REFERENCE"') || !sonde.includes(': not found')) {
-        motifs.push('aucune etape « registre » qui constate l absence de la reference');
+      for (const { registre, reference } of IMAGES) {
+        const sonde = String(etape(job, registre)?.['run'] ?? '');
+        if (!sonde.includes(`imagetools inspect "$${reference}"`) || !sonde.includes(': not found')) {
+          motifs.push(`aucune etape « ${registre} » qui constate l absence de ${reference}`);
+        }
       }
+      // Chaque appel sous le constat de SON image : un tag sur un commit deja
+      // construit ne reecrit aucune des deux.
       for (const step of steps(job)) {
         const run = String(step['run'] ?? '');
-        if (ETAPES_IMAGE.some((e) => run.includes(e)) && step['if'] !== SI_ABSENTE) {
-          motifs.push(`« ${run} » sans « if: ${SI_ABSENTE} » : elle ecraserait l'image deja poussee`);
-        }
+        if (!ETAPES_IMAGE.some((e) => run.includes(e))) continue;
+        const image = IMAGES.find((i) => i.appels.some((appel) => commandesDe(run).includes(appel)));
+        const si = siAbsente(image?.registre ?? 'registre');
+        if (step['if'] !== si) motifs.push(`« ${run} » sans « if: ${si} » : elle ecraserait l'image deja poussee`);
       }
       // main et un tag v* sur le meme commit : sans file par SHA, deux executions
       // constateraient l'absence en meme temps.
@@ -532,6 +573,23 @@ const REGLES = {
         for (const [cle, v] of Object.entries(valeur)) parcourir(v, [...ou, cle], estStep ? valeur : step);
       };
       for (const [chemin, contenu] of workflows(depot)) parcourir(load(contenu), [chemin], undefined);
+      return motifs;
+    },
+  },
+  cibles: {
+    nom: 'Dockerfile.prod compile une fois et livre ses deux cibles, ubac en dernier',
+    verifier: (depot) => {
+      const contenu = texte(depot, DOCKERFILE_PROD);
+      const motifs: string[] = [];
+      const compilations = contenu.match(COMPILATION)?.length ?? 0;
+      if (compilations !== 1) {
+        motifs.push(`${compilations} compilation(s), attendu une : chaque image retire l'arbre de l'autre du meme dist/`);
+      }
+      const etages = [...contenu.matchAll(/^FROM\s+\S+\s+AS\s+(\S+)\s*$/gim)].map((m) => m[1] ?? '');
+      for (const cible of CIBLES.filter((c) => !etages.includes(c))) motifs.push(`aucune cible « ${cible} »`);
+      if (etages.at(-1) !== 'ubac') {
+        motifs.push(`derniere cible « ${String(etages.at(-1))} » : un build sans --target ne livrerait plus Ubac`);
+      }
       return motifs;
     },
   },
@@ -719,6 +777,10 @@ interface Sonde {
 
 const NODE_22 = "node-version: '22'";
 const POUSSER = '        run: docker push "$UBAC_REFERENCE"\n';
+const SI_CONVOYEUR = `      - if: ${siAbsente('registre-convoyeur')}\n`;
+const VERIFIER_CONVOYEUR = `${SI_CONVOYEUR}        run: ./scripts/verifier-image.sh "$CONVOYEUR_REFERENCE" convoyeur\n`;
+const POUSSER_CONVOYEUR = `${SI_CONVOYEUR}        run: docker push "$CONVOYEUR_REFERENCE"\n`;
+const COMPILER = 'RUN npm run build\n';
 const VERIFIER = `      - if: ${SI_ABSENTE}\n        run: ./scripts/verifier-image.sh "$UBAC_REFERENCE"\n`;
 const CONNEXION = `printf '%s' "$SCW_SECRET_KEY" | docker login "$REGISTRE" --username nologin --password-stdin`;
 const COUVRIR = '- run: npm run test:coverage';
@@ -918,13 +980,13 @@ const SONDES: readonly Sonde[] = [
     regle: 'image',
     mutation: 'retirer l appel a verifier-image.sh',
     appliquer: (d) => muter(d, PORTE, VERIFIER, ''),
-    motif: 'aucune etape « ./scripts/verifier-image.sh »',
+    motif: 'aucune etape « ./scripts/verifier-image.sh "$UBAC_REFERENCE" »',
   },
   {
     regle: 'image',
     mutation: 'pousser avant de verifier',
     appliquer: (d) => muter(muter(d, PORTE, VERIFIER, ''), PORTE, POUSSER, `${POUSSER}${VERIFIER}`),
-    motif: 'attendu ./scripts/build-image.sh puis',
+    motif: 'attendu ./scripts/build-image.sh "$UBAC_IMAGE" puis',
   },
   {
     regle: 'image',
@@ -964,6 +1026,56 @@ const SONDES: readonly Sonde[] = [
     mutation: 'annuler une construction en cours sur le meme SHA',
     appliquer: (d) => muter(d, PORTE, '      cancel-in-progress: false\n', '      cancel-in-progress: true\n'),
     motif: 'une file par github.sha',
+  },
+  {
+    regle: 'image',
+    mutation: 'ne plus construire l image du convoyeur',
+    appliquer: (d) => muter(d, PORTE, `${SI_CONVOYEUR}        run: ./scripts/build-image.sh "$CONVOYEUR_IMAGE" convoyeur\n`, ''),
+    motif: 'aucune etape « ./scripts/build-image.sh "$CONVOYEUR_IMAGE" convoyeur »',
+  },
+  {
+    regle: 'image',
+    mutation: 'verifier l image du convoyeur comme celle d Ubac',
+    appliquer: (d) => muter(d, PORTE, '"$CONVOYEUR_REFERENCE" convoyeur\n', '"$CONVOYEUR_REFERENCE"\n'),
+    motif: 'n\'est l\'appel d\'aucune des deux images',
+  },
+  {
+    regle: 'image',
+    mutation: 'pousser l image du convoyeur avant de la verifier',
+    appliquer: (d) =>
+      muter(muter(d, PORTE, VERIFIER_CONVOYEUR, ''), PORTE, POUSSER_CONVOYEUR, `${POUSSER_CONVOYEUR}${VERIFIER_CONVOYEUR}`),
+    motif: 'attendu ./scripts/build-image.sh "$CONVOYEUR_IMAGE" convoyeur puis',
+  },
+  {
+    regle: 'reecriture',
+    mutation: 'pousser le convoyeur sur le constat de l image d Ubac',
+    appliquer: (d) => muter(d, PORTE, POUSSER_CONVOYEUR, `      - if: ${SI_ABSENTE}\n        run: docker push "$CONVOYEUR_REFERENCE"\n`),
+    motif: `sans « if: ${siAbsente('registre-convoyeur')} »`,
+  },
+  {
+    regle: 'reecriture',
+    mutation: 'constater l absence du convoyeur sur la reference d Ubac',
+    appliquer: (d) =>
+      muter(d, PORTE, 'imagetools inspect "$CONVOYEUR_REFERENCE" 2>&1', 'imagetools inspect "$UBAC_REFERENCE" 2>&1'),
+    motif: 'aucune etape « registre-convoyeur » qui constate l absence de CONVOYEUR_REFERENCE',
+  },
+  {
+    regle: 'cibles',
+    mutation: 'compiler une seconde fois pour le convoyeur',
+    appliquer: (d) => muter(d, DOCKERFILE_PROD, 'RUN rm -r dist/jobs\n', `RUN rm -r dist/jobs\n${COMPILER}`),
+    motif: '2 compilation(s)',
+  },
+  {
+    regle: 'cibles',
+    mutation: 'renommer la cible du convoyeur',
+    appliquer: (d) => muter(d, DOCKERFILE_PROD, 'FROM runtime AS convoyeur\n', 'FROM runtime AS convoyeur-ancien\n'),
+    motif: 'aucune cible « convoyeur »',
+  },
+  {
+    regle: 'cibles',
+    mutation: 'placer le convoyeur en derniere cible',
+    appliquer: (d) => avecFichier(d, DOCKERFILE_PROD, `${texte(d, DOCKERFILE_PROD)}\nFROM runtime AS convoyeur\n`),
+    motif: 'un build sans --target ne livrerait plus Ubac',
   },
   {
     regle: 'connexion',

@@ -268,6 +268,8 @@ pas. Le mot de passe, lui, survit au script.
 
 Décision **DP5 = 2**. Le point d'entrée est
 `node dist/convoyeur/main.js --at=<instant> --git-sha=<sha> [--reel]` (Y5).
+Dans l'image `ubac-convoyeur` (Y6), `scripts/entrypoint-convoyeur.sh` fabrique
+`--at` et `--git-sha`, et ajoute après eux les arguments du déclencheur.
 
 - **Sans `--reel`, c'est un `DRY_RUN`** : l'exchange est lu, l'ordre, le
   `move_funds` et l'écriture en base passent par des ports inertes qui

@@ -95,9 +95,10 @@ les seuils de `vitest.config.ts`, et tient vingt-quatre règles :
 | Secrets | une clé qui nomme un identifiant (`*SECRET*`, `*TOKEN*`, `*PASSWORD*`, `*_KEY`…) dont la valeur n'est pas exactement `${{ secrets.NOM }}` ; et tout `secrets.` dans le job `test` |
 | Déclencheurs | autre chose que `push` sur `main` et les tags `v*`, et `pull_request` vers `main` — `pull_request_target` compris |
 | Jeton | des permissions effectives d'un job autres que `contents: read` |
-| Image par les scripts | un `build` sans `./scripts/build-image.sh`, puis `./scripts/verifier-image.sh`, puis `docker push`, dans cet ordre ; ou qui construit, inspecte ou retague lui-même (`docker buildx build`, `--push`, `docker image inspect`, `docker tag`, `UBAC_GIT_SHA`) |
+| Image par les scripts | un `build` sans, **pour chacune des deux images**, `./scripts/build-image.sh`, puis `./scripts/verifier-image.sh`, puis `docker push`, mot pour mot et dans cet ordre (la cible `convoyeur` nommée pour la seconde) ; un appel qui n'est celui d'aucune des deux ; ou qui construit, inspecte ou retague lui-même (`docker buildx build`, `--push`, `docker image inspect`, `docker tag`, `UBAC_GIT_SHA`) |
 | Jamais une PR | un `build` dont le `if` n'est pas exactement `github.event_name == 'push'` (§7) |
-| Aucune réécriture | une construction, une vérification ou une poussée non conditionnée par l'absence constatée dans le registre ; une étape `registre` qui prendrait toute erreur pour une absence ; un `build` sans file par `github.sha` |
+| Aucune réécriture | une construction, une vérification ou une poussée non conditionnée par l'absence constatée dans le registre **pour son image** ; une étape `registre` ou `registre-convoyeur` qui prendrait toute erreur pour une absence, ou lirait la référence de l'autre ; un `build` sans file par `github.sha` |
+| Cibles | un `Dockerfile.prod` qui compile plus d'une fois, sans cible `ubac` ou `convoyeur`, ou dont la dernière cible n'est pas `ubac` : un build sans `--target` livrerait autre chose qu'Ubac |
 | Connexion | un `${{ secrets… }}` ailleurs que dans l'`env` d'une étape dont le script est exactement `printf '%s' "$…" \| docker login "$REGISTRE" --username nologin --password-stdin`, ou dont chaque commande est `scw` ; un `set -x` ou `xtrace` sur n'importe quelle ligne |
 | Rampe | un `deploy` dont le `if` n'est pas exactement `github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')` : `main` n'ouvre le déploiement qu'en R4 |
 | Déploiement | un `deploy` hors de l'environnement `production` ; des étapes `main`, `cli`, `avant`, `controles`, `mise-a-jour`, `apres`, `relecture` absentes, dans un autre ordre, sautées par un `if` ou avalées par `continue-on-error` ; une lecture après qui ne relit pas la lecture avant ; deux déploiements simultanés ou un déploiement annulé |
@@ -109,7 +110,7 @@ les seuils de `vitest.config.ts`, et tient vingt-quatre règles :
 | Concurrence | un groupe sans `github.ref`, ou une annulation inconditionnelle qui interromprait `main` |
 
 Chaque règle a au moins une **sonde** : une mutation du dépôt réel, appliquée
-en mémoire, qui doit la faire rougir. Soixante-neuf sondes, dont les quatre
+en mémoire, qui doit la faire rougir. Soixante-dix-sept sondes, dont les quatre
 mutations exigées par le plan — retirer `needs: test`, remplacer la couverture
 par `npm test`, écrire `drizzle-kit` dans un workflow, faire diverger la version
 de Node. Les seize sondes de R2 comprennent les trois mutations exigées par son
@@ -121,7 +122,14 @@ du correctif de v0.3.0 : l'organisation retirée, le projet retiré,
 l'organisation passée par un secret, la configuration posée sur la seule
 lecture avant. Les trois d'Y7a, dont la mutation exigée par son plan :
 `FENETRE_MIN` changé dans l'appel des contrôles, la relecture remplacée par une
-ligne qui ne relit rien, une écriture `scw` cachée dans un script.
+ligne qui ne relit rien, une écriture `scw` cachée dans un script. Les huit
+d'Y6 : l'image du convoyeur qui n'est plus construite, vérifiée comme celle d'Ubac,
+poussée avant d'être vérifiée, poussée sur le constat d'Ubac, son absence
+constatée sur la référence d'Ubac ; une seconde compilation, la cible
+renommée, le convoyeur en dernière cible. La mutation exigée par le plan d'Y6
+— le point d'entrée du convoyeur pointé sur `daily-main` — rougit
+`test/scripts/entrypoint-convoyeur.test.ts`, et `verifier-image.sh` dans
+l'image.
 
 Le garde-fou prouve que les étapes de `deploy` sont là ; `test/ci/deploiement.test.ts`
 prouve qu'elles mordent : il **exécute** les contrôles et la relecture tels que
@@ -257,15 +265,25 @@ Lot **R2**, décisions **D4 = 2** (`push` sur `main` et tags `v*`), **D5 = 1**
 tagué par **son** SHA, vérifié par `scripts/verifier-image.sh` — et **rien
 d'autre ne change en production** : aucun job Scaleway n'est touché.
 
+Depuis le lot **Y6** (Q7), le même job produit aussi
+`rg.fr-par.scw.cloud/<namespace>/ubac-convoyeur:<sha>`, l'image du convoyeur :
+même commit, même compilation, cible `convoyeur` de `Dockerfile.prod`. Chaque
+image a **son** constat dans le registre (`registre`, `registre-convoyeur`) et
+ses trois appels, construction, vérification, poussée, sous ce seul constat. Un
+tag sur un commit déjà construit ne réécrit donc **aucune** des deux ; si une
+seule manque, seule celle-là est construite. `deploy` ne repointe encore que la
+définition d'Ubac : celle du convoyeur arrive avec Y7b.
+
 | Étape | Ce qu'elle fait |
 |---|---|
-| Référence | `UBAC_REFERENCE=<image>:$(git rev-parse --verify HEAD)`, le même calcul que `build-image.sh` ; écrite dans `$GITHUB_ENV`, hors de l'arbre, qui reste propre |
+| Référence | `UBAC_REFERENCE=<image>:$(git rev-parse --verify HEAD)`, le même calcul que `build-image.sh`, et `CONVOYEUR_REFERENCE` de même ; écrites dans `$GITHUB_ENV`, hors de l'arbre, qui reste propre |
 | Connexion | `nologin`, et la clé secrète par l'**entrée standard** : `printf '%s' "$SCW_SECRET_KEY" \| docker login … --password-stdin`. `printf` est un intégré du shell : la clé n'est l'argument d'aucun processus |
 | Registre | `docker buildx imagetools inspect` sur la référence. Présente : **rien n'est reconstruit ni réécrit**. `not found` : on construit. Toute autre erreur arrête le job |
 | Construction | `./scripts/build-image.sh`, avec son `--load` |
-| Vérification | `./scripts/verifier-image.sh` et ses dix contrôles, qui font **tourner** l'image locale |
+| Vérification | `./scripts/verifier-image.sh` et ses treize contrôles, qui font **tourner** l'image locale |
 | Poussée | `docker push` de la référence |
-| Manifeste poussé | `imagetools inspect --format '{{json .Image}}'` sur le registre doit lire `linux/amd64` et rien d'autre |
+| Convoyeur | les quatre mêmes étapes pour `CONVOYEUR_REFERENCE`, sous `registre-convoyeur`, avec la cible `convoyeur` passée aux deux scripts (quatorze contrôles) |
+| Manifeste poussé | `imagetools inspect --format '{{json .Image}}'` sur le registre doit lire `linux/amd64` et rien d'autre, pour chacune des deux références |
 | Déconnexion | `docker logout`, même après un échec |
 
 **Le job ne refait ni le contrôle d'architecture ni celui du SHA embarqué** :

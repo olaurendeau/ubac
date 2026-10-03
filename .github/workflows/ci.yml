@@ -86,6 +86,9 @@ jobs:
     env:
       REGISTRE: rg.fr-par.scw.cloud
       UBAC_IMAGE: rg.fr-par.scw.cloud/${{ vars.SCW_REGISTRY_NAMESPACE }}/ubac
+      # L'image du convoyeur (lot Y6, Q7) : meme compilation, meme SHA, sa cible
+      # de Dockerfile.prod et son depot. deploy ne la deploie pas encore (Y7b).
+      CONVOYEUR_IMAGE: rg.fr-par.scw.cloud/${{ vars.SCW_REGISTRY_NAMESPACE }}/ubac-convoyeur
     steps:
       - uses: actions/checkout@v7
         with:
@@ -99,6 +102,7 @@ jobs:
           reference="${UBAC_IMAGE}:$(git rev-parse --verify HEAD)"
           echo "UBAC_REFERENCE=$reference" >> "$GITHUB_ENV"
           echo "reference=$reference" >> "$GITHUB_OUTPUT"
+          echo "CONVOYEUR_REFERENCE=${CONVOYEUR_IMAGE}:$(git rev-parse --verify HEAD)" >> "$GITHUB_ENV"
       # L'utilisateur nologin, et la cle secrete par l'ENTREE STANDARD : un
       # argument de ligne de commande finit dans une trace, et le journal est
       # public. Le secret n'existe que dans l'environnement de cette etape.
@@ -131,15 +135,38 @@ jobs:
         run: ./scripts/verifier-image.sh "$UBAC_REFERENCE"
       - if: steps.registre.outputs.existe == 'non'
         run: docker push "$UBAC_REFERENCE"
+      # Le convoyeur, avec son propre constat : un tag sur un commit deja
+      # construit ne reecrit AUCUNE des deux images, et une seule absente est
+      # la seule reconstruite.
+      - name: l'image du convoyeur de ce commit est-elle deja poussee
+        id: registre-convoyeur
+        run: |
+          if sortie=$(docker buildx imagetools inspect "$CONVOYEUR_REFERENCE" 2>&1); then
+            echo "deja dans le registre, rien n'est reconstruit ni reecrit : $CONVOYEUR_REFERENCE"
+            echo "existe=oui" >> "$GITHUB_OUTPUT"
+          elif [[ "$sortie" == *": not found" ]]; then
+            echo "existe=non" >> "$GITHUB_OUTPUT"
+          else
+            echo "$sortie" >&2
+            exit 1
+          fi
+      - if: steps.registre-convoyeur.outputs.existe == 'non'
+        run: ./scripts/build-image.sh "$CONVOYEUR_IMAGE" convoyeur
+      - if: steps.registre-convoyeur.outputs.existe == 'non'
+        run: ./scripts/verifier-image.sh "$CONVOYEUR_REFERENCE" convoyeur
+      - if: steps.registre-convoyeur.outputs.existe == 'non'
+        run: docker push "$CONVOYEUR_REFERENCE"
       # Le manifeste DU REGISTRE, ce que Scaleway ira chercher, et non l'image
       # locale que verifier-image.sh a inspectee. Un manifeste d'attestation
       # unknown/unknown n'est pas une plateforme : .Image l'ignore.
-      - name: plateformes de l'image poussee
+      - name: plateformes des images poussees
         run: |
-          lues=$(docker buildx imagetools inspect "$UBAC_REFERENCE" --format '{{json .Image}}' \
-            | jq -r 'if has("architecture") then "\(.os)/\(.architecture)" else keys | join(" ") end')
-          echo "plateformes poussees : $lues"
-          test "$lues" = linux/amd64
+          for reference in "$UBAC_REFERENCE" "$CONVOYEUR_REFERENCE"; do
+            lues=$(docker buildx imagetools inspect "$reference" --format '{{json .Image}}' \
+              | jq -r 'if has("architecture") then "\(.os)/\(.architecture)" else keys | join(" ") end')
+            echo "plateformes poussees : $reference : $lues"
+            test "$lues" = linux/amd64
+          done
       - name: deconnexion du registre
         if: always()
         run: docker logout "$REGISTRE"

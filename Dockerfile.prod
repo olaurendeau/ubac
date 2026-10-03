@@ -1,8 +1,14 @@
 # syntax=docker/dockerfile:1
 
-# Image de PRODUCTION du run quotidien (spec §10), distincte de `Dockerfile`,
-# qui ne sert qu'au conteneur de developpement. Trois proprietes, chacune
-# fermant une panne qui ne se verrait qu'en production :
+# Images de PRODUCTION (spec §10), distinctes de `Dockerfile`, qui ne sert qu'au
+# conteneur de developpement. Deux cibles d'une seule compilation (Q7) :
+#
+# - `ubac`, le run quotidien, point d'entree `ubac-daily`. Derniere cible : un
+#   build sans `--target` construit toujours celle-ci ;
+# - `convoyeur`, point d'entree `ubac-convoyeur` (docs/convoyeur.md).
+#
+# Chaque image retire l'arbre de l'autre (CV3). Trois proprietes communes,
+# chacune fermant une panne qui ne se verrait qu'en production :
 #
 # 1. **linux/amd64, verifie a la construction** : une image ARM poussee depuis
 #    ce Mac meurt en `exec format error`, sans que rien n'ait rougi ici.
@@ -46,7 +52,17 @@ COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
 RUN npm run build
 
-# --- L'image livree ----------------------------------------------------------
+# --- Chaque image, sans l'arbre de l'autre ----------------------------------
+# Le retrait se fait ici, sur le `dist/` de l'unique compilation, et non par
+# deux tsconfig qui divergeraient. `COPY --from` ne copie que l'etat final :
+# aucune couche de l'image livree ne porte l'arbre retire.
+FROM build AS dist-ubac
+RUN rm -r dist/convoyeur
+
+FROM build AS dist-convoyeur
+RUN rm -r dist/jobs
+
+# --- Le socle livre, commun aux deux images ----------------------------------
 FROM ${NODE_IMAGE} AS runtime
 ENV NODE_ENV=production
 WORKDIR /app
@@ -56,7 +72,26 @@ WORKDIR /app
 # rien a faire ici.
 COPY package.json ./
 COPY --from=deps /app/node_modules ./node_modules
-COPY --from=build /app/dist ./dist
+
+# --- L'image du convoyeur ----------------------------------------------------
+# Le sceau du SHA est le meme que celui d'Ubac, recopie : un ARG ne traverse pas
+# les cibles, et il reste en derniere position pour la meme raison.
+FROM runtime AS convoyeur
+COPY --from=dist-convoyeur /app/dist ./dist
+COPY --chmod=0555 scripts/entrypoint-convoyeur.sh /usr/local/bin/ubac-convoyeur
+ARG GIT_SHA
+RUN set -eu; \
+    if [ -z "${GIT_SHA}" ]; then \
+      echo "GIT_SHA absent : construire avec --build-arg GIT_SHA=\$(git rev-parse --verify HEAD)." >&2; \
+      exit 1; \
+    fi
+ENV UBAC_GIT_SHA=${GIT_SHA}
+USER node
+ENTRYPOINT ["/usr/local/bin/ubac-convoyeur"]
+
+# --- L'image du run quotidien ------------------------------------------------
+FROM runtime AS ubac
+COPY --from=dist-ubac /app/dist ./dist
 COPY --chmod=0555 scripts/entrypoint-job.sh /usr/local/bin/ubac-daily
 
 # En derniere position : le SHA change a chaque commit, et le poser plus haut
