@@ -1,21 +1,32 @@
 #!/usr/bin/env bash
-# Construit l'image de PRODUCTION, taguee par SHA de commit, pour linux/amd64.
+# Construit une image de PRODUCTION, taguee par SHA de commit, pour linux/amd64.
 #
 # Ce script NE POUSSE RIEN et NE DEPLOIE RIEN. Il construit, il affiche la
 # commande qu'il lance, et il s'arrete. Pousser et deployer sont deux gestes de
 # l'operateur, decrits dans docs/deploiement.md.
 #
-# Usage : ./scripts/build-image.sh <depot-image>
+# Usage : ./scripts/build-image.sh <depot-image> [ubac|convoyeur]
 #         UBAC_IMAGE=rg.fr-par.scw.cloud/<namespace>/ubac ./scripts/build-image.sh
+#
+# La cible est celle de Dockerfile.prod : `ubac` par defaut, `convoyeur` pour
+# l'image du convoyeur (…/ubac-convoyeur). Une seule compilation pour les deux.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 IMAGE=${1:-${UBAC_IMAGE:-}}
+CIBLE=${2:-ubac}
 if [ -z "$IMAGE" ]; then
-  echo "usage : ./scripts/build-image.sh <depot-image>" >&2
+  echo "usage : ./scripts/build-image.sh <depot-image> [ubac|convoyeur]" >&2
   echo "        ex. rg.fr-par.scw.cloud/<namespace>/ubac, ou la variable UBAC_IMAGE" >&2
   exit 1
 fi
+case "$CIBLE" in
+  ubac | convoyeur) ;;
+  *)
+    echo "cible « ${CIBLE} » inconnue : ubac ou convoyeur." >&2
+    exit 1
+    ;;
+esac
 
 # Un arbre de travail sale rend le tag MENSONGER : l'image contiendrait du code
 # que le SHA ne decrit pas, et `decisions.git_sha` designerait un commit qui
@@ -39,15 +50,16 @@ REFERENCE="${IMAGE}:${SHA}"
 # donc on doit pouvoir dire quelle image tournait le jour d'une decision
 # douteuse. Un `latest` qui bouge efface exactement cette reponse.
 echo "+ docker buildx build --platform linux/amd64 --build-arg GIT_SHA=${SHA} \\"
-echo "    -f Dockerfile.prod -t ${REFERENCE} --load ."
+echo "    -f Dockerfile.prod --target ${CIBLE} -t ${REFERENCE} --load ."
 docker buildx build \
   --platform linux/amd64 \
   --build-arg "GIT_SHA=${SHA}" \
   -f Dockerfile.prod \
+  --target "${CIBLE}" \
   -t "${REFERENCE}" \
   --load \
   .
 
 echo
 echo "image construite : ${REFERENCE}"
-echo "suite : ./scripts/verifier-image.sh ${REFERENCE}"
+echo "suite : ./scripts/verifier-image.sh ${REFERENCE} ${CIBLE}"

@@ -6,14 +6,37 @@
 # et affiche ce qu'elle repond. Ce qu'il ne peut pas verifier est dit dans
 # docs/deploiement.md plutot que suppose ici.
 #
-# Usage : ./scripts/verifier-image.sh <reference-image>
+# Usage : ./scripts/verifier-image.sh <reference-image> [ubac|convoyeur]
+#
+# La cible dit ce que l'image DOIT etre, pas ce qu'elle dit etre : une image du
+# convoyeur verifiee comme celle d'Ubac rougit, et inversement (CV3).
 set -uo pipefail
 
 REFERENCE=${1:-}
+CIBLE=${2:-ubac}
 if [ -z "$REFERENCE" ]; then
-  echo "usage : ./scripts/verifier-image.sh <depot>:<sha>" >&2
+  echo "usage : ./scripts/verifier-image.sh <depot>:<sha> [ubac|convoyeur]" >&2
   exit 1
 fi
+
+# Par cible : son point d'entree, l'arbre de l'AUTRE (absent), la premiere
+# variable que son chargeur exige, et ce que son point d'entree journalise.
+case "$CIBLE" in
+  ubac)
+    POINT_ENTREE='["/usr/local/bin/ubac-daily"]'
+    ARBRE_ABSENT=dist/convoyeur
+    VARIABLE=DATABASE_URL
+    ;;
+  convoyeur)
+    POINT_ENTREE='["/usr/local/bin/ubac-convoyeur"]'
+    ARBRE_ABSENT=dist/jobs
+    VARIABLE=CONVOYEUR_DATABASE_URL
+    ;;
+  *)
+    echo "cible « ${CIBLE} » inconnue : ubac ou convoyeur." >&2
+    exit 1
+    ;;
+esac
 
 # La seule architecture livrable (spec §10). Une constante : elle sert et de
 # valeur attendue, et de plateforme d'execution ici — sans quoi Docker emule en
@@ -45,7 +68,7 @@ dans_image() {
   docker run --rm --network none --platform "$PLATEFORME" --entrypoint sh "$REFERENCE" -c "$1" 2>&1
 }
 
-echo "image : $REFERENCE"
+echo "image : $REFERENCE ($CIBLE)"
 echo
 
 # 1. L'architecture. La panne que la spec §10 nomme : une image ARM poussee
@@ -93,23 +116,56 @@ controle "utilisateur non privilegie" "node" "$(inspecter '{{.Config.User}}')"
 #    jusqu'a loadConfig() et refuser en nommant la premiere variable manquante.
 #    C'est la preuve que tout le graphe ESM se resout dans l'image — ccxt, pg,
 #    drizzle-orm, zod — et que le script d'entree fabrique bien ses dates.
+#    Pour le convoyeur, lireConfig() et ses variables CONVOYEUR_*.
 SORTIE=$(docker run --rm --network none --platform "$PLATEFORME" "$REFERENCE" 2>&1)
 CODE=$?
 controle "code de sortie sans configuration" "1" "$CODE"
 case "$SORTIE" in
-  *DATABASE_URL*) printf 'OK    refus de configuration en nommant la variable\n' ;;
+  *"$VARIABLE"*) printf 'OK    refus de configuration en nommant la variable\n' ;;
   *)
-    printf 'ECHEC le point d’entree n’a pas atteint loadConfig()\n        lu : %s\n' "$SORTIE"
+    printf 'ECHEC le point d’entree n’a pas atteint le chargeur de configuration\n        lu : %s\n' "$SORTIE"
     ECHECS=$((ECHECS + 1))
     ;;
 esac
-case "$SORTIE" in
-  *"run_date="*"git_sha=$SHA_IMAGE"*) printf 'OK    le point d’entree passe run_date, at et git_sha\n' ;;
-  *)
-    printf 'ECHEC le point d’entree n’a pas journalise ses arguments\n        lu : %s\n' "$SORTIE"
-    ECHECS=$((ECHECS + 1))
-    ;;
-esac
+if [ "$CIBLE" = ubac ]; then
+  case "$SORTIE" in
+    *"run_date="*"git_sha=$SHA_IMAGE"*) printf 'OK    le point d’entree passe run_date, at et git_sha\n' ;;
+    *)
+      printf 'ECHEC le point d’entree n’a pas journalise ses arguments\n        lu : %s\n' "$SORTIE"
+      ECHECS=$((ECHECS + 1))
+      ;;
+  esac
+else
+  case "$SORTIE" in
+    *"convoyeur: at="*"git_sha=$SHA_IMAGE"*) printf 'OK    le point d’entree passe at et git_sha\n' ;;
+    *)
+      printf 'ECHEC le point d’entree n’a pas journalise ses arguments\n        lu : %s\n' "$SORTIE"
+      ECHECS=$((ECHECS + 1))
+      ;;
+  esac
+  # Le defaut est le DRY_RUN (DP5 = 2) : le reel est un `--reel` ajoute a la
+  # main au declencheur, jamais l'oubli d'un argument.
+  case "$SORTIE" in
+    *"mode=DRY_RUN"*) printf 'OK    sans argument, le passage est un DRY_RUN\n' ;;
+    *)
+      printf 'ECHEC sans argument, le passage n’est pas un DRY_RUN\n        lu : %s\n' "$SORTIE"
+      ECHECS=$((ECHECS + 1))
+      ;;
+  esac
+fi
+
+# 9. Le point d'entree de la cible, et lui seul : l'image du convoyeur n'a pas
+#    `ubac-daily` pour point d'entree, ni celle d'Ubac le convoyeur (CV3, Q7).
+controle "point d'entree de l'image" "$POINT_ENTREE" "$(inspecter '{{json .Config.Entrypoint}}')"
+
+# 10. L'arbre de l'autre image est absent : chaque image retire le sien dans
+#     Dockerfile.prod, sur une seule compilation.
+controle "${ARBRE_ABSENT}/ absent de l'image" "" "$(dans_image "ls -d /app/${ARBRE_ABSENT} 2>/dev/null")"
+
+# 11. L'outil des mesures du convoyeur (scripts/mesures-convoyeur.ts) se lance
+#     du poste, jamais d'une image.
+controle "aucun outil de mesure dans l'image" "" \
+  "$(dans_image 'find /app -name "mesures-convoyeur*" 2>/dev/null | head -5')"
 
 echo
 if [ "$ECHECS" -eq 0 ]; then

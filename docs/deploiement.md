@@ -173,7 +173,15 @@ du dépôt.
 
 ```sh
 ./scripts/build-image.sh rg.fr-par.scw.cloud/<namespace>/ubac
+./scripts/build-image.sh rg.fr-par.scw.cloud/<namespace>/ubac-convoyeur convoyeur
 ```
+
+Deux images d'une **seule compilation** (lot Y6, Q7), deux cibles de
+`Dockerfile.prod` : `ubac`, la cible par défaut et la dernière du fichier, et
+`convoyeur`. Chacune retire l'arbre de l'autre du même `dist/` : l'image d'Ubac
+n'a pas `dist/convoyeur/`, celle du convoyeur n'a pas `dist/jobs/` (CV3).
+L'outil des mesures (`scripts/mesures-convoyeur.ts`) n'est dans aucune : il se
+lance du poste ([convoyeur-mesures.md](convoyeur-mesures.md)).
 
 Le script refuse de partir sur un **arbre de travail sale** — l'image serait
 taguée par un SHA qui ne la décrit pas — et il n'y a pas de drapeau pour passer
@@ -181,7 +189,7 @@ outre. Il affiche la commande avant de la lancer :
 
 ```
 + docker buildx build --platform linux/amd64 --build-arg GIT_SHA=<sha> \
-    -f Dockerfile.prod -t rg.fr-par.scw.cloud/<namespace>/ubac:<sha> --load .
+    -f Dockerfile.prod --target ubac -t rg.fr-par.scw.cloud/<namespace>/ubac:<sha> --load .
 ```
 
 **Ce qu'il faut voir** : `naming to …/ubac:<sha>`, puis
@@ -208,9 +216,13 @@ consigne.
 
 ```sh
 ./scripts/verifier-image.sh rg.fr-par.scw.cloud/<namespace>/ubac:<sha>
+./scripts/verifier-image.sh rg.fr-par.scw.cloud/<namespace>/ubac-convoyeur:<sha> convoyeur
 ```
 
-**Ce qu'il faut voir** — dix lignes, toutes en `OK` :
+La cible dit ce que l'image **doit** être : une image du convoyeur vérifiée
+comme celle d'Ubac rougit, et inversement.
+
+**Ce qu'il faut voir** pour Ubac — treize lignes, toutes en `OK` :
 
 ```
 OK    architecture de l'image
@@ -223,9 +235,17 @@ OK    utilisateur non privilegie
 OK    code de sortie sans configuration
 OK    refus de configuration en nommant la variable
 OK    le point d’entree passe run_date, at et git_sha
+OK    point d'entree de l'image
+OK    dist/convoyeur/ absent de l'image
+OK    aucun outil de mesure dans l'image
 
 tous les controles passent — l'image peut etre poussee.
 ```
+
+Pour le convoyeur, quatorze : les mêmes, où le refus nomme
+`CONVOYEUR_DATABASE_URL`, où le point d'entrée passe `at` et `git_sha` (sans
+`run_date`), où `dist/jobs/` est l'arbre absent, plus
+`OK    sans argument, le passage est un DRY_RUN` (DP5 = 2).
 
 Le script sort en **1 par contrôle en échec** et dit `NE PAS POUSSER` ; il
 n'affirme rien, il interroge l'image et affiche ce qu'elle répond, écart compris.
@@ -234,7 +254,8 @@ Les trois derniers contrôles font **tourner** l'image, sans variable et
 `--network none`. Le point d'entrée doit aller jusqu'à `loadConfig()` et refuser
 en nommant `DATABASE_URL` : c'est la preuve que tout le graphe ESM se résout —
 ccxt, pg, drizzle-orm, zod — et que le script d'entrée fabrique bien ses dates,
-sans qu'aucun réseau n'ait été disponible pour y arriver.
+sans qu'aucun réseau n'ait été disponible pour y arriver. Le convoyeur va
+jusqu'à `lireConfig()` et nomme `CONVOYEUR_DATABASE_URL`.
 
 ## 5. Pousser
 
@@ -245,6 +266,7 @@ l'historique du shell.
 ```sh
 docker login rg.fr-par.scw.cloud -u nologin --password-stdin
 docker push rg.fr-par.scw.cloud/<namespace>/ubac:<sha>
+docker push rg.fr-par.scw.cloud/<namespace>/ubac-convoyeur:<sha>
 ```
 
 ### Vérifier l'architecture de l'image **poussée**
@@ -283,6 +305,14 @@ celui du cron est **décidé le 2026-09-27** — le déclencheur reste en
 l'image fabrique `--run-date`, `--at` et `--git-sha` lui-même, ce dernier depuis
 le SHA scellé à la construction. Le tag de l'image et `decisions.git_sha` ne
 peuvent donc pas diverger.
+
+**Le job du convoyeur** (OP4, [convoyeur.md](convoyeur.md) §4) prend l'image
+`…/ubac-convoyeur:<sha>`. Son point d'entrée, `ubac-convoyeur`
+(`scripts/entrypoint-convoyeur.sh`), fabrique `--at` par un seul `date -u` et
+`--git-sha` depuis le même sceau, puis lance `dist/convoyeur/main.js` avec les
+arguments du déclencheur **après** les siens. Le déclencheur `convoyeur` part
+**sans argument**, donc en `DRY_RUN` ; le réel est `--reel`, ajouté à la main
+(OP6, DP5 = 2).
 
 > Les noms d'arguments du CLI `scw` ci-dessous **n'ont pas été vérifiés contre un
 > compte réel** ; les confirmer avec `scw jobs definition create -h` avant de les
