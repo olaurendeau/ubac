@@ -149,9 +149,12 @@ import { EXECUTION_METHODS, WRITE_ROUTES } from '../../src/adapters/coinbase.js'
  * - **A25** — E15 et E17 : le mode n'a qu'un lieu. Nommer le `DRY_RUN` — en
  *   identifiant, en chaine, en gabarit — tombe partout dans `src/`, et
  *   `force` ou `bypass` comme identifiant aussi ; le verdict sur l'arbre reel
- *   est « exactement `src/jobs/daily-main.ts` ». Un `if (dryRun)` descendu dans
- *   `daily.ts`, un parametre `dryRun` sur une signature publique ou une
- *   variable `DRY_RUN` lue par `src/config/env.ts` echouent ici.
+ *   est « exactement `src/jobs/daily-main.ts` », et pour le second arbre
+ *   `src/convoyeur/main.ts`, son point d'entree, sur le meme principe (Y5) :
+ *   un lieu par agent, aucun dans les couches. Un `if (dryRun)` descendu dans
+ *   `daily.ts` ou dans le passage du convoyeur, un parametre `dryRun` sur une
+ *   signature publique ou une variable `DRY_RUN` lue par l'un des deux
+ *   chargeurs de configuration echouent ici.
  *
  * A24 et A25 lisent **tout `src/`**, pas `src/jobs/` : un second lieu de
  * composition pourrait aussi bien etre un adapter. Ils ne sont donc pas des
@@ -1406,8 +1409,8 @@ describe('A24, A25 — le port reel en mode normal seulement, et le mode n’a q
     expect(await verdicts(LE_MODE, MODES)).toEqual(attendus(MODES));
   });
 
-  it('A25 : daily-main.ts est le seul fichier de src/ qui nomme le mode', async () => {
-    expect(fautifs(await LE_MODE.lintFiles([TOUT_SRC]))).toEqual([DAILY_MAIN]);
+  it('A25 : daily-main.ts est le seul fichier d’Ubac qui nomme le mode, et le point d’entree du convoyeur le seul du sien', async () => {
+    expect(fautifs(await LE_MODE.lintFiles([TOUT_SRC]))).toEqual(['src/convoyeur/main.ts', DAILY_MAIN]);
   });
 });
 

@@ -36,8 +36,12 @@ export class ConvoyeurBaseError extends Error {
 
 // --- Le port ----------------------------------------------------------------
 
-/** L'issue d'une ecriture : la ligne est posee, ou elle l'etait deja. */
-export type Ecriture = 'RECORDED' | 'ALREADY_RECORDED';
+/**
+ * L'issue d'une ecriture : la ligne est posee, ou elle l'etait deja. `RETENU`
+ * n'est rendu que par la base inerte (`inertes.ts`, Y5) : ni l'un ni l'autre,
+ * et le journal du passage le dit pour ce qu'il est.
+ */
+export type Ecriture = 'RECORDED' | 'ALREADY_RECORDED' | 'RETENU';
 
 /**
  * Une etape a ecrire, **avant** l'appel qu'elle annonce (DC6). `le` est

@@ -14,6 +14,7 @@
     "test:coverage": "vitest run --coverage",
     "replay": "tsx src/replay/report.ts",
     "daily": "AT=$(date -u +%FT%TZ); tsx src/jobs/daily-main.ts --run-date=${AT%T*} --at=$AT",
+    "convoyeur": "tsx src/convoyeur/main.ts --at=$(date -u +%FT%TZ)",
     "db:push": "drizzle-kit push --verbose"
   },
   "dependencies": {
