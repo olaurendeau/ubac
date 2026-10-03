@@ -1,6 +1,6 @@
 /**
  * Le chargeur de configuration du convoyeur (lot Y5) : **le seul lecteur de
- * l'environnement de l'arbre**, et seulement des huit
+ * l'environnement de l'arbre** (`eslint.config.js`), et seulement des huit
  * variables `CONVOYEUR_*` de `docs/convoyeur.md` §4. Aucune variable d'Ubac
  * n'est lue ici, et `src/config/env.ts` ne lit aucune de celles-ci (CV3) :
  * `test/convoyeur/env.test.ts` le constate sur les deux chargeurs.

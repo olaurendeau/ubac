@@ -33,8 +33,9 @@ function ruleCounts(result: ESLint.LintResult): Record<string, number> {
 }
 
 const TRANSPORT = 'src/convoyeur/coinbase.ts';
-/** Un fichier du convoyeur sans bloc propre (le futur point d'entree d'Y5). */
+/** Le point d'entree d'Y5 : les regles communes de l'arbre, plus la composition. */
 const AUTRE = 'src/convoyeur/main.ts';
+const ENV = 'src/convoyeur/env.ts';
 const PASSAGE = 'src/convoyeur/passage.ts';
 const PUR = 'src/convoyeur/regles.ts';
 const BASE = 'src/convoyeur/base.ts';
@@ -224,5 +225,43 @@ describe('frontiere du convoyeur — le passage n’a pas d’horloge (Y4b)', ()
       '@typescript-eslint/no-restricted-imports': 6,
       'no-restricted-imports': 1,
     });
+  });
+});
+
+describe('frontiere du convoyeur — l’environnement a env.ts, la composition a main.ts (Y5)', () => {
+  const LECTURES = [
+    'export const a = process.env.CONVOYEUR_NTFY_TOKEN;',
+    "export const a = process['env'];",
+    'const { env } = process;\nexport const a = env;',
+  ];
+  const COMPOSITION = [
+    'declare const s: never;\nexport const a = openConvoyeurBase(s);',
+    'declare const s: never;\nexport const a = ccxtConvoyeurTransport(s);',
+    'declare const s: never;\nexport const a = openConvoyeurCoinbase(s, s);',
+    'export const a = openHttp();',
+    'declare const s: never;\nexport const a = openNtfy(s, s);',
+  ];
+
+  /** Les messages des deux regles d'Y5 seules : le passage refuse aussi la globale `process`. */
+  async function compte(code: string, chemin: string): Promise<number> {
+    const [result] = await eslint.lintText(code, { filePath: resolve(ROOT, chemin) });
+    return (result?.messages ?? []).filter((m) => /seul src\/convoyeur\/(env|main)\.ts/.test(m.message)).length;
+  }
+
+  it.each([AUTRE, PASSAGE, TRANSPORT, BASE, 'src/convoyeur/ntfy.ts'])('refuse de lire l’environnement dans %s', async (chemin) => {
+    expect(await Promise.all(LECTURES.map((code) => compte(code, chemin)))).toEqual([1, 1, 1]);
+  });
+
+  it('admet la lecture dans env.ts, et l’argv dans main.ts', async () => {
+    expect(await Promise.all(LECTURES.map((code) => compte(code, ENV)))).toEqual([0, 0, 0]);
+    expect(await compte('export const a = process.argv;', AUTRE)).toBe(0);
+  });
+
+  it.each([ENV, PASSAGE, TRANSPORT, BASE, 'src/convoyeur/inertes.ts'])('refuse d’ouvrir un port reel dans %s', async (chemin) => {
+    expect(await Promise.all(COMPOSITION.map((code) => compte(code, chemin)))).toEqual([1, 1, 1, 1, 1]);
+  });
+
+  it('admet la composition dans main.ts', async () => {
+    expect(await Promise.all(COMPOSITION.map((code) => compte(code, AUTRE)))).toEqual([0, 0, 0, 0, 0]);
   });
 });

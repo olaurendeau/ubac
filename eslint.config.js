@@ -116,6 +116,10 @@ const CONVOYEUR_BASE = ['src/convoyeur/base.ts'];
  * etapes et la pause sont des parametres.
  */
 const CONVOYEUR_PASSAGE = ['src/convoyeur/passage.ts'];
+/** Le seul lecteur de l'environnement de l'arbre (Y5) : les huit `CONVOYEUR_*`. */
+const CONVOYEUR_ENV = ['src/convoyeur/env.ts'];
+/** Le point d'entree (Y5) : seul lieu de composition, seul lieu du mode. */
+const CONVOYEUR_MAIN = ['src/convoyeur/main.ts'];
 
 const CONVOYEUR_IMPORT_PATTERN = {
   regex: '(^|/)convoyeur(/|$)',
@@ -174,6 +178,24 @@ const CONVOYEUR_SYNTAX = [
   {
     selector: 'ImportExpression',
     message: "le convoyeur n'importe pas dynamiquement : la liste des modules s'esquiverait.",
+  },
+];
+
+const CONVOYEUR_ENVIRONNEMENT = [
+  "MemberExpression[object.name='process'][property.name='env']",
+  "MemberExpression[object.name='process'][computed=true]",
+  "VariableDeclarator[init.name='process'] > ObjectPattern",
+].map((selector) => ({
+  selector,
+  message: "seul src/convoyeur/env.ts lit l'environnement, et seulement les variables CONVOYEUR_* (Y5, CV3).",
+}));
+
+/** Les ports reels ne s'ouvrent que dans `main.ts` : un second lieu de composition contournerait le mode. */
+const CONVOYEUR_COMPOSITION = [
+  {
+    selector:
+      'CallExpression[callee.name=/^(openConvoyeurBase|openConvoyeurCoinbase|ccxtConvoyeurTransport|openHttp|openNtfy)$/]',
+    message: 'seul src/convoyeur/main.ts compose les ports reels du convoyeur (Y5).',
   },
 ];
 
@@ -327,14 +349,28 @@ export default tseslint.config(
     files: CONVOYEUR,
     ignores: CONVOYEUR_PUR,
     rules: {
-      'no-restricted-syntax': ['error', ...CONVOYEUR_SYNTAX],
+      'no-restricted-syntax': ['error', ...CONVOYEUR_SYNTAX, ...CONVOYEUR_ENVIRONNEMENT, ...CONVOYEUR_COMPOSITION],
       'no-restricted-globals': ['error', ...CONVOYEUR_GLOBALS],
     },
   },
   {
+    files: CONVOYEUR_ENV,
+    rules: { 'no-restricted-syntax': ['error', ...CONVOYEUR_SYNTAX, ...CONVOYEUR_COMPOSITION] },
+  },
+  {
+    files: CONVOYEUR_MAIN,
+    rules: { 'no-restricted-syntax': ['error', ...CONVOYEUR_SYNTAX, ...CONVOYEUR_ENVIRONNEMENT] },
+  },
+  {
     files: CONVOYEUR_PASSAGE,
     rules: {
-      'no-restricted-syntax': ['error', ...CONVOYEUR_SYNTAX, ...PASSAGE_SYNTAX],
+      'no-restricted-syntax': [
+        'error',
+        ...CONVOYEUR_SYNTAX,
+        ...PASSAGE_SYNTAX,
+        ...CONVOYEUR_ENVIRONNEMENT,
+        ...CONVOYEUR_COMPOSITION,
+      ],
       'no-restricted-globals': ['error', ...CONVOYEUR_GLOBALS, ...PASSAGE_GLOBALS],
     },
   },
@@ -349,6 +385,8 @@ export default tseslint.config(
           selector: "MemberExpression[computed=true][property.type!='Literal']",
           message: "CV4 : aucun acces calcule dans le transport, l'instance ccxt s'y lirait par un nom construit.",
         },
+        ...CONVOYEUR_ENVIRONNEMENT,
+        ...CONVOYEUR_COMPOSITION,
       ],
     },
   },
