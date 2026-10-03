@@ -25,10 +25,10 @@ const ACHAT: Achat = {
 const eur = (v: string): EurAmount => new Decimal(v) as EurAmount;
 
 const COMPTES: Readonly<Record<string, CompteRendu>> = {
-  convoyage: { nature: 'CONVOYAGE', convoyage: '2026-11-27', etape: 'ENREGISTRE', achat: ACHAT, eurLaisse: eur('20'), motif: undefined },
-  refus: { nature: 'REFUS', convoyage: undefined, etape: undefined, achat: undefined, eurLaisse: eur('120'), motif: 'USDC etranger' },
-  reprise: { nature: 'REPRISE', convoyage: '2026-11-27', etape: 'ENREGISTRE', achat: ACHAT, eurLaisse: eur('0'), motif: undefined },
-  panne: { nature: 'PANNE', convoyage: '2026-11-27', etape: 'ACHETE', achat: ACHAT, eurLaisse: eur('0'), motif: 'soldes' },
+  convoyage: { nature: 'CONVOYAGE', convoyage: '2026-11-27', etape: 'ENREGISTRE', achat: ACHAT, eurLaisse: eur('20'), motif: undefined, poussiere: undefined },
+  refus: { nature: 'REFUS', convoyage: undefined, etape: undefined, achat: undefined, eurLaisse: eur('120'), motif: 'USDC etranger', poussiere: undefined },
+  reprise: { nature: 'REPRISE', convoyage: '2026-11-27', etape: 'ENREGISTRE', achat: ACHAT, eurLaisse: eur('0'), motif: undefined, poussiere: undefined },
+  panne: { nature: 'PANNE', convoyage: '2026-11-27', etape: 'ACHETE', achat: ACHAT, eurLaisse: eur('0'), motif: 'soldes', poussiere: undefined },
 };
 
 function envoyeur(envoi: Envoi = { statut: 'ENVOYE' }): { envoyer: Envoyer; envoyees: Notification[] } {

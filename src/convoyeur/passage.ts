@@ -3,7 +3,7 @@ import type { Decimal } from 'decimal.js';
 import type { ConvoyeurBase, EtapeAEcrire } from './base.js';
 import type { ClePermissions, ConvoyeurCoinbase } from './coinbase.js';
 import type { CompteRendu, ConvoyageOuvert } from './regles.js';
-import { deciderPassage, jourDuPassage, reprendre, verifierCle } from './regles.js';
+import { constater, deciderPassage, jourDuPassage, lignePoussiere, reprendre, verifierCle } from './regles.js';
 import type { Achat, Convoyage, Etape, EurAmount, UsdcAmount } from './types.js';
 
 /**
@@ -71,6 +71,7 @@ interface Suivi {
   etape: Etape | undefined;
   achat: Achat | undefined;
   eurLaisse: EurAmount | undefined;
+  poussiere: UsdcAmount | undefined;
 }
 
 class Arret extends Error {
@@ -117,6 +118,7 @@ export async function passage(
     etape: undefined,
     achat: undefined,
     eurLaisse: undefined,
+    poussiere: undefined,
   };
 
   const compte = (nature: CompteRendu['nature'], motif: string | undefined): CompteRendu => ({
@@ -126,6 +128,7 @@ export async function passage(
     achat: suivi.achat,
     eurLaisse: suivi.eurLaisse,
     motif,
+    poussiere: suivi.poussiere,
   });
 
   async function essayer<T>(quoi: string, appel: () => Promise<T>): Promise<T> {
@@ -238,6 +241,7 @@ export async function passage(
            * anterieur au run d'Ubac intercale, ferait tomber l'apport hors de
            * la fenetre ou l'USDC arrive.
            */
+          suivi.poussiere = suite.poussiere;
           const demandeLe = horloge();
           await ecrire(
             { etape: 'TRANSFERT_DEMANDE', convoyage, le: demandeLe, montant: suite.montant },
@@ -254,15 +258,21 @@ export async function passage(
             log(`move_funds en echec, le solde dira s'il a eu lieu — ${message(erreur)}`);
           }
           etat = { etape: 'TRANSFERT_DEMANDE', convoyage, achat: suite.achat, demandeLe };
-          // Sans relecture aboutie, l'USDC reste `filled_size` : non constate, et la table arrete.
+          /*
+           * Sans relecture aboutie, l'USDC reste le solde d'avant : non constate,
+           * et la table arrete. Le meme constat que la table (DC10) : avec une
+           * poussiere, le solde d'avant n'est pas `filled_size`, et une egalite
+           * le prendrait pour un transfert fait.
+           */
           for (let lecture = 1; lecture <= config.tentatives; lecture += 1) {
             if (lecture > 1) await ports.pause(config.pauseMs);
             usdcRelu = (await relire('soldes', soldes))?.usdc ?? usdcRelu;
-            if (!usdcRelu.eq(suite.montant)) break;
+            if (constater(usdcRelu, suite.montant).usdc !== 'PRESENT') break;
           }
           break;
         }
         case 'NOTER_TRANSFERE':
+          suivi.poussiere = suite.poussiere;
           await ecrire({ etape: 'TRANSFERE', convoyage, le: suite.transfereLe }, false);
           etat = { etape: 'TRANSFERE', convoyage, achat: suite.achat, transfereLe: suite.transfereLe };
           break;
@@ -294,13 +304,17 @@ export async function passage(
     const { eur: eurDisponible, usdc: usdcRelu } = await lireSoldes();
     const decision = deciderPassage({ jour, dernier, eurDisponible, usdcRelu });
     switch (decision.action) {
-      case 'RIEN':
+      case 'RIEN': {
         log(`rien a faire : ${decision.motif}`);
+        const information = lignePoussiere(decision.poussiere);
+        if (information !== undefined) log(information);
         return undefined;
+      }
       case 'REFUSER':
         return compte('REFUS', decision.motif);
       case 'COMMENCER':
         suivi.convoyage = decision.convoyage;
+        suivi.poussiere = decision.poussiere;
         log(
           `convoyage ${decision.convoyage} : achat de ${decision.quoteSize.toFixed()} EUR, client_order_id=${decision.clientOrderId}, ${decision.eurLaisse.toFixed()} EUR laisses`,
         );

@@ -10,11 +10,14 @@ import { describe, expect, it } from 'vitest';
 import type { UsdcAmount as UsdcUbac } from '../../src/core/types.js';
 import {
   MONTANT_CONVOYE,
+  SEUIL_POUSSIERE_USDC,
   clientOrderIdConvoyage,
+  constater,
   deciderPassage,
   etatAuRun,
   eurEngage,
   jourDuPassage,
+  lignePoussiere,
   montantATransferer,
   notification,
   reprendre,
@@ -273,7 +276,7 @@ describe('CV7 — un passage engage 0 ou exactement 100 EUR', () => {
         solde = decision.eurLaisse;
         dernier = { etape: 'ENREGISTRE', convoyage: decision.convoyage };
         const { convoyage, eurLaisse } = decision;
-        const compteRendu: CompteRendu = { nature: 'CONVOYAGE', convoyage, etape: 'ENREGISTRE', achat: ACHAT, eurLaisse, motif: undefined };
+        const compteRendu: CompteRendu = { nature: 'CONVOYAGE', convoyage, etape: 'ENREGISTRE', achat: ACHAT, eurLaisse, motif: undefined, poussiere: undefined };
         notes.push(notification(compteRendu).corps);
       }
     }
@@ -316,8 +319,12 @@ describe('CV8 — le montant transfere est filled_size, en Decimal', () => {
     if (suite.faire === 'TRANSFERER') expect(suite.montant).toBe(ACHAT.filledSize);
   });
 
-  it.each(['99.402984', '99.402986', '99.4029849999999999', '99.40'])(
-    'un USDC relu a %s, qui differe de filled_size, est une anomalie, pas un arrondi',
+  /*
+   * Au-dessus de `filled_size`, un reste sous 1 USDC est une poussiere (DC10,
+   * sondes plus bas) ; en dessous, aucun reste n'explique le manque.
+   */
+  it.each(['99.402984', '99.4029849999999999', '99.40', '100.402985'])(
+    'un USDC relu a %s, sous filled_size ou au-dela de la poussiere, est une anomalie, pas un arrondi',
     (relu) => {
       expect(reprendre(acheteLe, usdc(relu)).faire).toBe('PANNE');
     },
@@ -347,12 +354,12 @@ describe('CV9, CV10 — chaque ligne de la table de reprise', () => {
   it("interrompu apres l'achat : transfere filled_size sans racheter (CV9)", () => {
     const decision = deciderPassage(entree({ dernier: arreteA('ACHETE', convoyage), usdcRelu: usdc('99.402985'), eurDisponible: eur('100') }));
     expect(eurEngage(decision).isZero()).toBe(true);
-    expect(suiteDe(decision)).toEqual({ faire: 'TRANSFERER', montant: ACHAT.filledSize, achat: ACHAT });
+    expect(suiteDe(decision)).toEqual({ faire: 'TRANSFERER', montant: ACHAT.filledSize, achat: ACHAT, poussiere: usdc('0') });
   });
 
   it("interrompu apres le transfert : ne transfere pas une seconde fois, garde l'instant de la demande", () => {
     const suite = suiteDe(deciderPassage(entree({ dernier: arreteA('TRANSFERT_DEMANDE', convoyage), usdcRelu: usdc('0') })));
-    expect(suite).toEqual({ faire: 'NOTER_TRANSFERE', transfereLe: DEMANDE_LE, achat: ACHAT });
+    expect(suite).toEqual({ faire: 'NOTER_TRANSFERE', transfereLe: DEMANDE_LE, achat: ACHAT, poussiere: usdc('0') });
   });
 
   it('un achat sans USDC (filled_size nul) est une panne, ni un transfert ni un transfert fait', () => {
@@ -370,11 +377,140 @@ describe('CV9, CV10 — chaque ligne de la table de reprise', () => {
     ['journal vide', undefined],
     ['dernier convoyage enregistre', { etape: 'ENREGISTRE', convoyage: '2026-10-20' }],
   ])('CV10 : USDC dans Primary sans convoyage ouvert (%s) — refus, aucun achat', (_cas, dernier) => {
-    for (const relu of ['0.01', '99.402985', '-1', 'NaN']) {
+    for (const relu of ['1', '1.01', '99.402985', '-1', '-0.0000009', 'NaN', 'Infinity']) {
       const decision = deciderPassage(entree({ dernier, usdcRelu: usdc(relu), eurDisponible: eur('500') }));
       expect(decision).toMatchObject({ action: 'REFUSER', motif: expect.stringMatching(/etranger/) as unknown });
       expect(eurEngage(decision).isZero()).toBe(true);
     }
+  });
+});
+
+// --- DC10 : la poussiere de Primary (decision du 2026-10-03) ----------------
+
+describe('DC10 — un USDC de Primary sous 1 USDC est une poussiere, pas un etranger', () => {
+  /** Le solde du premier DRY_RUN reel, le 2026-10-03 a 21:54Z. */
+  const CONSTATEE = '0.0000008962268961';
+
+  it('le seuil est une constante Decimal de 1 USDC', () => {
+    expect(SEUIL_POUSSIERE_USDC).toBeInstanceOf(Decimal);
+    expect(SEUIL_POUSSIERE_USDC.toFixed()).toBe('1');
+  });
+
+  it.each(['0', '0.0000009', CONSTATEE, '0.99', '0.9999999999999999999999'])(
+    'sans convoyage ouvert, %s USDC n’arrete rien : 100 EUR convoient, et la poussiere est dite',
+    (relu) => {
+      const decision = deciderPassage(entree({ usdcRelu: usdc(relu), eurDisponible: eur('100') }));
+      expect(decision).toMatchObject({ action: 'COMMENCER', quoteSize: MONTANT_CONVOYE });
+      if (decision.action === 'COMMENCER') expect(decision.poussiere.toFixed()).toBe(new Decimal(relu).toFixed());
+      expect(eurEngage(decision).toFixed()).toBe('100');
+    },
+  );
+
+  it('le constat du 2026-10-03 : 0.0077 EUR et une poussiere ne font rien, sans refus', () => {
+    const decision = deciderPassage(entree({ usdcRelu: usdc(CONSTATEE), eurDisponible: eur('0.0077') }));
+    expect(decision).toMatchObject({ action: 'RIEN', motif: expect.stringMatching(/0\.0077 EUR/) as unknown });
+    if (decision.action === 'RIEN') expect(decision.poussiere.toFixed()).toBe(CONSTATEE);
+  });
+
+  it.each(['1', '1.00', '1.01', '1.0000000000000000001'])(
+    'a partir de 1 USDC inclus (%s), le refus est inchange : etranger, aucun achat',
+    (relu) => {
+      const decision = deciderPassage(entree({ usdcRelu: usdc(relu), eurDisponible: eur('500') }));
+      expect(decision).toEqual({
+        action: 'REFUSER',
+        motif: `${new Decimal(relu).toFixed()} USDC dans Primary sans convoyage ouvert : USDC etranger, aucun achat.`,
+      });
+    },
+  );
+
+  describe.each(['0.0000009', '0.99'])('reprise avec une poussiere de %s USDC', (texte) => {
+    const poussiere = usdc(texte);
+    const plus = usdc(ACHAT.filledSize.plus(poussiere).toFixed());
+    const convoyage = '2026-10-26';
+
+    it.each(['ACHETE', 'TRANSFERT_DEMANDE'] as const)(
+      '%s, filled_size plus la poussiere : transfere filled_size, pas le solde',
+      (etape) => {
+        const suite = suiteDe(deciderPassage(entree({ dernier: arreteA(etape, convoyage), usdcRelu: plus })));
+        expect(suite).toMatchObject({ faire: 'TRANSFERER' });
+        if (suite.faire === 'TRANSFERER') {
+          expect(suite.montant).toBe(ACHAT.filledSize);
+          expect(suite.poussiere.toFixed()).toBe(texte);
+        }
+      },
+    );
+
+    it('TRANSFERT_DEMANDE, la poussiere seule : le transfert est fait, a l’instant de la demande', () => {
+      const suite = suiteDe(deciderPassage(entree({ dernier: arreteA('TRANSFERT_DEMANDE', convoyage), usdcRelu: poussiere })));
+      expect(suite).toEqual({ faire: 'NOTER_TRANSFERE', transfereLe: DEMANDE_LE, achat: ACHAT, poussiere });
+    });
+
+    it('ACHETE, la poussiere seule : parti sans demande, panne', () => {
+      expect(suiteDe(deciderPassage(entree({ dernier: arreteA('ACHETE', convoyage), usdcRelu: poussiere }))).faire).toBe('PANNE');
+    });
+
+    it.each(['ACHETE', 'TRANSFERT_DEMANDE'] as const)('%s, filled_size plus la poussiere plus 1 : panne', (etape) => {
+      const relu = usdc(plus.plus(1).toFixed());
+      expect(suiteDe(deciderPassage(entree({ dernier: arreteA(etape, convoyage), usdcRelu: relu }))).faire).toBe('PANNE');
+    });
+  });
+
+  it('un filled_size sous le seuil est une panne ; a 1 USDC pile, la table tient', () => {
+    const demi: Achat = { ...ACHAT, filledSize: usdc('0.5') };
+    const un: Achat = { ...ACHAT, filledSize: usdc('1') };
+    for (const relu of ['0', '0.5', '0.7']) {
+      expect(reprendre({ etape: 'TRANSFERT_DEMANDE', convoyage: '2026-10-26', achat: demi, demandeLe: DEMANDE_LE }, usdc(relu)).faire).toBe('PANNE');
+    }
+    const ouvert = { etape: 'TRANSFERT_DEMANDE', convoyage: '2026-10-26', achat: un, demandeLe: DEMANDE_LE } as const;
+    expect(reprendre(ouvert, usdc('1')).faire).toBe('TRANSFERER');
+    expect(reprendre(ouvert, usdc('1.99')).faire).toBe('TRANSFERER');
+    expect(reprendre(ouvert, usdc('0.99')).faire).toBe('NOTER_TRANSFERE');
+    expect(reprendre(ouvert, usdc('2')).faire).toBe('PANNE');
+  });
+
+  /** Une poussiere : de 0 a 1 USDC exclu, au plus au 10^-18. */
+  const poussiere = fc
+    .bigInt({ min: 0n, max: 10n ** 18n - 1n })
+    .map((n) => usdc(new Decimal(n.toString()).div('1e18').toFixed()));
+  /** Un filled_size d'au moins 1 USDC, au 10^-6. */
+  const rempli = fc.bigInt({ min: 10n ** 6n, max: 10n ** 12n }).map((n) => usdc(new Decimal(n.toString()).div(1e6).toFixed()));
+
+  /** Le solde construit sans arrondi : `plus` arrondit a 20 chiffres significatifs, le solde lu non. */
+  const Exact = Decimal.clone({ precision: 100 });
+  const somme = (...termes: Decimal[]): UsdcAmount =>
+    usdc(termes.reduce((total, terme) => total.plus(terme.toFixed()), new Exact(0)).toFixed());
+
+  it('pour toute poussiere et tout filled_size : present, parti, ou incoherent, jamais deux a la fois', () => {
+    fc.assert(
+      fc.property(poussiere, rempli, (p, montant) => {
+        expect(constater(somme(montant, p), montant)).toEqual({ usdc: 'PRESENT', poussiere: p });
+        expect(constater(p, montant)).toEqual({ usdc: 'PARTI', poussiere: p });
+        expect(constater(somme(montant, p, new Decimal(1)), montant).usdc).toBe('INCOHERENT');
+      }),
+      { numRuns: 500 },
+    );
+  });
+
+  it('pour tout USDC relu, la table ne transfere que filled_size, et seulement s’il est la (aucun double transfert)', () => {
+    fc.assert(
+      fc.property(soldeUsdc, fc.constantFrom('ACHETE', 'TRANSFERT_DEMANDE', 'TRANSFERE'), (relu, etape) => {
+        const suite = reprendre(arreteA(etape, '2026-10-26') as Parameters<typeof reprendre>[0], relu);
+        if (suite.faire === 'TRANSFERER') {
+          expect(suite.montant).toBe(ACHAT.filledSize);
+          expect(relu.gte(ACHAT.filledSize) && relu.lt(ACHAT.filledSize.plus(1))).toBe(true);
+        }
+        if (suite.faire === 'NOTER_TRANSFERE') expect(relu.lt(1)).toBe(true);
+      }),
+      { numRuns: 500 },
+    );
+  });
+
+  it('la ligne d’information dit le montant, et rien pour zero ou absent', () => {
+    expect(lignePoussiere(usdc(CONSTATEE))).toBe(
+      `poussiere ignoree dans Primary : ${CONSTATEE} USDC, sous le seuil de 1 USDC`,
+    );
+    expect(lignePoussiere(usdc('0'))).toBeUndefined();
+    expect(lignePoussiere(undefined)).toBeUndefined();
   });
 });
 
@@ -398,7 +534,7 @@ describe('CV13 — ce qui manque, et ce que lira le run de 07:00', () => {
 });
 
 describe('CV17 — le texte des notifications', () => {
-  const convoyage: CompteRendu = { nature: 'CONVOYAGE', convoyage: '2026-11-27', etape: 'ENREGISTRE', achat: ACHAT, eurLaisse: eur('50'), motif: undefined };
+  const convoyage: CompteRendu = { nature: 'CONVOYAGE', convoyage: '2026-11-27', etape: 'ENREGISTRE', achat: ACHAT, eurLaisse: eur('50'), motif: undefined, poussiere: undefined };
 
   it('un convoyage complet dit EUR debite, USDC recu, frais, etape et EUR laisse', () => {
     const { titre, corps, priorite } = notification(convoyage);
@@ -413,6 +549,14 @@ describe('CV17 — le texte des notifications', () => {
       'EUR laisse dans Primary : 50 EUR',
       "le run de 07:00 lira : l'USDC et sa ligne cash_flows : l'apport est compte.",
     ]);
+  });
+
+  it('une poussiere ignoree est une ligne d’information, montant compris, sans urgence (DC10)', () => {
+    const avec = notification({ ...convoyage, poussiere: usdc('0.0000009') });
+    expect(avec.priorite).toBe('HIGH');
+    expect(avec.corps.split('\n')).toContain('poussiere ignoree dans Primary : 0.0000009 USDC, sous le seuil de 1 USDC');
+    expect(avec.corps.split('\n')).toHaveLength(notification(convoyage).corps.split('\n').length + 1);
+    expect(notification({ ...convoyage, poussiere: usdc('0') }).corps).toBe(notification(convoyage).corps);
   });
 
   it('la marque du mode suit le prefixe, et le corps ne change pas (DP4)', () => {

@@ -10,6 +10,10 @@ dit ce qui change.
 > **Statut des décisions : closes le 2026-09-28.** Dix questions posées en deux
 > passes par Orca (`msg_d8c3e9cbd5a9`, `msg_f3a72b2ade75`), dix réponses de
 > l'opérateur. Q3 a reçu la réponse 3 (« exactement 100 EUR »), précisée en Q6.
+>
+> **Amendement du 2026-10-03** : décision de l'opérateur sur la poussière d'USDC
+> de *Primary* (DC10), après le premier `DRY_RUN` réel. Elle touche DC3, CV9,
+> CV10 et CV17 ; aucun autre critère ne change.
 
 ## Besoin
 
@@ -132,7 +136,8 @@ d'email**. L'apport apparaît déjà dans « Derniers mouvements » du rapport d
   d'idempotence (S7) : la quantité à déplacer se relit sur l'exchange, et un
   transfert fait ne peut pas être refait puisque l'USDC n'est plus là. Un USDC
   inattendu dans *Primary* (au-delà de ce que le convoyeur a acheté) arrête le
-  convoyage et alerte.
+  convoyage et alerte. Une poussière de moins de 1 USDC n'est pas inattendue
+  (DC10).
 - **DC4. Le montant enregistré est l'USDC effectivement déplacé**, lu sur
   l'exchange (`filled_size` de l'ordre, S6, puis le solde relu), jamais le
   montant EUR ni un montant calculé. La note de la ligne porte l'EUR débité, les
@@ -158,6 +163,24 @@ d'email**. L'apport apparaît déjà dans « Derniers mouvements » du rapport d
   de reprise ne peut donc engager plus de 100 EUR par jour.
 - **DC9. Pas d'argent à deviner.** Aucun `number` sur un montant : EUR et USDC en
   `decimal.js`, comme dans Ubac.
+
+### Décision de l'opérateur du 2026-10-03
+
+- **DC10. Une poussière d'USDC dans *Primary* n'est pas un USDC étranger.**
+  *Constat* : le premier `DRY_RUN` réel (2026-10-03, 21:54Z) a refusé en
+  `urgent` : « 0.0000008962268961 USDC dans Primary sans convoyage ouvert : USDC
+  étranger, aucun achat » (EUR dans *Primary* : 0.0077). Cette poussière ne se
+  déplace pas ; telle quelle, la règle refusait chaque soir, et aurait bloqué le
+  virement d'octobre (CV23) puis le réel. *Décision* : un solde USDC de
+  *Primary* **strictement inférieur à 1 USDC** (`decimal.js`) est une
+  poussière. Sans convoyage ouvert, il est ignoré pour la décision et **dit dans
+  la notification**, montant compris, en ligne d'information, sans priorité
+  `urgent`. **À partir de 1 USDC inclus, le refus de CV10 est inchangé.**
+  Pendant un convoyage, la reprise lit « l'USDC de l'achat est encore là »
+  comme `filled_size` plus une poussière, et « il est parti » comme une
+  poussière seule ; ce qui est transféré reste `filled_size` (CV8), jamais la
+  poussière. La poussière n'est pas notée d'avance : les récompenses USDC la font
+  varier, et une égalité à un montant noté mettrait en panne à tort.
 
 ## Périmètre
 
@@ -319,9 +342,14 @@ Préfixe **CV** (`C`, `E`, `R`, `F` et `V` sont pris).
    relu sur l'exchange, en `decimal.js`.
 9. **CV9.** Un convoyage interrompu après l'achat et avant le transfert reprend
    au passage suivant sans racheter ; interrompu après le transfert, il ne
-   transfère pas une seconde fois (DC3). Chaque cas a sa sonde.
+   transfère pas une seconde fois (DC3). Chaque cas a sa sonde, aussi avec une
+   poussière préexistante dans *Primary* (DC10) : elle ne casse aucune reprise,
+   n'est pas transférée, et ne fait pas croire à un transfert absent ou fait.
 10. **CV10.** Un USDC présent dans *Primary* qui n'est pas celui d'un convoyage en
-    cours arrête le convoyage, sans transfert, avec une alerte.
+    cours arrête le convoyage, sans transfert, avec une alerte, **dès 1 USDC
+    inclus** (DC10). En dessous, c'est une poussière : ignorée, jamais
+    transférée, dite dans la notification. Sondes : 0, 0.0000009 et 0.99 USDC
+    n'arrêtent rien ; 1 et 1.01 USDC sont refusés.
 
 ### Enregistrement
 
@@ -354,7 +382,9 @@ Préfixe **CV** (`C`, `E`, `R`, `F` et `V` sont pris).
 17. **CV17.** Chaque passage qui fait quelque chose (convoyage, refus, reprise,
     panne) envoie une notification ntfy, préfixée « convoyeur », qui dit l'EUR
     débité, l'USDC reçu, les frais, l'étape atteinte et l'EUR laissé dans
-    *Primary* ; un passage sans convoyage n'envoie rien. Aucun email.
+    *Primary*, et la poussière ignorée (DC10), montant compris, en ligne
+    d'information qui ne rend pas la notification `urgent` ; un passage sans
+    convoyage n'envoie rien. Aucun email.
 18. **CV18.** La procédure de création de la clé du convoyeur et d'activation de
     la liste blanche vide est documentée, sur le modèle de
     `docs/cle-coinbase.md`, et cite les sources S7 à S13.

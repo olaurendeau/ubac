@@ -88,12 +88,19 @@ et que Y4b branche :
 | Dernière étape | USDC relu dans *Primary* | Action |
 |---|---|---|
 | `ACHAT_DEMANDE` | — | relire l'ordre par `client_order_id` ; recréer avec le même identifiant rend l'ordre existant (S5), jamais un second |
-| `ACHETE` ou `TRANSFERT_DEMANDE` | `= filled_size` | transférer `filled_size` |
-| `TRANSFERT_DEMANDE` | `0` | transfert fait : écrire `TRANSFERE` |
-| `ACHETE` | `0` | incohérent (l'USDC est parti sans demande) : `EN_PANNE`, `urgent` |
-| toute étape | ni `0` ni `filled_size` | `EN_PANNE`, `urgent`, aucun transfert (CV10) |
+| `ACHETE` ou `TRANSFERT_DEMANDE` | `filled_size + p` | transférer `filled_size`, jamais `p` |
+| `TRANSFERT_DEMANDE` | `p` | transfert fait : écrire `TRANSFERE` |
+| `ACHETE` | `p` | incohérent (l'USDC est parti sans demande) : `EN_PANNE`, `urgent` |
+| toute étape | ni `p` ni `filled_size + p` | `EN_PANNE`, `urgent`, aucun transfert (CV10) |
 | `TRANSFERE` | — | écrire `cash_flows` (idempotent par la clé naturelle), puis `ENREGISTRE` |
-| aucun convoyage ouvert | `≠ 0` | USDC étranger : refus, `urgent`, aucun achat (CV10) |
+| aucun convoyage ouvert | `≥ 1`, négatif ou illisible | USDC étranger : refus, `urgent`, aucun achat (CV10) |
+| aucun convoyage ouvert | `p` | poussière ignorée et dite dans la notification ; la décision suit l'EUR (DC10) |
+
+`p` est une poussière, `0 ≤ p < 1` USDC (DC10, décision de l'opérateur du
+2026-10-03, qui remplace les `0` et `= filled_size` d'origine). Une seule
+fonction, `constater`, la lit pour la table et pour la relecture après
+`move_funds`. Un `filled_size` sous 1 USDC est une panne : les deux premières
+lignes seraient vraies à la fois.
 
 **L'instant d'un transfert repris** (DC5) : la réponse de `move_funds` ne porte
 ni identifiant ni horodatage (S7). L'instant retenu est **celui de
@@ -166,7 +173,8 @@ passage ne voit plus d'EUR, CV23 n'est pas constaté. **L'ordre opérateur est d
 imposé** (OP5) : attendre le passage de 19:00 qui voit l'EUR, puis convertir
 dans *Primary* (DC1, jamais dans `ubac-agent`), transférer l'USDC, et saisir la
 ligne `cash_flows` comme aujourd'hui, **avant 07:00**. Un USDC laissé dans
-*Primary* après le geste serait lu le soir suivant comme étranger (CV10).
+*Primary* après le geste, dès 1 USDC, serait lu le soir suivant comme étranger
+(CV10) ; en dessous, c'est une poussière, ignorée et dite (DC10).
 
 Pour que la saisie manuelle d'octobre reste le geste d'aujourd'hui, **la colonne
 d'origine a `OPERATEUR` pour défaut** et la clé naturelle est nulle pour les

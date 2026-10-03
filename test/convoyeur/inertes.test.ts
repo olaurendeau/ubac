@@ -1,3 +1,5 @@
+import { Decimal } from 'decimal.js';
+
 import { describe, expect, it } from 'vitest';
 
 import { baseInerte, coinbaseInerte, ORDRE_NON_PLACE } from '../../src/convoyeur/inertes.js';
@@ -89,5 +91,17 @@ describe('CV1 clos — en DRY_RUN aussi, une cle refusee arrete avant toute lect
     const { compteRendu } = await passerInerte(coinbase, doubleBase());
     expect(compteRendu?.nature).toBe('REFUS');
     expect(coinbase.appels).toEqual(['keyPermissions']);
+  });
+});
+
+describe('DC10 — en DRY_RUN, la poussiere du 2026-10-03 n’arrete pas le convoyage dit', () => {
+  it('convoie 100 USDC fictifs, laisse la poussiere, et la dit', async () => {
+    const coinbase = doubleCoinbase('100');
+    coinbase.usdcPrimary = new Decimal('0.0000008962268961');
+    const { compteRendu, logs } = await passerInerte(coinbase, doubleBase());
+    expect(compteRendu).toMatchObject({ nature: 'CONVOYAGE', etape: 'ENREGISTRE' });
+    expect(logs).toContain(`coinbase inerte : move_funds retenu, non appele — 100 USDC de ${PRIMARY} vers ${UBAC_AGENT}`);
+    expect(notification(compteRendu!, 'DRY_RUN').corps).toContain('poussiere ignoree dans Primary : 0.0000008962268961 USDC');
+    expect(coinbase.transferts).toEqual([]);
   });
 });
