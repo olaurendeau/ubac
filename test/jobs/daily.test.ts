@@ -34,7 +34,7 @@ import { expectedCalendar } from '../../src/fixture/normalise.js';
 import { clientOrderId } from '../../src/core/order-id.js';
 import type { Order, Price, Quantity, UsdcAmount } from '../../src/core/types.js';
 import type { DailyPorts, DailyRunResult, RunClock } from '../../src/jobs/daily.js';
-import { DailyRunError, NTFY_CANAL_OUVERT_LIGNE, ORDRES_EN_VOL_MARKER, reported, runDaily } from '../../src/jobs/daily.js';
+import { DailyRunError, NTFY_CANAL_OUVERT_LIGNE, ORDRES_EN_VOL_MARKER, REFUS_RESYNC, reported, runDaily } from '../../src/jobs/daily.js';
 import { RESYNC_MARKER } from '../../src/jobs/reconcile.js';
 import { REPORT_TAG } from '../../src/report/daily-report.js';
 import { ordreOuvert, photo, PORTFOLIO, qty, solde } from './doubles.js';
@@ -2661,6 +2661,83 @@ describe('annulation des ordres d’un run precedent et etape 6 — aucun ordre 
   });
 });
 
+describe('E60 — un jour de resynchronisation refuse d’executer (O6 = 1)', () => {
+  /*
+   * Hors bande, et une photo de la veille qui diverge : 30 000 USDC en interne
+   * contre 23 000 reels. La production rend une jambe acceptee — sans elle, le
+   * refus serait tenu par vacuite.
+   */
+  const RESYNCHRONISE: Scenario = {
+    balances: JUSTE_HORS_BANDE,
+    snapshot: cache({ BTC: qty('0.9'), ETH: qty('12'), USDC: qty('30000') }, '100000'),
+  };
+  const LENDEMAIN = '2026-09-13';
+
+  /* **La sonde du lot.** Retirer la condition de refus de l'etape 6 la fait rougir. */
+  it('decide, journalise et photographie, mais ne place aucun ordre', async () => {
+    const h = harnais(RESYNCHRONISE);
+    const result = complete(await lance(h));
+
+    expect(result.resync.status).toBe('RESYNCHRONIZED');
+    expect(ordresDe(result, 'rebalance')).toHaveLength(1);
+    expect(h.table.size).toBe(LES_QUATRE.length);
+    expect(h.photos.get(RUN_DATE)?.positions.USDC?.toString()).toBe('23000');
+    for (const effet of ['recordOrder', 'placeOrder', 'recordPlacement']) expect(h.appels, effet).not.toContain(effet);
+    expect(result.placements).toEqual([]);
+    expect(result.executions).toEqual([]);
+    expect(evenements(h)).toEqual(['RECONCILIATION_DRIFT']);
+    expect(h.lignes).toContain('rebalance : jour de resynchronisation, aucun ordre transmis (O6)');
+    expect(reported(result)).toBe(true);
+  });
+
+  /*
+   * **Le refus porte son motif** (T6) : dans le texte de `RECONCILIATION_DRIFT`,
+   * qui part deja en `URGENT`, et en tete des quatre lignes de `decisions`. Sans
+   * seconde alerte : l'evenement est le seul du jour.
+   */
+  it('dit son refus dans RECONCILIATION_DRIFT et sur les quatre decisions, jamais par omission', async () => {
+    const h = harnais(RESYNCHRONISE);
+    await lance(h);
+
+    expect(h.pushes).toHaveLength(1);
+    expect(h.pushes[0]?.payload.message).toContain(REFUS_RESYNC);
+    const motifs = [...h.table.values()].map((d) => d.intent.reason);
+    expect(motifs).toHaveLength(LES_QUATRE.length);
+    for (const motif of motifs) expect(motif).toContain(REFUS_RESYNC);
+    // La meme phrase dans l'alerte et dans la base : une seule source.
+    expect(h.table.get(`${RUN_DATE}|rebalance|false`)?.intent.reason).toContain(h.pushes[0]?.payload.message ?? 'introuvable');
+  });
+
+  it('un jour ordinaire ne porte pas la phrase du refus', async () => {
+    const h = harnais({ balances: JUSTE_HORS_BANDE });
+    await lance(h);
+
+    expect(h.appels.filter((a) => a === 'placeOrder')).toHaveLength(1);
+    expect(h.lignes.join('\n')).not.toContain(REFUS_RESYNC);
+    for (const decision of h.table.values()) expect(decision.intent.reason).not.toContain(REFUS_RESYNC);
+  });
+
+  /*
+   * Le refus ne dure qu'un jour : le lendemain repart de la photo reposee aux
+   * soldes reels, ne diverge plus, et place sur les **memes** soldes. Sans ce
+   * controle, un refus qui se perpetuerait passerait la sonde du jour.
+   */
+  it('le run du lendemain, sur les memes soldes, place son ordre', async () => {
+    const premier = harnais(RESYNCHRONISE);
+    await lance(premier);
+    const reposee = premier.photos.get(RUN_DATE);
+    expect(reposee?.positions.USDC?.toString()).toBe('23000');
+
+    const second = harnais({ balances: JUSTE_HORS_BANDE, snapshot: reposee, runDate: LENDEMAIN });
+    const result = complete(await lance(second));
+
+    expect(result.resync.status).toBe('NOT_NEEDED');
+    expect(second.appels.filter((a) => a === 'placeOrder')).toHaveLength(1);
+    expect(result.placements.map((p) => p.kind)).toEqual(['PLACED']);
+    expect(evenements(second)).not.toContain('RECONCILIATION_DRIFT');
+  });
+});
+
 /**
  * Les neuf effets comptes : cinq ecritures — decision, photo, ligne d'ordre, son
  * issue, placement —, trois envois, et l'ouverture du port reel, qui n'a pas
@@ -2693,13 +2770,15 @@ function enDryRun(h: Harnais): Promise<DailyRunResult> {
 
 describe('DRY_RUN — des ports inertes a la place des vrais (E14, E15, E16)', () => {
   /*
-   * Une journee qui atteint les six effets en mode normal : un ordre, et une
-   * resynchronisation qui fait partir une alerte. Sans elle, la sonde de
-   * comptage serait vraie par vacuite pour ntfy.
+   * Une journee qui atteint les six effets en mode normal : un ordre, et l'alerte
+   * `REBALANCE_EXECUTED` qu'il fait partir. Sans elle, la sonde de comptage
+   * serait vraie par vacuite pour ntfy. La photo de la veille concorde avec les
+   * soldes : un jour de resynchronisation ne place rien (E60), donc la journee
+   * qui place ne peut pas etre aussi celle qui resynchronise.
    */
   const JOURNEE: Scenario = {
     balances: JUSTE_HORS_BANDE,
-    snapshot: cache({ BTC: qty('0.9'), ETH: qty('12'), USDC: qty('30000') }, '100000'),
+    snapshot: cache({ BTC: qty('0.94'), ETH: qty('12'), USDC: qty('23000') }, '100000'),
   };
 
   it('n’appelle aucune des trois ecritures ni aucun des trois envois, que le mode normal atteint', async () => {
@@ -2707,7 +2786,7 @@ describe('DRY_RUN — des ports inertes a la place des vrais (E14, E15, E16)', (
     await lance(normal);
     expect(compte(normal)).toEqual({
       recordDecision: 4, recordSnapshot: 1, recordOrder: 1, recordPlacement: 1, placeOrder: 1,
-      ouvrirExecution: 1, notify: 2, sendReport: 1, ping: 1,
+      ouvrirExecution: 1, notify: 1, sendReport: 1, ping: 1,
     });
 
     // La cle de phase 1 : le port reel refuserait de s'ouvrir, et le DRY_RUN ne l'ouvre pas.
@@ -2732,7 +2811,7 @@ describe('DRY_RUN — des ports inertes a la place des vrais (E14, E15, E16)', (
    * La photo de la veille, lue, est ce qui fait conclure a la resynchronisation.
    */
   it('lit la vraie base : photo de la veille, serie, flux et ordres en attente', async () => {
-    const essai = harnais(JOURNEE);
+    const essai = harnais({ ...JOURNEE, snapshot: cache({ BTC: qty('0.9'), ETH: qty('12'), USDC: qty('30000') }, '100000') });
     const result = complete(await enDryRun(essai));
 
     for (const lecture of ['pendingOrders', 'latestSnapshot', 'snapshotSeries', 'recentCashFlows', 'latestCashFlows:5']) {
@@ -2799,7 +2878,8 @@ describe('DRY_RUN — des ports inertes a la place des vrais (E14, E15, E16)', (
  * rempli.
  */
 describe('DRY_RUN — le journal dit « retenu », jamais « parti » (E15, E16)', () => {
-  const photoDeLaVeille = cache({ BTC: qty('0.9'), ETH: qty('12'), USDC: qty('30000') }, '100000');
+  // Concordante avec les soldes : un jour de resynchronisation ne place rien (E60).
+  const photoDeLaVeille = cache({ BTC: qty('0.94'), ETH: qty('12'), USDC: qty('23000') }, '100000');
   const ANNULE_PUIS_PLACE: Scenario = {
     balances: JUSTE_HORS_BANDE,
     snapshot: photoDeLaVeille,
@@ -2838,7 +2918,6 @@ describe('DRY_RUN — le journal dit « retenu », jamais « parti » (E15, E16)
       'dca (shadow) : NONE, 0 jambe(s), risque ACCEPTED — RETENU',
       `rebalance : ${ORDRE} RETENU`,
       'alerte REBALANCE_EXECUTED : retenue, non envoyee (cle-17f612ea44a2)',
-      'alerte RECONCILIATION_DRIFT : retenue, non envoyee (cle-265248ae2ee3)',
       `rapport quotidien : retenu, non envoye — ${RAPPORT}`,
       'healthcheck : retenu, non envoye (CONCLU)',
     ]);
@@ -2865,7 +2944,6 @@ describe('DRY_RUN — le journal dit « retenu », jamais « parti » (E15, E16)
       'dca (shadow) : NONE, 0 jambe(s), risque ACCEPTED — RECORDED',
       `rebalance : ${ORDRE} PLACED`,
       'alerte REBALANCE_EXECUTED : partie (cle-17f612ea44a2)',
-      'alerte RECONCILIATION_DRIFT : partie (cle-265248ae2ee3)',
       `rapport quotidien : parti (HTTP 201) — ${RAPPORT}`,
       'healthcheck : pingue (CONCLU)',
     ]);

@@ -547,6 +547,37 @@ function marquer(intent: Intent, resync: Resynchronization): Intent {
 }
 
 /**
+ * **Un jour de resynchronisation refuse d'executer** (E60, O6 = 1). La phrase
+ * qui le dit, ajoutee au texte de `reconcile.ts` par `refuserDExecuter`.
+ *
+ * Elle est ajoutee ici, et non ecrite dans `reconcile.ts`, parce que c'est ici
+ * que le refus s'applique : la reconciliation constate un ecart, le run quotidien
+ * decide de ne pas executer. `liquidate.ts` reconcilie aussi, et sa sortie cede
+ * les soldes reels un jour de resynchronisation : la phrase y serait fausse.
+ *
+ * **Elle part dans `RECONCILIATION_DRIFT`, et nulle part ailleurs en plus** (T6) :
+ * l'alerte part deja en `URGENT`, c'est son texte qui dit le refus. Le meme texte
+ * entre en tete des quatre lignes de `decisions` par `marquer` : le refus est
+ * ecrit avec son motif, il ne se deduit jamais d'une absence d'ordre. Exporte
+ * pour que la sonde et le code lisent le meme litteral.
+ */
+export const REFUS_RESYNC =
+  "Jour de resynchronisation : le run refuse d'executer (O6). Il decide, journalise et photographie, " +
+  "mais l'etape 6 ne transmet aucun ordre aujourd'hui, meme accepte par la couche risque : on n'agit pas " +
+  "sur un etat dont on vient de constater qu'on ne le comprenait pas. Le run suivant repart de la photo " +
+  'reposee aux soldes reels.';
+
+/**
+ * L'etat resynchronise, porteur de son refus. Une seule valeur sort d'ici et
+ * sert partout — journal, `decisions.reason`, alerte —, donc aucun lecteur ne
+ * peut voir l'ecart sans voir le refus.
+ */
+function refuserDExecuter(resync: Resynchronization): Resynchronization {
+  if (resync.status !== 'RESYNCHRONIZED') return resync;
+  return { ...resync, reason: `${resync.reason} ${REFUS_RESYNC}` };
+}
+
+/**
  * Marqueur en tete de la `reason` de la production un jour ou l'etape 6 est
  * suspendue parce que des ordres d'un run precedent sont encore ouverts. Meme
  * forme et meme motif que `RESYNC_MARKER` : le refus s'ecrit, il ne se deduit
@@ -790,9 +821,10 @@ async function executeRun(run: DailyRun, parti: ExecutionDeStrategie[]): Promise
    * foi, et la photo de l'etape 7 rafraichit la base. Ce n'est pas une
    * indulgence, c'est la sortie de l'impasse — un abandon ne posait aucune photo,
    * donc le run suivant relisait la meme photo perimee et abandonnait de nouveau.
+   * Poursuivre n'est pas executer : ce jour-la, l'etape 6 ne transmet rien (E60).
    */
   const reconciled = await reconcile({ exchange: ports.exchange, db: ports.db, now: clock.instant(), runDate });
-  const { resync } = reconciled;
+  const resync = refuserDExecuter(reconciled.resync);
   const { holdings } = reconciled.balances;
   log(`soldes reconcilies (${reconciled.balances.comparedTo})`);
   if (resync.status === 'RESYNCHRONIZED') log(resync.reason);
@@ -928,7 +960,8 @@ async function executeRun(run: DailyRun, parti: ExecutionDeStrategie[]): Promise
       lastCompleteRebalanceOn: null,
       /*
        * Vide, et non les soldes : la divergence a deja ete tranchee par la
-       * reconciliation, qui abandonne le run avant toute decision. La redonner
+       * reconciliation, qui la resynchronise, et l'etape 6 n'execute pas ce
+       * jour-la (E60). La redonner
        * ici ferait dependre deux fois le meme verdict de la meme donnee, et
        * `test/jobs/reconcile-accord-risque.test.ts` tient deja l'accord des deux
        * implementations du seuil.
@@ -979,6 +1012,11 @@ async function executeRun(run: DailyRun, parti: ExecutionDeStrategie[]): Promise
     if (isShadow || verdict.status !== 'ACCEPTED' || verdict.orders.length === 0) continue;
     if (recorded.status === 'ALREADY_RECORDED') {
       log(`${strategy} : decision du jour deja enregistree, aucun ordre transmis`);
+      continue;
+    }
+    // E60 : le motif est deja ecrit — en tete de la decision, et dans l'alerte du jour.
+    if (resync.status === 'RESYNCHRONIZED') {
+      log(`${strategy} : jour de resynchronisation, aucun ordre transmis (O6)`);
       continue;
     }
     if (suspendue !== undefined) {

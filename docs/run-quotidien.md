@@ -246,7 +246,9 @@ C'est l'**alerte** du §9 qui fait la différence, et elle existe depuis le lot
 Q6a2 : tout abandon pousse `RUN_ABORTED`, quelle qu'en soit la cause —
 portefeuille non valorisable, stratégie indécidable. Une exception, elle, pousse
 `JOB_FAILED`. Depuis Q10 la divergence de réconciliation n'abandonne plus, et son
-`RECONCILIATION_DRIFT` annonce une resynchronisation, pas un arrêt. Voir [alertes.md](alertes.md). Les
+`RECONCILIATION_DRIFT` annonce une resynchronisation, pas un arrêt — mais un
+jour sans ordre : l'étape 6 refuse d'exécuter ce jour-là (E60,
+[reconciliation.md](reconciliation.md) §3 bis). Voir [alertes.md](alertes.md). Les
 autres traces d'un abandon restent le journal du processus et le code de sortie
 **1**.
 
