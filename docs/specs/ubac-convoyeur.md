@@ -62,7 +62,7 @@ seul : conversion, transfert, enregistrement de l'apport.
   des flux (une surcharge de commande Scaleway remplace-t-elle l'entrypoint ?)
   n'est pas mesurée.
 - **K8. Le rapport montre déjà les apports.** La section « Derniers mouvements »
-  (#73, élargie aux retraits) lit les cinq dernières lignes de `cash_flows`, note comprise :
+  (#73, élargie aux retraits puis aux ordres exécutés) lit les huit dernières lignes de `cash_flows`, note comprise :
   l'apport du convoyeur y apparaîtra sans rien toucher au rapport.
 
 ## Ce que dit la documentation officielle (vérifiée le 2026-09-28)

@@ -1,5 +1,5 @@
 import type { Decimal } from 'decimal.js';
-import { and, asc, desc, eq, gte, inArray, isNull, lte, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lte, or, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import pg from 'pg';
 
@@ -36,7 +36,7 @@ import {
 /**
  * L'acces a Postgres, expose en **operations** et non en client. Rien ici ne
  * rend un `db` brut : le job quotidien enregistre une decision, lit le dernier
- * snapshot, lit les flux recents, les derniers mouvements et les ordres en attente. Ce qui n'est pas
+ * snapshot, lit les flux recents, les derniers flux et ordres executes, et les ordres en attente. Ce qui n'est pas
  * dans cette liste ne se fait pas depuis le job.
  *
  * Ce module ne lit jamais l'environnement. La chaine de connexion arrive
@@ -226,6 +226,27 @@ export interface PendingOrderRecord {
 }
 
 /**
+ * Un ordre **execute**, en tout ou en partie : `filled_qty > 0` et un prix
+ * moyen connu. Ce que le journal des mouvements du rapport lit, et rien de plus.
+ */
+export interface ExecutedOrderRecord {
+  readonly clientOrderId: string;
+  readonly side: Side;
+  readonly asset: string;
+  readonly filledQty: Quantity;
+  /** Le prix moyen d'execution. */
+  readonly filledPrice: Price;
+  /** Les frais reels, en USDC ; `null` tant que la reconciliation ne les a pas lus. */
+  readonly fees: UsdcAmount | null;
+  /** `settled_at`, ou `created_at` tant que l'ordre est ouvert. */
+  readonly occurredAt: Date;
+  /** Le jour UTC de `occurredAt`. */
+  readonly occurredOn: IsoDate;
+  /** `PARTIAL` : encore au carnet, la quantite executee peut croitre. */
+  readonly open: boolean;
+}
+
+/**
  * La surface entiere de la base pour le reste du programme. Ajouter une
  * operation ici est une decision ; ouvrir un client brut n'en est pas une.
  */
@@ -250,9 +271,15 @@ export interface UbacDatabase {
   /**
    * Les `limit` derniers **mouvements** — apports et retraits confondus —, du
    * plus recent au plus ancien, quelle que soit leur date. La borne est dans la
-   * requete : la table n'est jamais lue en entier pour en garder cinq.
+   * requete : la table n'est jamais lue en entier pour en garder huit.
    */
   latestCashFlows(limit: number): Promise<readonly CashFlowRecord[]>;
+  /**
+   * Les `limit` derniers ordres **executes** (`filled_qty > 0`, prix moyen
+   * connu), du plus recent au plus ancien par `coalesce(settled_at, created_at)`.
+   * Un ordre rejete, ou annule sans rien d'execute, n'en est pas.
+   */
+  latestExecutedOrders(limit: number): Promise<readonly ExecutedOrderRecord[]>;
   pendingOrders(): Promise<readonly PendingOrderRecord[]>;
   /** L'ordre en `PENDING`, **avant** son placement (E23). */
   recordOrder(input: OrderToRecord): Promise<RecordOrderOutcome>;
@@ -416,6 +443,26 @@ export function cashFlowOriginFromText(raw: string, contexte: string): CashFlowO
   return raw as CashFlowOrigin;
 }
 
+/** Une ligne d'`orders` filtree par `latestExecutedOrders` : les deux colonnes nullables y sont posees. */
+function executedOrderRecord(ligne: typeof orders.$inferSelect): ExecutedOrderRecord {
+  const { filledQty, filledPrice } = ligne;
+  if (filledQty === null || filledPrice === null) {
+    throw new DbFrontierError(`orders (${ligne.clientOrderId}) : ordre execute sans quantite ou prix executes.`);
+  }
+  const occurredAt = ligne.settledAt ?? ligne.createdAt;
+  return {
+    clientOrderId: ligne.clientOrderId,
+    side: sideFromText(ligne.side, `orders.side (${ligne.clientOrderId})`),
+    asset: ligne.asset,
+    filledQty: filledQty as Quantity,
+    filledPrice: filledPrice as Price,
+    fees: ligne.fees as UsdcAmount | null,
+    occurredAt,
+    occurredOn: utcDay(occurredAt),
+    open: (OPEN_ORDER_STATUSES as readonly string[]).includes(ligne.status),
+  };
+}
+
 function sideFromText(raw: string, contexte: string): Side {
   if (!SIDES.includes(raw)) {
     throw new DbFrontierError(`${contexte} : BUY ou SELL attendu, recu "${raw}".`);
@@ -572,6 +619,18 @@ export function openDatabase(secrets: Pick<Secrets, 'databaseUrl'>): UbacDatabas
         .orderBy(desc(cashFlows.occurredAt), desc(cashFlows.id))
         .limit(limit);
       return lignes.map(cashFlowRecord);
+    },
+
+    async latestExecutedOrders(limit: number): Promise<readonly ExecutedOrderRecord[]> {
+      const lignes = await db
+        .select()
+        .from(orders)
+        /* Sans prix moyen, une ligne ancienne n'a pas de montant : elle n'est pas un mouvement lisible. */
+        .where(and(sql`${orders.filledQty} > 0`, isNotNull(orders.filledPrice)))
+        /* L'instant de D4, puis l'identifiant : la meme table rend toujours la meme liste. */
+        .orderBy(desc(sql`coalesce(${orders.settledAt}, ${orders.createdAt})`), desc(orders.clientOrderId))
+        .limit(limit);
+      return lignes.map(executedOrderRecord);
     },
 
     async pendingOrders(): Promise<readonly PendingOrderRecord[]> {

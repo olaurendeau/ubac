@@ -13,16 +13,19 @@ import { HOLD_5050_KEYS, HOLD_BTC_KEYS, PORTFOLIO_KEYS } from '../../src/jobs/sn
 import type {
   CompletedRun,
   DailyReportInput,
-  ReportMovement,
+  ReportCashFlow,
+  ReportExecutedOrder,
   ReportMovements,
   ReportExecution,
   ReportOutcome,
   TwrPoint,
 } from '../../src/report/daily-report.js';
 import {
+  DERNIERS_MOUVEMENTS,
   MAX_COLONNES,
   REPORT_TAG,
   bandDistance,
+  journal,
   renderDailyReport,
   twrGraph,
   HOLD_5050_KEYS as REPORT_5050_KEYS,
@@ -128,16 +131,45 @@ const SERIE: readonly TwrPoint[] = [
   { runDate: '2026-09-12', benchmarks: { [PORTFOLIO_KEYS.index]: dec('1.20') } },
 ];
 
-/** Un mouvement tel que le run le lit, signe compris. `note` absente : personne n'a dit d'ou il venait. */
-const mouvement = (occurredOn: string, montant: string, note: string | null = null): ReportMovement => ({
-  occurredOn,
+/** Un flux tel que le run le lit, signe compris. `note` absente : personne n'a dit d'ou il venait. */
+const flux = (instant: string, montant: string, note: string | null = null, id = `flux-${instant}`): ReportCashFlow => ({
+  id,
+  occurredAt: new Date(instant),
+  occurredOn: instant.slice(0, 10),
   amount: dec(montant) as UsdcAmount,
   note,
 });
 
+/** Un ordre execute tel que le run le lit : `instant` est deja celui de D4, denouement ou creation. */
+const ordre = (
+  instant: string,
+  side: 'BUY' | 'SELL',
+  asset: string,
+  quantite: string,
+  prix: string,
+  frais: string | null,
+  options: { readonly open?: boolean; readonly id?: string } = {},
+): ReportExecutedOrder => ({
+  clientOrderId: options.id ?? `ubac-${instant}`,
+  side,
+  asset,
+  filledQty: dec(quantite) as Quantity,
+  filledPrice: dec(prix) as Price,
+  fees: frais === null ? null : (dec(frais) as UsdcAmount),
+  occurredAt: new Date(instant),
+  occurredOn: instant.slice(0, 10),
+  open: options.open ?? false,
+});
+
+const lus = (cashFlows: readonly ReportCashFlow[], orders: readonly ReportExecutedOrder[] = []): ReportMovements => ({
+  status: 'READ',
+  cashFlows,
+  orders,
+});
+
 /** Le mouvement de la table reelle : un seul apport, anterieur au run. */
-const MOUVEMENTS: ReportMovements = { status: 'READ', movements: [mouvement('2026-09-01', '1000', 'virement initial')] };
-const SANS_MOUVEMENT: ReportMovements = { status: 'READ', movements: [] };
+const MOUVEMENTS: ReportMovements = lus([flux('2026-09-01T10:00:00Z', '1000', 'virement initial')]);
+const SANS_MOUVEMENT: ReportMovements = lus([]);
 
 const INPUT: DailyReportInput = {
   run: RUN,
@@ -238,9 +270,9 @@ describe('rendu — la sortie attendue, ligne a ligne', () => {
       "Recul actuel depuis le plus haut : -3.85 %. Ce n'est pas un max drawdown : la photo porte l'indice et son sommet, pas la serie — ni le pire recul passe ni le Sharpe du portefeuille ne s'en lisent.",
       'Ladder et DCA : leur decision du jour figure ci-dessus ; leur P&L demande un rejeu jour par jour, pas une photo.',
       'Derniers mouvements',
-      'Date | Montant | Note',
-      '2026-09-01 | 1000.00 USDC | virement initial',
-      'Les 5 plus recents au plus, du plus recent au plus ancien, quelle que soit leur date. Un montant negatif est un retrait.',
+      'Date | Mouvement | Montant | Detail',
+      '2026-09-01 | Apport | 1000.00 USDC | virement initial',
+      'Les 8 plus recents au plus, apports, retraits et ordres executes confondus, du plus recent au plus ancien, quelle que soit leur date. Montant vu du cash : un retrait ou un achat est negatif, un apport ou une vente positif. Un ordre compte pour sa quantite executee au prix moyen, hors frais ; en cours, il est encore au carnet et date de sa creation.',
       'Lexique',
       'Terme | Definition',
       "P&L | Profit and loss : ce que le portefeuille a gagne ou perdu sur la periode, en pourcentage de ce qu'il valait.",
@@ -270,7 +302,7 @@ describe('rendu — la sortie attendue, ligne a ligne', () => {
       "recul actuel depuis le plus haut | De combien l'indice est descendu sous son plus haut connu, aujourd'hui et non dans le passe. C'est la mesure sur laquelle la suspension se declenche.",
       'Sharpe 90 j | Le rendement rapporte a son agitation sur les 90 derniers jours : plus il est haut, plus la performance a ete reguliere plutot que chanceuse.',
       'fenetre OHLCV | Le nombre de jours de cours — ouverture, haut, bas, cloture, volume — que le run a relus pour calculer les courbes de reference.',
-      "mouvement | Un apport ou un retrait d'USDC enregistre dans les flux de tresorerie ; un retrait porte un montant negatif. Le TWR neutralise l'un comme l'autre.",
+      "mouvement | Une ligne des derniers mouvements : un apport ou un retrait d'USDC, ou un ordre execute en tout ou en partie. Le montant est vu du cash : un retrait ou un achat est negatif. Le TWR neutralise les apports et les retraits ; un ordre ne fait qu'echanger une ligne contre une autre.",
       "NONE | Aucune bande n'est franchie : le run constate l'etat du portefeuille et ne propose rien.",
     ]);
   });
@@ -917,12 +949,13 @@ describe('E28 — le rapport distingue place, execute, partiel et non execute, e
 
 /**
  * Les derniers mouvements : un historique court, pas le flux du jour. La section
- * est la **tous les jours** — avec la liste, avec la phrase qui dit qu'il n'y en
+ * est la **tous les jours** — avec le tableau, avec la phrase qui dit qu'il n'y en
  * a pas, ou avec celle qui dit que la lecture a echoue —, parce qu'une section
  * qui disparait ne dit pas laquelle des trois est vraie.
  *
- * L'ordre et la borne sont ceux de la requete, sondes contre Postgres dans
- * `test/adapters/db.test.ts` ; le rendu, lui, garde l'ordre recu.
+ * L'ordre et la borne de chaque source sont ceux des requetes, sondes contre
+ * Postgres dans `test/adapters/db.test.ts` ; la fusion des deux, le tri par
+ * instant et la coupe sont ici, fonction pure du rendu.
  */
 describe('Derniers mouvements', () => {
   /** Les lignes de la section, titre compris, jusqu'au titre suivant. */
@@ -933,26 +966,68 @@ describe('Derniers mouvements', () => {
     return rendu.slice(debut, rendu.indexOf('Lexique', debut));
   }
 
-  it('rend apports et retraits dans l’ordre recu, le retrait signe, note comprise', () => {
-    const recus: ReportMovements = {
-      status: 'READ',
-      movements: [
-        mouvement('2026-09-27', '-300', 'retrait vers le compte courant'),
-        mouvement('2026-09-26', '1000', 'virement du compte courant'),
-        mouvement('2026-08-02', '250.5'),
-        mouvement('2026-06-15', '-50.25'),
-        mouvement('2025-12-31', '5000.12345678', 'apport <initial>'),
+  const NOTE_MOUVEMENTS = 'Les 8 plus recents au plus, apports, retraits et ordres executes confondus, du plus recent au plus ancien, quelle que soit leur date. Montant vu du cash : un retrait ou un achat est negatif, un apport ou une vente positif. Un ordre compte pour sa quantite executee au prix moyen, hors frais ; en cours, il est encore au carnet et date de sa creation.';
+
+  it('rend flux et ordres en un tableau : achat negatif, vente positive, frais en detail, ordre ouvert en cours', () => {
+    const recus = lus(
+      [
+        flux('2026-09-27T09:00:00Z', '-300', 'retrait vers le compte courant'),
+        flux('2026-09-26T08:00:00Z', '1000', 'virement du compte courant'),
+        flux('2025-12-31T10:00:00Z', '5000.12345678', 'apport <initial>'),
       ],
-    };
+      [
+        ordre('2026-09-28T07:00:00Z', 'BUY', 'ETH', '0.5', '2400.10', null, { open: true }),
+        ordre('2026-09-26T09:30:00Z', 'BUY', 'BTC', '0.01', '41230', '0.25'),
+        ordre('2026-08-02T11:00:00Z', 'SELL', 'ETH', '1.23456789', '3210.5', '1.9876'),
+      ],
+    );
     expect(mouvements({ ...INPUT, movements: recus })).toEqual([
       'Derniers mouvements',
-      'Date | Montant | Note',
-      '2026-09-27 | -300.00 USDC | retrait vers le compte courant',
-      '2026-09-26 | 1000.00 USDC | virement du compte courant',
-      '2026-08-02 | 250.50 USDC | —',
-      '2026-06-15 | -50.25 USDC | —',
-      '2025-12-31 | 5000.12 USDC | apport <initial>',
-      'Les 5 plus recents au plus, du plus recent au plus ancien, quelle que soit leur date. Un montant negatif est un retrait.',
+      'Date | Mouvement | Montant | Detail',
+      '2026-09-28 | Achat ETH (en cours) | -1200.05 USDC | 0.50000000 ETH a 2400.10 USDC, frais inconnus',
+      '2026-09-27 | Retrait | -300.00 USDC | retrait vers le compte courant',
+      '2026-09-26 | Achat BTC | -412.30 USDC | 0.01000000 BTC a 41230.00 USDC, frais 0.25 USDC',
+      '2026-09-26 | Apport | 1000.00 USDC | virement du compte courant',
+      '2026-08-02 | Vente ETH | 3963.58 USDC | 1.23456789 ETH a 3210.50 USDC, frais 1.99 USDC',
+      '2025-12-31 | Apport | 5000.12 USDC | apport <initial>',
+      NOTE_MOUVEMENTS,
+    ]);
+  });
+
+  it('un flux sans note porte un tiret', () => {
+    expect(mouvements({ ...INPUT, movements: lus([flux('2026-06-15T10:00:00Z', '-50.25')]) })[2]).toBe(
+      '2026-06-15 | Retrait | -50.25 USDC | —',
+    );
+  });
+
+  it('fusionne huit flux et huit ordres et n’en garde que les huit plus recents, quel que soit l’ordre recu', () => {
+    const jours = ['01', '02', '03', '04', '05', '06', '07', '08'];
+    const huitFlux = jours.map((j) => flux(`2026-09-${j}T10:00:00Z`, '100'));
+    const huitOrdres = jours.map((j) => ordre(`2026-09-${j}T12:00:00Z`, 'SELL', 'BTC', '0.001', '60000', '0.1'));
+    const attendu = ['08', '07', '06', '05'].flatMap((j) => [`ubac-2026-09-${j}T12:00:00Z`, `flux-2026-09-${j}T10:00:00Z`]);
+    const identifiants = (cashFlows: readonly ReportCashFlow[], orders: readonly ReportExecutedOrder[]): readonly string[] =>
+      journal(cashFlows, orders).map((m) => (m.kind === 'FLUX' ? m.flux.id : m.ordre.clientOrderId));
+
+    expect(DERNIERS_MOUVEMENTS).toBe(8);
+    expect(identifiants([...huitFlux].reverse(), [...huitOrdres].reverse())).toEqual(attendu);
+    expect(identifiants(huitFlux, huitOrdres)).toEqual(attendu);
+  });
+
+  it('a instant egal, le flux passe avant l’ordre, puis l’identifiant decroissant, comme dans la base', () => {
+    const instant = '2026-09-20T07:00:00Z';
+    const cashFlows = [flux(instant, '10', null, 'a'), flux(instant, '20', null, 'b')];
+    const orders = [ordre(instant, 'BUY', 'BTC', '1', '1', '0', { id: 'ubac-a' }), ordre(instant, 'BUY', 'BTC', '1', '1', '0', { id: 'ubac-b' })];
+    const identifiants = (f: readonly ReportCashFlow[], o: readonly ReportExecutedOrder[]): readonly string[] =>
+      journal(f, o).map((m) => (m.kind === 'FLUX' ? m.flux.id : m.ordre.clientOrderId));
+
+    expect(identifiants(cashFlows, orders)).toEqual(['b', 'a', 'ubac-b', 'ubac-a']);
+    expect(identifiants([...cashFlows].reverse(), [...orders].reverse())).toEqual(['b', 'a', 'ubac-b', 'ubac-a']);
+  });
+
+  it('des ordres seuls font un journal', () => {
+    expect(mouvements({ ...INPUT, movements: lus([], [ordre('2026-09-12T07:05:00Z', 'SELL', 'BTC', '0.1', '60000.005', '1')]) }).slice(1, 3)).toEqual([
+      'Date | Mouvement | Montant | Detail',
+      '2026-09-12 | Vente BTC | 6000.00 USDC | 0.10000000 BTC a 60000.01 USDC, frais 1.00 USDC',
     ]);
   });
 

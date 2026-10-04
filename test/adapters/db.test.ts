@@ -628,6 +628,56 @@ describe.skipIf(URL_DE_TEST === undefined)('adapter de base, contre un Postgres 
       expect((await db.latestCashFlows(5)).map((m) => m.amount.toFixed())).toEqual(['-10']);
     });
 
+    /*
+     * D1 et D4 : seuls les ordres executes, en tout ou en partie et avec un prix
+     * moyen, du plus recent au plus ancien par denouement, ou par creation tant
+     * que l'ordre est ouvert. L'annule partiel, cree le plus tot, est denoue
+     * apres l'execute : un tri par creation inverserait les deux.
+     */
+    it('latestExecutedOrders rend les ordres executes, annule partiel compris, par instant de denouement', async () => {
+      await brut.query(`
+        INSERT INTO orders
+          (client_order_id, side, asset, requested_qty, limit_price, status, filled_qty, filled_price, fees, created_at, settled_at) VALUES
+          ('ubac-execute', 'BUY', 'BTC', '0.01', '41230', 'FILLED', '0.01', '41230', '0.25', '2026-09-20T07:00:00Z', '2026-09-20T09:00:00Z'),
+          ('ubac-partiel', 'SELL', 'ETH', '1', '3000', 'PARTIAL', '0.2', '3000.5', '0.1', '2026-09-22T07:00:00Z', NULL),
+          ('ubac-annule-partiel', 'BUY', 'ETH', '1', '2900', 'CANCELLED', '0.5', '2900', NULL, '2026-09-18T07:00:00Z', '2026-09-21T10:00:00Z'),
+          ('ubac-annule-vide', 'BUY', 'BTC', '0.1', '60000', 'CANCELLED', '0', NULL, '0', '2026-09-23T07:00:00Z', '2026-09-23T09:00:00Z'),
+          ('ubac-rejete', 'BUY', 'BTC', '0.1', '60000', 'REJECTED', NULL, NULL, NULL, '2026-09-24T07:00:00Z', '2026-09-24T07:00:01Z'),
+          ('ubac-ouvert-vide', 'BUY', 'BTC', '0.1', '60000', 'PENDING', NULL, NULL, NULL, '2026-09-25T07:00:00Z', NULL),
+          ('ubac-sans-prix', 'SELL', 'BTC', '0.1', '60000', 'FILLED', '0.1', NULL, '1', '2026-09-26T07:00:00Z', '2026-09-26T09:00:00Z')`);
+
+      const ordres = await db.latestExecutedOrders(8);
+
+      expect(
+        ordres.map((o) => [
+          o.clientOrderId,
+          o.side,
+          o.asset,
+          o.filledQty.toFixed(),
+          o.filledPrice.toFixed(),
+          o.fees?.toFixed() ?? null,
+          o.occurredAt.toISOString(),
+          o.occurredOn,
+          o.open,
+        ]),
+      ).toEqual([
+        ['ubac-partiel', 'SELL', 'ETH', '0.2', '3000.5', '0.1', '2026-09-22T07:00:00.000Z', '2026-09-22', true],
+        ['ubac-annule-partiel', 'BUY', 'ETH', '0.5', '2900', null, '2026-09-21T10:00:00.000Z', '2026-09-21', false],
+        ['ubac-execute', 'BUY', 'BTC', '0.01', '41230', '0.25', '2026-09-20T09:00:00.000Z', '2026-09-20', false],
+      ]);
+      expect((await db.latestExecutedOrders(2)).map((o) => o.clientOrderId)).toEqual(['ubac-partiel', 'ubac-annule-partiel']);
+    });
+
+    it('latestExecutedOrders rend une liste vide sans ordre, et departage un meme instant par identifiant', async () => {
+      expect(await db.latestExecutedOrders(8)).toEqual([]);
+      await brut.query(`
+        INSERT INTO orders
+          (client_order_id, side, asset, requested_qty, limit_price, status, filled_qty, filled_price, fees, created_at, settled_at) VALUES
+          ('ubac-a', 'BUY', 'BTC', '0.01', '41230', 'FILLED', '0.01', '41230', '0.25', '2026-09-20T07:00:00Z', '2026-09-20T09:00:00Z'),
+          ('ubac-b', 'BUY', 'BTC', '0.01', '41230', 'FILLED', '0.01', '41230', '0.25', '2026-09-20T07:00:00Z', '2026-09-20T09:00:00Z')`);
+      expect((await db.latestExecutedOrders(8)).map((o) => o.clientOrderId)).toEqual(['ubac-b', 'ubac-a']);
+    });
+
     it('pendingOrders ne rend que les ordres ouverts, PENDING et PARTIAL', async () => {
       await brut.query(`
         INSERT INTO orders

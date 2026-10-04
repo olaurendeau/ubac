@@ -3,6 +3,7 @@ import type { Decimal } from 'decimal.js';
 import type { Carnet, CoinbaseReader, ExecutionPort } from '../adapters/coinbase.js';
 import type {
   CashFlowRecord,
+  ExecutedOrderRecord,
   RecordDecisionOutcome,
   SnapshotPoint,
   SnapshotRecord,
@@ -201,6 +202,7 @@ export interface DailyPorts {
     | 'snapshotSeries'
     | 'recentCashFlows'
     | 'latestCashFlows'
+    | 'latestExecutedOrders'
     | 'pendingOrders'
     | 'recordOrder'
     | 'recordPlacement'
@@ -338,13 +340,13 @@ type DailyOutcome =
        */
       readonly snapshotSeries: readonly SnapshotPoint[];
       /**
-       * Les derniers mouvements du rapport, lus a l'etape 4bis avec la serie et pour
-       * le meme motif. Mais **leur panne ne coupe pas le run** : elle revient en
-       * valeur, et le rapport le dit. Un historique court ne vaut pas qu'on
-       * abandonne une journee pour lui ; la carence du declencheur A, elle, lit
-       * `recentCashFlows`, que cette lecture ne remplace pas.
+       * Les derniers flux et ordres executes du rapport, lus a l'etape 4bis avec
+       * la serie et pour le meme motif. Mais **leur panne ne coupe pas le run** :
+       * elle revient en valeur, et le rapport le dit. Un historique court ne vaut
+       * pas qu'on abandonne une journee pour lui ; la carence du declencheur A,
+       * elle, lit `recentCashFlows`, que cette lecture ne remplace pas.
        */
-      readonly latestCashFlows: LatestCashFlows;
+      readonly latestMovements: LatestMovements;
       readonly observations: ReconcileObservations;
       /** §7 : l'etat interne a-t-il du se rendre a l'exchange ce jour-la. */
       readonly resync: Resynchronization;
@@ -366,19 +368,35 @@ type DailyOutcome =
 
 export type DailyRunResult = DailyOutcome & { readonly report: RunReport };
 
-/** Les derniers mouvements lus, ou le motif de leur absence. `DailyReportInput.movements` le recoit tel quel. */
-export type LatestCashFlows =
-  | { readonly status: 'READ'; readonly movements: readonly CashFlowRecord[] }
+/**
+ * Les derniers flux et ordres executes lus, ou le motif de leur absence.
+ * `DailyReportInput.movements` le recoit tel quel, et le rendu en fait le journal.
+ */
+export type LatestMovements =
+  | {
+      readonly status: 'READ';
+      readonly cashFlows: readonly CashFlowRecord[];
+      readonly orders: readonly ExecutedOrderRecord[];
+    }
   | { readonly status: 'UNREADABLE'; readonly reason: string };
 
 /**
  * La seule lecture du run dont la panne est **rendue** et non levee : voir
- * `latestCashFlows` sur le resultat. Le motif est journalise, pour que la panne
- * se lise aussi hors du courrier.
+ * `latestMovements` sur le resultat. Les deux sources partent ensemble, et la
+ * panne de l'une rend le tout illisible : un journal sans ses ordres, ou sans ses
+ * flux, serait faux sans le dire. Le motif est journalise, pour que la panne se
+ * lise aussi hors du courrier.
  */
-async function lireMouvements(db: Pick<UbacDatabase, 'latestCashFlows'>, log: RunLogger): Promise<LatestCashFlows> {
+async function lireMouvements(
+  db: Pick<UbacDatabase, 'latestCashFlows' | 'latestExecutedOrders'>,
+  log: RunLogger,
+): Promise<LatestMovements> {
   try {
-    return { status: 'READ', movements: await db.latestCashFlows(DERNIERS_MOUVEMENTS) };
+    const [cashFlows, orders] = await Promise.all([
+      db.latestCashFlows(DERNIERS_MOUVEMENTS),
+      db.latestExecutedOrders(DERNIERS_MOUVEMENTS),
+    ]);
+    return { status: 'READ', cashFlows, orders };
   } catch (error) {
     const reason = texte(error);
     log(`derniers mouvements non lus : ${reason}`);
@@ -1067,7 +1085,7 @@ async function executeRun(run: DailyRun, parti: ExecutionDeStrategie[]): Promise
     cashFlows,
     previousSnapshot: previous,
     snapshotSeries: serie,
-    latestCashFlows: mouvements,
+    latestMovements: mouvements,
     observations: reconciled.observations,
     resync,
     outcomes,
@@ -1252,7 +1270,7 @@ async function deliverReport(run: DailyRun, outcome: DailyOutcome): Promise<Repo
     params: productionParams(run.config),
     previous: outcome.previousSnapshot,
     series: outcome.snapshotSeries,
-    movements: outcome.latestCashFlows,
+    movements: outcome.latestMovements,
   });
   const sent = await run.ports.mailer.sendReport(mail);
   run.log(
