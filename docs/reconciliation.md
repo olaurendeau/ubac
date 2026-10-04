@@ -330,13 +330,13 @@ réconciliation, parce que c'est lui qui refuse : `liquidate.ts` réconcilie aus
 et la sortie propre cède les soldes réels un jour de resynchronisation.
 
 **Le refus ne dure qu'un jour.** La photo reposée à l'étape 7 porte les soldes
-réels ; le run suivant, sur les mêmes soldes, ne diverge plus et exécute. Deux
-cas le prolongent, et ils sont ceux du §1 bis et du §6 : une photo qui ne peut
-pas être reposée (le cache reste périmé, chaque run se resynchronise et refuse),
-et le lendemain d'une exécution, que la réconciliation prend encore pour un
-mouvement hors système — un rééquilibrage exécuté le jour J fait refuser le jour
-J+1, et le jour J+2 repart d'un état recalé. Les deux disent la même chose : on
-n'agit pas sur un état dont on vient de constater qu'on ne le comprend pas.
+réels ; le run suivant, sur les mêmes soldes, ne diverge plus et exécute. Un
+cas le prolonge, celui du §1 bis : une photo qui ne peut pas être reposée (le
+cache reste périmé, chaque run se resynchronise et refuse) — on n'agit pas sur
+un état dont on vient de constater qu'on ne le comprend pas. Le lendemain d'une
+exécution n'en est plus un : depuis la section 2 bis, la réconciliation compte
+les exécutions connues de nos ordres, et un rééquilibrage exécuté le jour J ne
+fait plus refuser le jour J+1.
 
 ## 4. Le statut réel de chaque ordre : lu en S2, branché et persisté en S8a
 
@@ -424,19 +424,13 @@ attente, dernier snapshot.
 - **Elle ne persiste rien.** Les deux dépendances sont des `Pick` de lecture
   seule ; le type dit exactement ce qu'elle touche. Les transitions d'ordres
   qu'elle rend sont écrites par `daily.ts`.
-- **Le lendemain d'une exécution, le cache ment, et la réconciliation le prend
-  pour un mouvement hors système.** La photo porte les soldes lus **avant** le
-  placement de l'étape 6. Si des ordres s'exécutent avant le run suivant, les
-  soldes réels s'écartent de la photo de la taille du rééquilibrage — bien
-  au-delà de 1 % —, le run se resynchronise et pousse `RECONCILIATION_DRIFT` en
-  `URGENT`, avec un texte qui dit « le portefeuille a bougé hors du système »
-  alors que rien d'anormal ne s'est passé. **S8a ne le ferme pas** : il pose les
-  données qui permettraient de l'expliquer — `filled_qty`, `filled_price` et
-  `fees` par ordre —, pas le calcul. Le fermer demande de comparer les soldes à
-  la photo **plus l'effet des exécutions connues depuis**, au même seuil et avec
-  la même formule d'écart ; c'est la référence de comparaison qui change, donc
-  une décision sur la lecture d'E39, à prendre avant S13 — qui ferait refuser
-  d'exécuter chaque lendemain d'exécution.
+- **Le lendemain d'une exécution n'est plus une limite** (section 2 bis, décision
+  E39 / G3 tranchée dans Orca : option 1). Le cache comparé est la photo plus
+  l'effet des exécutions connues depuis, lu sur `filled_qty`, `filled_price` et
+  `fees` (S8a), au même seuil et avec la même formule d'écart. Ce qui reste
+  ouvert, ce sont les apports enregistrés (`cash_flows`), que Y8 (CV15) ajoute à
+  la même base, et un ordre `INDETERMINABLE`, qui n'explique rien par
+  construction.
 - **Un premier run n'a pas de cache.** Sans snapshot, il n'y a rien à comparer :
   le résultat le dit (`comparedTo: 'NO_INTERNAL_STATE'`) plutôt que d'afficher
   une réconciliation qui n'a rien réconcilié. Une absence de comparaison n'est
