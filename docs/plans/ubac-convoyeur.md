@@ -203,8 +203,8 @@ lot de ce plan : **G1** est sans objet (DC5 fixe l'instant du convoyeur) ;
 **G2** reste ouverte pour la saisie — Y1 laisse la clé naturelle nulle pour
 `OPERATEUR` sans préjuger de sa forme future ; **G3** est tranchée par la spec
 elle-même pour ce qui nous concerne (CV15 : « une divergence que les flux
-n'expliquent qu'en partie crie comme aujourd'hui ») et reste au plan des flux
-pour le lendemain d'exécution ; **G4** est sans objet depuis S8a (#68).
+n'expliquent qu'en partie crie comme aujourd'hui ») ; pour le lendemain
+d'exécution, elle est fermée par la PR #93 ; **G4** est sans objet depuis S8a (#68).
 
 **À répercuter dans le plan des flux quand il sera repris** : N2 y devient
 « l'écrivain `DETECTE` / `OPERATEUR` dans `UbacDatabase` », le schéma étant
@@ -719,8 +719,10 @@ phrase d'E60 déménage** (T6) : ces jours-là, `RECONCILIATION_DRIFT` se tait, 
 seul le rapport dit que rien n'est parti. (4) **Le contrat du rapport lisait peu
 `resync`** : `resync` quitte `NonLusAttendus` si le rapport le lit désormais,
 et `MemeEnsemble` fait échouer `tsc` sinon. (5) **Le lendemain d'une exécution**
-(G3) reste hors du lot : une divergence mêlant apport et exécution n'est pas
-entièrement expliquée et crie. (6) **E39 ne bouge pas** : même base, même seuil ;
+(G3) est fermé par la PR #93 (`docs/reconciliation.md` §2 bis) : le cache
+comparé est déjà la photo plus les exécutions connues de nos ordres, et Y8 y
+ajoute les flux, sur la même base. Une divergence mêlant apport et exécution
+enregistrés est alors entièrement expliquée. (6) **E39 ne bouge pas** : même base, même seuil ;
 `reconcile-accord-risque.test.ts` reste vert sans retouche. (7) `daily.ts`,
 `alerts.ts` et `reconcile.ts` sont dans la file de S9, S12, S13 et S14.
 
@@ -917,5 +919,5 @@ le déclare à sa livraison.
 - **Le passage au réel n'est pas relu dans `git`** (DP5 = 2) : il est dit à
   chaque passage, à chaque notification et à chaque déploiement, et rapporté
   dans Orca, mais rien ne l'empêche avant les mesures sinon la discipline d'OP6.
-- **Le lendemain d'une exécution crie toujours** (G3) ; un apport qui tombe ce
-  jour-là crie avec lui.
+- **Le lendemain d'une exécution ne crie plus** (G3, fermé par la PR #93) ; un
+  apport qui tombe ce jour-là est expliqué par Y8 comme un autre.
