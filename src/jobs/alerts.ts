@@ -227,6 +227,28 @@ function abandon(runDate: IsoDate, ending: Extract<RunEnding, { status: 'ABORTED
 }
 
 /**
+ * **Une divergence entierement expliquee par les flux enregistres ne crie pas**
+ * (CV15, Q4 = 1) : le lendemain d'un apport, le portefeuille a bouge du montant
+ * que l'operateur — ou le convoyeur — a lui-meme enregistre, et une alerte
+ * `URGENT` pour ce fait apprendrait a les ignorer toutes.
+ *
+ * Deux conditions, et les deux comptent :
+ *
+ * - **toutes** les divergences sont expliquees (`reconcile.ts` le tranche) — un
+ *   apport ne tait pas un BTC disparu le meme jour ;
+ * - **le run a conclu**, donc le rapport part et dit a la place de l'alerte la
+ *   resynchronisation, l'apport qui l'explique et le refus d'executer (E60). Un
+ *   abandon n'a pas de rapport : l'alerte part alors comme avant, pour que le
+ *   fait ait toujours un canal.
+ *
+ * Rien d'autre ne change : la resynchronisation, son marqueur et le refus
+ * tombent les memes jours, seul le canal qui le dit change.
+ */
+function ditParLeRapport(input: AlertInput): boolean {
+  return input.resync.status === 'RESYNCHRONIZED' && input.resync.explainedByFlows && input.ending.status === 'COMPLETED';
+}
+
+/**
  * Toutes les alertes d'un run, dans l'ordre du catalogue. L'ordre sort du tri
  * et non d'une liste recopiee a la main : ajouter une entree au catalogue la
  * place, sans qu'un second endroit ait a etre tenu d'accord. Le tri de
@@ -271,7 +293,7 @@ export function alertsFor(input: AlertInput): readonly Alert[] {
     );
   }
 
-  if (input.resync.status === 'RESYNCHRONIZED') {
+  if (input.resync.status === 'RESYNCHRONIZED' && !ditParLeRapport(input)) {
     /*
      * Le texte vient de `reconcile.ts`, comme celui du drawdown vient de
      * `snapshot.ts` : c'est aussi celui que porte la ligne de `decisions` du

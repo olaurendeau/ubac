@@ -5,7 +5,7 @@ import { RECONCILIATION_DRIFT_PCT } from '../../src/core/risk.js';
 import type { Price, UsdcAmount } from '../../src/core/types.js';
 import { reconcile, RESYNC_MARKER } from '../../src/jobs/reconcile.js';
 import type { ReconcileResult, Resynchronization } from '../../src/jobs/reconcile.js';
-import { harnais, MAINTENANT, ordreEnAttente, ordreOuvert, photo, qty, solde, statutConnu } from './doubles.js';
+import { fluxEnregistre, harnais, MAINTENANT, ordreEnAttente, ordreOuvert, photo, qty, solde, statutConnu } from './doubles.js';
 
 /**
  * La reconciliation de la spec §7. Aucun de ces tests ne touche le reseau, la
@@ -44,9 +44,10 @@ describe('§7 etape 1 — lire avant de comparer', () => {
      * L'ordre est celui du §7 : les soldes reels et les ordres ouverts d'abord,
      * l'etat interne ensuite. Un run qui deciderait avant de reconcilier lirait
      * un etat perime ; ici c'est la reconciliation elle-meme qui ne peut pas
-     * comparer avant d'avoir lu.
+     * comparer avant d'avoir lu. Les flux enregistres viennent apres la photo :
+     * leur fenetre part de son horodatage (CV15).
      */
-    expect(banc.appels).toEqual(['balances', 'openOrders', 'pendingOrders', 'latestSnapshot']);
+    expect(banc.appels).toEqual(['balances', 'openOrders', 'pendingOrders', 'latestSnapshot', 'recentCashFlows']);
   });
 
   it('rend les soldes reels, gele compris', async () => {
@@ -278,7 +279,7 @@ describe('§7 etape 2 — les ordres PENDING selon leur statut reel', () => {
      */
     const banc = harnais({ pending: [ordreEnAttente()], open: [] });
     await reconcile(banc.input);
-    expect(Object.keys(banc.input.db)).toEqual(['pendingOrders', 'latestSnapshot']);
+    expect(Object.keys(banc.input.db)).toEqual(['pendingOrders', 'latestSnapshot', 'recentCashFlows']);
     expect(Object.keys(banc.input.exchange)).toEqual(['balances', 'openOrders', 'orderStatus']);
   });
 });
@@ -581,5 +582,160 @@ describe('§2 bis — nos propres executions ne sont pas un mouvement hors du sy
     expect(resync.divergences.map((d) => d.asset)).toEqual(['USDC']);
     expect(resync.divergences[0]?.internal.toString()).toBe('69970');
     expect(resync.reason).toContain('photo precedente et executions de nos ordres');
+  });
+});
+
+describe('CV15 — une divergence entierement expliquee par les flux enregistres', () => {
+  /*
+   * La photo d'hier a 07:00 porte 10 000 USDC. Le convoyeur a transfere 700 USDC
+   * a 18:00 et ecrit sa ligne : 7 % de la ligne USDC, la sonde de la spec.
+   * **La resynchronisation ne change pas** — elle tombe le meme jour, avec le
+   * meme marqueur et les memes chiffres ; seule sa qualification est nouvelle.
+   */
+  const HIER = photo({ BTC: qty('1'), USDC: qty('10000') });
+  const APPORT = fluxEnregistre('2026-09-10T18:00:00.000Z', '700');
+  const APPORTE = [solde('BTC', '1'), solde('USDC', '10700')];
+
+  it('la sonde de CV15 : un apport de 7 % enregistre par le convoyeur explique la ligne USDC', async () => {
+    const resync = resynchronise(await lance({ balances: APPORTE, snapshot: HIER, flows: [APPORT] }));
+
+    // La meme divergence qu'avant CV15 : le cache n'inclut pas les flux.
+    expect(resync.divergences.map((d) => [d.asset, d.internal.toString(), d.explainedByFlows])).toEqual([
+      ['USDC', '10000', true],
+    ]);
+    expect(resync.explainedByFlows).toBe(true);
+    expect(resync.recordedFlows.toString()).toBe('700');
+    expect(resync.reason.startsWith(RESYNC_MARKER)).toBe(true);
+    expect(resync.reason).toContain('explique par 700 USDC de flux enregistres depuis la photo');
+  });
+
+  it('sans la ligne du convoyeur, le meme ecart n’est pas explique', async () => {
+    const resync = resynchronise(await lance({ balances: APPORTE, snapshot: HIER }));
+    expect(resync.explainedByFlows).toBe(false);
+    expect(resync.recordedFlows.toString()).toBe('0');
+    expect(resync.reason).not.toContain('flux enregistres');
+  });
+
+  it('un apport a moitie enregistre n’explique pas : l’ecart restant depasse 1 %', async () => {
+    const moitie = fluxEnregistre('2026-09-10T18:00:00.000Z', '350');
+    const resync = resynchronise(await lance({ balances: APPORTE, snapshot: HIER, flows: [moitie] }));
+
+    expect(resync.divergences[0]?.explainedByFlows).toBe(false);
+    expect(resync.explainedByFlows).toBe(false);
+    expect(resync.reason).toContain("que 350 USDC de flux enregistres depuis la photo n'expliquent pas");
+  });
+
+  /*
+   * DP1 = 1 : « ne diverge plus au sens de Q10 », meme formule et meme seuil
+   * strict. Les deux cas sont de part et d'autre de 1 % ; un ecart residuel nul
+   * exige au centime (DP1 = 2) rougirait le premier.
+   */
+  it('le seuil reste celui de Q10 : 1 % residuel explique, au-dela non', async () => {
+    // 10 700 contre 10 000 + 593 = 10 593 : 1 % pile de 10 700.
+    const auSeuil = resynchronise(
+      await lance({ balances: APPORTE, snapshot: HIER, flows: [fluxEnregistre('2026-09-10T18:00:00.000Z', '593')] }),
+    );
+    expect(auSeuil.explainedByFlows).toBe(true);
+
+    const auDela = resynchronise(
+      await lance({ balances: APPORTE, snapshot: HIER, flows: [fluxEnregistre('2026-09-10T18:00:00.000Z', '592.99')] }),
+    );
+    expect(auDela.explainedByFlows).toBe(false);
+  });
+
+  /* La sonde mixte : un apport ne tait pas un BTC disparu le meme jour. */
+  it('USDC explique et BTC non : la resynchronisation n’est pas expliquee', async () => {
+    const resync = resynchronise(
+      await lance({ balances: [solde('BTC', '0.9'), solde('USDC', '10700')], snapshot: HIER, flows: [APPORT] }),
+    );
+
+    expect(resync.divergences.map((d) => [d.asset, d.explainedByFlows])).toEqual([
+      ['BTC', false],
+      ['USDC', true],
+    ]);
+    expect(resync.explainedByFlows).toBe(false);
+  });
+
+  it('une ligne BTC n’est jamais expliquee, meme par un flux du meme montant', async () => {
+    const resync = resynchronise(
+      await lance({
+        balances: [solde('BTC', '1.07'), solde('USDC', '10000')],
+        snapshot: HIER,
+        flows: [fluxEnregistre('2026-09-10T18:00:00.000Z', '0.07')],
+      }),
+    );
+    expect(resync.divergences.map((d) => [d.asset, d.explainedByFlows])).toEqual([['BTC', false]]);
+    expect(resync.explainedByFlows).toBe(false);
+  });
+
+  /*
+   * La fenetre est `]photo, run]`, celle du chainage. La requete rend la borne
+   * basse incluse ; c'est le predicat partage qui l'exclut : un flux a l'instant
+   * de la photo est deja dans ses soldes.
+   */
+  it('un flux a l’instant de la photo, ou d’avant, n’explique rien', async () => {
+    for (const instant of ['2026-09-10T07:00:00.000Z', '2026-09-09T18:00:00.000Z']) {
+      const resync = resynchronise(
+        await lance({ balances: APPORTE, snapshot: HIER, flows: [fluxEnregistre(instant, '700')] }),
+      );
+      expect(resync.explainedByFlows, instant).toBe(false);
+      expect(resync.recordedFlows.toString(), instant).toBe('0');
+    }
+  });
+
+  it('un flux posterieur a l’instant du run n’explique rien : les soldes lus ne le portent pas', async () => {
+    const resync = resynchronise(
+      await lance({ balances: APPORTE, snapshot: HIER, flows: [fluxEnregistre('2026-09-11T07:00:00.001Z', '700')] }),
+    );
+    expect(resync.explainedByFlows).toBe(false);
+
+    const aLInstant = resynchronise(
+      await lance({ balances: APPORTE, snapshot: HIER, flows: [fluxEnregistre(MAINTENANT.toISOString(), '700')] }),
+    );
+    expect(aLInstant.explainedByFlows).toBe(true);
+  });
+
+  /*
+   * **Aucun double comptage.** Un flux deja dans la photo mais date apres elle
+   * ne cree pas de divergence : la comparaison ignore les flux, ils ne font que
+   * qualifier un ecart deja constate.
+   */
+  it('un flux sans ecart ne resynchronise pas : les flux ne changent jamais le verdict', async () => {
+    const result = await lance({ balances: [solde('BTC', '1'), solde('USDC', '10000')], snapshot: HIER, flows: [APPORT] });
+    expect(result.resync.status).toBe('NOT_NEEDED');
+  });
+
+  /*
+   * Le lendemain d'une execution **et** d'un apport (§2 bis, #93) : nos
+   * executions et les flux s'ajoutent a la meme base, sans recouvrement — l'un
+   * echange une ligne contre une autre, l'autre entre de l'exterieur.
+   */
+  it('un apport le lendemain d’une execution : la divergence restante est expliquee', async () => {
+    const achat = ordreEnAttente();
+    const scenario = {
+      // 0.5 BTC achetes a 60 000, 30 de frais : 10 000 - 30 030 + 30 700 d'apport = 10 670.
+      balances: [solde('BTC', '1.5'), solde('USDC', '10670')],
+      snapshot: photo({ BTC: qty('1'), USDC: qty('40000') }),
+      pending: [achat],
+      statuts: { 'exch-1': statutConnu({ filled: qty('0.5'), averageFilledPrice: new Decimal('60000') as Price, fees: new Decimal('30') as UsdcAmount }) },
+    };
+    const resync = resynchronise(await lance({ ...scenario, flows: [fluxEnregistre('2026-09-10T18:00:00.000Z', '700')] }));
+
+    expect(resync.divergences.map((d) => [d.asset, d.internal.toString(), d.explainedByFlows])).toEqual([
+      ['USDC', '9970', true],
+    ]);
+    expect(resync.explainedByFlows).toBe(true);
+  });
+
+  it('rend les flux lus pour le chainage, et n’en lit aucun sans photo', async () => {
+    const avant = fluxEnregistre('2026-09-10T07:00:00.000Z', '1');
+    const banc = harnais({ balances: APPORTE, snapshot: HIER, flows: [avant, APPORT] });
+    const result = await reconcile(banc.input);
+    // Tels que la requete les rend, borne incluse : le chainage applique le meme predicat.
+    expect(result.flows).toEqual([avant, APPORT]);
+
+    const premier = harnais({ balances: APPORTE, flows: [APPORT] });
+    expect((await reconcile(premier.input)).flows).toEqual([]);
+    expect(premier.appels).not.toContain('recentCashFlows');
   });
 });

@@ -76,7 +76,15 @@ celui-là ; un rendu qui oublierait le tag part quand même tagué.
 Ubac 2026-09-13 — 100000.00 USDC — aucun declenchement
 Ubac 2026-09-13 — 100000.00 USDC — CASH_BAND, 2 jambe(s)
 Ubac 2026-09-13 — 100000.00 USDC — SUSPENDU (recul -26.12 %)
+Ubac 2026-09-13 — 100000.00 USDC — etat resynchronise par un apport, aucun ordre
 ```
+
+La dernière forme est celle d'un jour où l'état interne s'est resynchronisé et
+où **toutes** les divergences sont expliquées par les flux enregistrés (CV15,
+`docs/reconciliation.md` §2 ter) : `RECONCILIATION_DRIFT` ne part pas ce
+jour-là, et c'est un encadré en tête du rapport qui porte son texte — l'écart,
+l'apport qui l'explique, et le refus d'exécuter du jour (E60). Un écart non
+expliqué part en alerte, et le rapport ne le répète pas.
 
 Un run sans action doit laisser une trace : sans elle, l'opérateur ne distingue
 pas un système qui n'a rien eu à faire d'un système qui n'a pas tourné. La
@@ -409,7 +417,8 @@ Vingt entrées fixes, présentes chaque jour parce que les titres de section et 
 en-têtes de colonne qui les portent le sont. Et des entrées **conditionnelles**,
 rendues seulement quand le rapport du jour imprime ce qu'elles définissent : une
 par valeur de `Trigger` réellement imprimée, une par `RejectionCode` réellement
-imprimé, « suspension » quand l'encadré est présent, et la convention de nommage
+imprimé, « suspension » quand l'encadré est présent, « etat interne
+resynchronise » quand celui de CV15 l'est, et la convention de nommage
 des clés de la photo quand le tableau des trous l'est. Gloser les neuf codes de
 refus tous les jours serait neuf lignes de bruit pour des rejets qui n'arrivent
 pas en phase 1.

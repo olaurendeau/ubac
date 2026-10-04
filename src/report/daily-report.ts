@@ -59,6 +59,15 @@ export type ReportSuspension =
   | { readonly status: 'ACTIVE'; readonly drawdown: Decimal; readonly reason: string }
   | { readonly status: 'INACTIVE' };
 
+/**
+ * L'etat interne s'est-il resynchronise ce jour-la, et l'ecart etait-il
+ * entierement explique par les flux enregistres. Recopie de `Resynchronization`
+ * (`src/jobs/reconcile.ts`), reduite a ce que le rendu lit.
+ */
+export type ReportResync =
+  | { readonly status: 'NOT_NEEDED' }
+  | { readonly status: 'RESYNCHRONIZED'; readonly explainedByFlows: boolean; readonly reason: string };
+
 /** Une strategie du §8 : ce qu'elle a decide, et ce que la couche risque en a dit. */
 export interface ReportOutcome {
   readonly strategy: StrategyName;
@@ -105,6 +114,8 @@ export interface CompletedRun {
   readonly benchmarkGaps: readonly ReportGap[];
   readonly drawdown: ReportDrawdown;
   readonly suspension: ReportSuspension;
+  /** Lu un jour d'apport seulement : voir `resyncExplique`. */
+  readonly resync: ReportResync;
   readonly outcomes: readonly ReportOutcome[];
   readonly executions: readonly ReportExecution[];
 }
@@ -475,6 +486,7 @@ const CELL = 'padding:4px 6px;border-bottom:1px solid #eceef1;text-align:left;ve
 const HEAD = `${CELL};font-weight:600;color:#5a6472`;
 const NOTE = 'font-size:13px;color:#5a6472;margin:6px 0';
 const ALERT = 'background:#fdecec;border-left:3px solid #c0392b;padding:8px;margin:10px 0';
+const INFO = 'background:#eef4fb;border-left:3px solid #2c6aa0;padding:8px;margin:10px 0';
 
 /**
  * Une cellule, etalee sur plusieurs colonnes quand une raison prend la place des
@@ -986,6 +998,7 @@ function lexiqueSection(run: CompletedRun): string {
         : [],
     ),
     suspendu: run.suspension.status === 'ACTIVE',
+    resynchronise: resyncExplique(run) !== undefined,
     metriquesIndisponibles: run.benchmarkGaps.length > 0,
   });
   return section(
@@ -999,6 +1012,29 @@ function lexiqueSection(run: CompletedRun): string {
 
 // --- Point d'entree ---------------------------------------------------------
 
+/**
+ * **Le jour ou l'ecart est entierement explique par un apport enregistre**
+ * (CV15), `RECONCILIATION_DRIFT` ne part pas, et c'est ce rapport qui dit ce
+ * qu'elle aurait dit : l'etat resynchronise, l'apport qui l'explique, et le
+ * refus d'executer du jour (E60). Le texte est celui du run, tel qu'il ouvre
+ * aussi les quatre lignes de `decisions` : une seule source.
+ *
+ * Un ecart non explique part en alerte `URGENT`, qui porte deja ce texte : le
+ * rapport ne le repete pas (`contrat-run.test-d.ts`, V8).
+ */
+const resyncExplique = (run: CompletedRun): Extract<ReportResync, { status: 'RESYNCHRONIZED' }> | undefined =>
+  run.resync.status === 'RESYNCHRONIZED' && run.resync.explainedByFlows ? run.resync : undefined;
+
+function resyncEncadre(run: CompletedRun): string {
+  const resync = resyncExplique(run);
+  if (resync === undefined) return '';
+  return (
+    `<div style="${INFO}"><strong>Etat interne resynchronise, ecart explique par les flux enregistres.</strong> ` +
+    `Aucune alerte n'est partie pour cet ecart : c'est ce rapport qui le dit. Aucun ordre n'est place aujourd'hui.<br>` +
+    `${escape(resync.reason)}</div>`
+  );
+}
+
 /** La strategie de production : la seule dont le trigger resume le run. */
 const production = (run: CompletedRun): ReportOutcome | undefined =>
   run.outcomes.find((outcome) => !outcome.isShadow);
@@ -1009,6 +1045,7 @@ function subjectOf(run: CompletedRun): string {
   if (run.suspension.status === 'ACTIVE') {
     return `${tete} — SUSPENDU (recul ${signedPct(run.suspension.drawdown)})`;
   }
+  if (resyncExplique(run) !== undefined) return `${tete} — etat resynchronise par un apport, aucun ordre`;
   const prod = production(run);
   if (prod === undefined) return `${tete} — aucune strategie de production`;
   if (prod.intent.trigger === 'NONE') return `${tete} — aucun declenchement`;
@@ -1037,6 +1074,7 @@ export function renderDailyReport(input: DailyReportInput): DailyReportMail {
     `<h1 style="font-size:17px;margin:0 0 4px">Ubac — rapport du ${escape(run.runDate)}</h1>` +
     `<p style="${NOTE}">Prix de cloture du ${escape(run.pricedOn)}. Les ordres de la production partent en limit post-only ; les ombres n'en placent aucun.</p>` +
     alerte +
+    resyncEncadre(run) +
     entete +
     noteJour +
     distanceSection(input) +

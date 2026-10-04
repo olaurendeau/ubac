@@ -578,6 +578,12 @@ function marquer(intent: Intent, resync: Resynchronization): Intent {
  * entre en tete des quatre lignes de `decisions` par `marquer` : le refus est
  * ecrit avec son motif, il ne se deduit jamais d'une absence d'ordre. Exporte
  * pour que la sonde et le code lisent le meme litteral.
+ *
+ * **Un jour d'apport, elle demenage dans le rapport** (CV15) : quand toutes les
+ * divergences sont expliquees par les flux enregistres, `RECONCILIATION_DRIFT`
+ * se tait, et c'est le rapport du jour — qui part toujours sur un run conclu —
+ * qui porte ce meme texte, refus compris. Le jour sans execution n'est jamais
+ * muet : c'est l'alerte qui le dit, ou a sa place le rapport.
  */
 export const REFUS_RESYNC =
   "Jour de resynchronisation : le run refuse d'executer (O6). Il decide, journalise et photographie, " +
@@ -919,15 +925,18 @@ async function executeRun(run: DailyRun, parti: ExecutionDeStrategie[]): Promise
    *
    * La fenetre de flux du chainage n'est pas celle de la carence : elle part de
    * l'horodatage de la photo precedente, qui peut etre plus ancien que sept
-   * jours si un run a saute. La requete est donc distincte, pas un filtre de la
-   * precedente.
+   * jours si un run a saute. **Elle n'est plus relue ici** (CV15) : la
+   * reconciliation l'a lue depuis la meme photo pour qualifier ses divergences,
+   * et le chainage reprend cette lecture-la. Une fenetre lue deux fois pourrait
+   * voir un flux ecrit entre les deux lectures, et l'ecart du jour serait
+   * explique par un flux que l'indice ne neutralise pas.
    */
   const createdAt = clock.instant();
   const previous = await ports.db.latestSnapshot();
   /* La serie du graphe du rapport, lue ici et pas apres les ecritures : voir `snapshotSeries` sur le resultat. */
   const serie = await ports.db.snapshotSeries();
   const mouvements = await lireMouvements(ports.db, log);
-  const flows = previous === undefined ? [] : await ports.db.recentCashFlows(previous.createdAt);
+  const flows = previous === undefined ? [] : reconciled.flows;
   const step = prepareSnapshot({
     runDate,
     runInstant: createdAt,
@@ -1032,7 +1041,7 @@ async function executeRun(run: DailyRun, parti: ExecutionDeStrategie[]): Promise
       log(`${strategy} : decision du jour deja enregistree, aucun ordre transmis`);
       continue;
     }
-    // E60 : le motif est deja ecrit — en tete de la decision, et dans l'alerte du jour.
+    // E60 : le motif est deja ecrit — en tete de la decision, et dans l'alerte du jour ou, un jour d'apport, le rapport.
     if (resync.status === 'RESYNCHRONIZED') {
       log(`${strategy} : jour de resynchronisation, aucun ordre transmis (O6)`);
       continue;

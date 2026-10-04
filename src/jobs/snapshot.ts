@@ -249,8 +249,13 @@ const asReturn = (value: Decimal): Return => value as Return;
  * photo precedente contenait deja, la fermee un flux post-date qui n'a pas
  * encore touche les soldes lus. Des instants, pas des jours : comparer des jours
  * ferait passer un apport de 18 h pour anterieur a la photo de 7 h du meme jour.
+ *
+ * **Exporte pour la reconciliation**, qui lit la meme fenetre pour dire si un
+ * ecart de la ligne USDC est explique par les flux enregistres (CV15) : une
+ * fenetre, un predicat. Une copie deriverait, et c'est celle qui n'a pas de
+ * sonde qui gagnerait.
  */
-function netFlow(flows: readonly FlowInstant[], after: Date, until: Date): UsdcAmount {
+export function netFlow(flows: readonly FlowInstant[], after: Date, until: Date): UsdcAmount {
   return flows
     .filter((flux) => flux.occurredAt > after && flux.occurredAt <= until)
     .reduce<Decimal>((acc, flux) => acc.plus(flux.amount), new Decimal(0)) as UsdcAmount;

@@ -95,12 +95,15 @@ const ecart = (asset: string): BalanceDivergence => ({
   onExchange: new Decimal('0.0284') as Quantity,
   internal: new Decimal('0.0159') as Quantity,
   drift: new Decimal('0.44'),
+  explainedByFlows: false,
 });
 
 const RESYNCHRONISE: Extract<Resynchronization, { status: 'RESYNCHRONIZED' }> = {
   status: 'RESYNCHRONIZED',
   divergences: [ecart('BTC')],
   reason: `${RESYNC_MARKER} : divergence superieure a 1 % entre les soldes reels et l'etat interne`,
+  explainedByFlows: false,
+  recordedFlows: new Decimal(0) as UsdcAmount,
 };
 
 const abandon = (step: 'VALUATION' | 'DECIDE'): RunEnding => ({
@@ -280,6 +283,46 @@ describe('une resynchronisation ne passe jamais en silence', () => {
   it('accompagne un abandon du meme jour au lieu de le remplacer', () => {
     const alerts = alertsFor(entree({ resync: RESYNCHRONISE, ending: abandon('VALUATION') }));
     expect(evenements(alerts)).toEqual(['RECONCILIATION_DRIFT', 'RUN_ABORTED']);
+  });
+});
+
+describe('CV15 — un ecart entierement explique par les flux enregistres ne crie pas', () => {
+  /*
+   * Le lendemain d'un apport : la ligne USDC diverge du montant que le
+   * convoyeur a lui-meme enregistre. La resynchronisation a lieu, et c'est le
+   * rapport du jour qui la dit ; `RECONCILIATION_DRIFT` se tait.
+   */
+  const EXPLIQUE: Extract<Resynchronization, { status: 'RESYNCHRONIZED' }> = {
+    ...RESYNCHRONISE,
+    divergences: [{ ...ecart('USDC'), explainedByFlows: true }],
+    explainedByFlows: true,
+    recordedFlows: new Decimal('700') as UsdcAmount,
+  };
+
+  it('ne pousse pas RECONCILIATION_DRIFT sur un run conclu', () => {
+    expect(evenements(alertsFor(entree({ resync: EXPLIQUE })))).toEqual([]);
+  });
+
+  /* Sans rapport — un abandon n'en envoie pas —, l'alerte reste le seul canal du fait. */
+  it('le pousse encore quand le run abandonne, faute de rapport pour le dire', () => {
+    const alerts = alertsFor(entree({ resync: EXPLIQUE, ending: abandon('DECIDE') }));
+    expect(evenements(alerts)).toEqual(['RECONCILIATION_DRIFT', 'RUN_ABORTED']);
+  });
+
+  /*
+   * La sonde mixte, vue de l'alerte : la decision « tout est explique » est prise
+   * par `reconcile.ts` sur toutes les lignes ; l'alerte ne la refait pas ligne a
+   * ligne, et une ligne expliquee parmi d'autres ne la tait pas.
+   */
+  it('crie comme avant des qu’une divergence n’est pas expliquee', () => {
+    const mixte: Extract<Resynchronization, { status: 'RESYNCHRONIZED' }> = {
+      ...EXPLIQUE,
+      divergences: [ecart('BTC'), { ...ecart('USDC'), explainedByFlows: true }],
+      explainedByFlows: false,
+    };
+    const alerts = alertsFor(entree({ resync: mixte }));
+    expect(evenements(alerts)).toEqual(['RECONCILIATION_DRIFT']);
+    expect(alerts[0]?.body).toBe(mixte.reason);
   });
 });
 
