@@ -129,6 +129,7 @@ export interface PendingOrderReconciliation {
 export interface BalanceDivergence {
   readonly asset: string;
   readonly onExchange: Quantity;
+  /** La photo precedente, plus ce que nos propres ordres ont execute depuis. */
   readonly internal: Quantity;
   readonly drift: Decimal;
 }
@@ -283,7 +284,7 @@ function holdingsFrom(totaux: ReadonlyMap<string, Decimal>): Holdings {
  */
 function divergencesOf(
   onExchange: ReadonlyMap<string, Decimal>,
-  internal: Readonly<Record<string, Quantity>>,
+  internal: Readonly<Record<string, Decimal>>,
 ): readonly BalanceDivergence[] {
   const lignes = [...new Set([...onExchange.keys(), ...Object.keys(internal)])].sort();
   const divergences: BalanceDivergence[] = [];
@@ -318,7 +319,7 @@ function resyncReason(divergences: readonly BalanceDivergence[]): string {
     .join(' ; ');
   return (
     `${RESYNC_MARKER} : divergence superieure a ${RECONCILIATION_DRIFT_PCT.times(100).toFixed()} % entre les soldes reels et ` +
-    `l'etat interne — ${detail}. L'etat de l'exchange fait foi : le cache interne se rend, le run ` +
+    `l'etat interne (photo precedente et executions de nos ordres depuis) — ${detail}. L'etat de l'exchange fait foi : le cache interne se rend, le run ` +
     `poursuit sur les soldes reels et la photo du jour repart de l'exchange. Le portefeuille a bouge ` +
     `hors du systeme ; rien n'a ete corrige sur l'exchange, et aucun ordre n'a ete place.`
   );
@@ -458,6 +459,56 @@ function annulationsDe(
   return intentions;
 }
 
+// --- Nos propres executions ------------------------------------------------
+
+/**
+ * Ce que nos ordres ont fait bouger **depuis la photo precedente**, par devise.
+ *
+ * La photo du jour est calculee sur les soldes lus a la reconciliation, donc
+ * avant que l'etape 6 ne place quoi que ce soit : elle ne contient jamais les
+ * executions des ordres qu'elle precede. Sans ce terme, chaque lendemain
+ * d'execution se declarait « portefeuille bouge hors du systeme »
+ * (`docs/reconciliation.md` §2 bis).
+ *
+ * La part nouvelle est la difference entre ce que l'exchange dit maintenant et
+ * ce que la derniere transition ecrite avait deja constate — un partiel sur deux
+ * runs ne compte qu'une fois. Les frais sont preleves en USDC, en sus a l'achat
+ * et en deduction a la vente. **Un ordre sans transition — `INDETERMINABLE` —
+ * n'apporte rien** : son execution ne se devine pas, et l'ecart qu'elle laisse
+ * doit rester visible.
+ */
+function executionsDepuisLaPhoto(
+  orders: readonly PendingOrderReconciliation[],
+): ReadonlyMap<string, Decimal> {
+  const mouvements = new Map<string, Decimal>();
+  const ajoute = (devise: string, montant: Decimal): void => {
+    mouvements.set(devise, (mouvements.get(devise) ?? ZERO).add(montant));
+  };
+  for (const { order, transition } of orders) {
+    if (transition === null) continue;
+    const quantite = transition.filledQty.sub(order.filledQty);
+    const valeur = transition.filledQty
+      .mul(transition.filledPrice ?? ZERO)
+      .sub(order.filledQty.mul(order.filledPrice ?? ZERO));
+    const frais = transition.fees.sub(order.fees);
+    const achat = order.side === 'BUY';
+    ajoute(order.asset, achat ? quantite : quantite.neg());
+    ajoute('USDC', achat ? valeur.add(frais).neg() : valeur.sub(frais));
+  }
+  return mouvements;
+}
+
+function attendu(
+  photo: Readonly<Record<string, Quantity>>,
+  mouvements: ReadonlyMap<string, Decimal>,
+): Readonly<Record<string, Decimal>> {
+  const resultat: Record<string, Decimal> = { ...photo };
+  for (const [devise, montant] of mouvements) {
+    resultat[devise] = (resultat[devise] ?? ZERO).add(montant);
+  }
+  return resultat;
+}
+
 // --- Reconciliation ---------------------------------------------------------
 
 /**
@@ -520,9 +571,10 @@ export async function reconcile(input: ReconcileInput): Promise<ReconcileResult>
    * Le seuil et sa comparaison ligne a ligne ne bougent pas ; **seule la
    * consequence a change**. Au-dela du seuil, les soldes rendus restent ceux de
    * l'exchange — ils l'etaient deja — et le cache est declare perime au lieu
-   * d'arreter le run.
+   * d'arreter le run. Le cache est la photo precedente **plus nos propres
+   * executions depuis** : seul ce qui reste au-dela vient d'hors du systeme.
    */
-  const divergences = divergencesOf(totaux, photo.positions);
+  const divergences = divergencesOf(totaux, attendu(photo.positions, executionsDepuisLaPhoto(orders)));
   return {
     balances: { [RECONCILIE]: true, holdings, comparedTo: 'INTERNAL_SNAPSHOT' },
     orders,
