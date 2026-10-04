@@ -24,6 +24,7 @@ const VIDE: LexiqueContexte = {
   triggers: [],
   rejets: [],
   suspendu: false,
+  resynchronise: false,
   metriquesIndisponibles: false,
 };
 
@@ -64,6 +65,7 @@ describe('R2 — chaque entree porte un terme et une definition', () => {
     triggers: TRIGGERS,
     rejets: REJETS,
     suspendu: true,
+    resynchronise: true,
     metriquesIndisponibles: true,
   });
 

@@ -7,7 +7,7 @@ import type {
   OrderStatus,
   PortfolioBalances,
 } from '../../src/adapters/coinbase.js';
-import type { PendingOrderRecord, SnapshotRecord } from '../../src/adapters/db.js';
+import type { CashFlowRecord, PendingOrderRecord, SnapshotRecord } from '../../src/adapters/db.js';
 import type { ReconcileInput } from '../../src/jobs/reconcile.js';
 import type { IsoDate, Price, Quantity, UsdcAmount, Weight, Weights } from '../../src/core/types.js';
 
@@ -87,6 +87,21 @@ export function statutConnu(overrides: Partial<KnownOrderStatus> = {}): KnownOrd
   };
 }
 
+/**
+ * Une ligne de `cash_flows` telle que la base la rend. Par defaut celle du
+ * convoyeur (DC7), horodatee a l'instant du transfert (DC5).
+ */
+export function fluxEnregistre(occurredAt: string, amount: string, origin: CashFlowRecord['origin'] = 'CONVOYEUR'): CashFlowRecord {
+  return {
+    id: `flux-${occurredAt}`,
+    occurredAt: new Date(occurredAt),
+    occurredOn: occurredAt.slice(0, 10),
+    amount: new Decimal(amount) as UsdcAmount,
+    note: null,
+    origin,
+  };
+}
+
 /** L'instant du run par defaut : le lendemain des ordres fabriques ci-dessus, a la meme heure. */
 export const MAINTENANT = new Date('2026-09-11T07:00:00.000Z');
 export const JOUR_DU_RUN: IsoDate = '2026-09-11';
@@ -128,6 +143,8 @@ export interface Scenario {
    * propre lecture, et `INDETERMINABLE` pour un identifiant que rien ne porte.
    */
   readonly statuts?: Readonly<Record<string, OrderStatus | Error>>;
+  /** La table `cash_flows` ; `recentCashFlows` la filtre comme la requete, borne basse incluse. */
+  readonly flows?: readonly CashFlowRecord[];
   readonly now?: Date;
   /** Le jour du run ; par defaut celui de `MAINTENANT`. */
   readonly runDate?: IsoDate;
@@ -186,6 +203,10 @@ export function harnais(scenario: Scenario = {}): Harnais {
         latestSnapshot: () => {
           appels.push('latestSnapshot');
           return Promise.resolve(scenario.snapshot);
+        },
+        recentCashFlows: (since) => {
+          appels.push('recentCashFlows');
+          return Promise.resolve((scenario.flows ?? []).filter((flux) => flux.occurredAt >= since));
         },
       },
       now: scenario.now ?? MAINTENANT,

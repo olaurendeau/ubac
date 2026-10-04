@@ -39,6 +39,8 @@ export interface LexiqueContexte {
   readonly rejets: readonly RejectionCode[];
   /** L'encadre de suspension est-il present. */
   readonly suspendu: boolean;
+  /** L'encadre d'un etat resynchronise par un apport est-il present (CV15). */
+  readonly resynchronise: boolean;
   /** Le tableau « Metriques indisponibles » est-il present. */
   readonly metriquesIndisponibles: boolean;
 }
@@ -198,6 +200,11 @@ const SUSPENSION = entree(
   'La production est mise en pause parce que le recul depuis le plus haut a franchi son seuil ; aucun ordre ne sera propose tant qu\'elle dure.',
 );
 
+const RESYNCHRONISE = entree(
+  'etat interne resynchronise',
+  "La derniere photo ne concordait plus avec les soldes de l'exchange ; elle est remplacee par ces soldes, et le run ne place aucun ordre ce jour-la. Un apport enregistre explique l'ecart, d'ou l'absence d'alerte.",
+);
+
 const CLE = entree(
   'cle',
   'Le nom sous lequel la photo range une metrique : le nom de la strategie, un tiret bas, puis celui de la metrique — hold_btc_twr est le TWR du hold BTC.',
@@ -224,6 +231,7 @@ export function lexique(contexte: LexiqueContexte): readonly EntreeLexique[] {
     ),
     ...uniques(contexte.rejets, ORDRE_REJETS).map((code) => entree(code, REJETS[code])),
     ...(contexte.suspendu ? [SUSPENSION] : []),
+    ...(contexte.resynchronise ? [RESYNCHRONISE] : []),
     ...(contexte.metriquesIndisponibles ? [CLE] : []),
   ];
 }

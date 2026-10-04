@@ -112,6 +112,7 @@ const RUN: CompletedRun = {
   benchmarkGaps: [],
   drawdown: { status: 'COMPUTED', drawdown: dec('-0.0385') },
   suspension: { status: 'INACTIVE' },
+  resync: { status: 'NOT_NEEDED' },
   outcomes: OUTCOMES,
   executions: [],
 };
@@ -375,6 +376,54 @@ describe('§9 — un rapport part meme quand le trigger vaut NONE', () => {
     expect(lignes(renderDailyReport(avecRun({ outcomes: [rejete] })).html)).toContain(
       'rebalance | NONE | 0 jambe(s) | REJECTED:MIN_CASH | poids USDC dans la bande : aucun reequilibrage',
     );
+  });
+});
+
+describe('CV15 — un jour d’apport, le rapport dit ce que l’alerte ne dit plus', () => {
+  /*
+   * Le texte est celui du run : marqueur, ecart, apport, et la phrase du refus
+   * d'executer (E60) que `daily.ts` y ajoute. Le rendu ne la connait pas et ne
+   * la reecrit pas ; ce litteral en tient lieu.
+   */
+  const MOTIF =
+    "ETAT_RESYNCHRONISE : USDC : 32100 sur l'exchange contre 30000 en interne, explique par 2100 USDC de flux enregistres depuis la photo. Jour de resynchronisation : le run refuse d'executer (O6).";
+  const EXPLIQUE = { status: 'RESYNCHRONIZED', explainedByFlows: true, reason: MOTIF } as const;
+  /** L'encadre et lui seul : les decisions de `OUTCOMES` ne portent pas ce motif, mais celles d'un vrai run, si. */
+  const encadre = (html: string): readonly string[] =>
+    lignes(html).filter((ligne) => ligne.startsWith('Etat interne resynchronise, ecart explique par les flux enregistres.'));
+
+  it('l’encadre porte le motif entier, refus d’executer compris, et l’objet le resume', () => {
+    const mail = renderDailyReport(avecRun({ resync: EXPLIQUE }));
+
+    expect(encadre(mail.html)).toEqual([
+      `Etat interne resynchronise, ecart explique par les flux enregistres. Aucune alerte n'est partie pour cet ecart : c'est ce rapport qui le dit. Aucun ordre n'est place aujourd'hui.${MOTIF}`,
+    ]);
+    expect(mail.subject).toBe('Ubac 2026-09-13 — 100000.00 USDC — etat resynchronise par un apport, aucun ordre');
+  });
+
+  /* Un ecart non explique part deja en `RECONCILIATION_DRIFT`, qui porte ce texte : le rapport ne le repete pas. */
+  it('se tait sur un ecart non explique, et sur un jour sans resynchronisation', () => {
+    for (const resync of [{ ...EXPLIQUE, explainedByFlows: false }, { status: 'NOT_NEEDED' }] as const) {
+      const mail = renderDailyReport(avecRun({ resync }));
+      expect(encadre(mail.html)).toEqual([]);
+      expect(mail.subject).toContain('aucun declenchement');
+      expect(lignes(mail.html).some((ligne) => ligne.startsWith('etat interne resynchronise |'))).toBe(false);
+    }
+  });
+
+  it('la suspension garde la tete de l’objet', () => {
+    const mail = renderDailyReport(
+      avecRun({ resync: EXPLIQUE, suspension: { status: 'ACTIVE', drawdown: dec('-0.2612'), reason: 'SUSPENSION_DRAWDOWN' } }),
+    );
+    expect(mail.subject).toContain('SUSPENDU');
+    expect(encadre(mail.html)).toHaveLength(1);
+  });
+
+  it('glose le terme au lexique ce jour-la, et il est imprime dans le corps', () => {
+    const rendu = lignes(renderDailyReport(avecRun({ resync: EXPLIQUE })).html);
+    const glose = rendu.filter((ligne) => ligne.startsWith('etat interne resynchronise |'));
+    expect(glose).toHaveLength(1);
+    expect(rendu.some((ligne) => ligne.toLowerCase().startsWith('etat interne resynchronise, ecart'))).toBe(true);
   });
 });
 

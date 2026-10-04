@@ -12,6 +12,7 @@ import type {
   ReportGap,
   ReportMarketDay,
   ReportOutcome,
+  ReportResync,
   ReportSuspension,
   TwrPoint,
 } from '../../src/report/daily-report.js';
@@ -48,7 +49,7 @@ void entier;
 const refuse: CompletedRun = abandonne;
 void refuse;
 
-/** V3 — champ par champ, pour qu'un renommage dise **lequel** a bouge. Les douze champs lus, et rien d'autre. */
+/** V3 — champ par champ, pour qu'un renommage dise **lequel** a bouge. Les treize champs lus, et rien d'autre. */
 const runDate: CompletedRun['runDate'] = acheve.runDate;
 const pricedOn: CompletedRun['pricedOn'] = acheve.pricedOn;
 const totalValue: CompletedRun['totalValue'] = acheve.totalValue;
@@ -62,7 +63,9 @@ const suspension: ReportSuspension = acheve.suspension;
 const outcomes: readonly ReportOutcome[] = acheve.outcomes;
 /** E28 (S7b) : l'etape 6 vue de l'exchange, que le rapport rend en « Ordres du jour ». */
 const executions: readonly ReportExecution[] = acheve.executions;
-void [runDate, pricedOn, totalValue, weights, holdings, history, benchmarks, gaps, drawdown, suspension, outcomes, executions];
+/** CV15 (Y8) : un jour d'apport, la resynchronisation et le refus d'executer passent par le rapport. */
+const resync: ReportResync = acheve.resync;
+void [runDate, pricedOn, totalValue, weights, holdings, history, benchmarks, gaps, drawdown, suspension, outcomes, executions, resync];
 
 /**
  * V4 — les deux branches de chaque union. L'assignation du type entier ne dirait
@@ -73,11 +76,15 @@ declare const dessine: Extract<Completed['drawdown'], { status: 'COMPUTED' }>;
 declare const sansDrawdown: Extract<Completed['drawdown'], { status: 'UNAVAILABLE' }>;
 declare const suspendu: Extract<Completed['suspension'], { status: 'ACTIVE' }>;
 declare const libre: Extract<Completed['suspension'], { status: 'INACTIVE' }>;
-const branches: readonly [ReportDrawdown, ReportDrawdown, ReportSuspension, ReportSuspension] = [
+declare const resynchronise: Extract<Completed['resync'], { status: 'RESYNCHRONIZED' }>;
+declare const concordant: Extract<Completed['resync'], { status: 'NOT_NEEDED' }>;
+const branches: readonly [ReportDrawdown, ReportDrawdown, ReportSuspension, ReportSuspension, ReportResync, ReportResync] = [
   dessine,
   sansDrawdown,
   suspendu,
   libre,
+  resynchronise,
+  concordant,
 ];
 void branches;
 
@@ -111,6 +118,7 @@ rendre({
   benchmarkGaps: acheve.benchmarkGaps,
   drawdown: acheve.drawdown,
   suspension: acheve.suspension,
+  resync: acheve.resync,
   outcomes: acheve.outcomes,
   executions: acheve.executions,
 });
@@ -169,13 +177,12 @@ type NonLus = Exclude<keyof Completed, keyof CompletedRun>;
  * qu'un `SnapshotRecord` y est assignable. Il ne peut donc pas entrer dans la
  * forme du run acheve sans y etre lu deux fois.
  *
- * `resync` rejoint la liste en Q10, et c'est la meme decision que pour `report`,
- * pour la meme raison. Une resynchronisation de l'etat interne part en alerte
- * `RECONCILIATION_DRIFT` le jour meme, en `URGENT`, et sa trace durable est le
- * marqueur en tete de `decisions.reason` — deux canaux qui ne dependent pas du
- * courrier du lendemain. Le rapport quotidien la repeterait au petit dejeuner
- * sans rien apprendre a personne. Si cette decision devait changer, c'est ici
- * qu'on le verrait.
+ * `resync` avait rejoint la liste en Q10, et **l'a quittee en Y8** (CV15) : c'est
+ * ici que la decision change, comme ce commentaire l'annoncait. Une
+ * resynchronisation non expliquee part toujours en `RECONCILIATION_DRIFT`, et le
+ * rapport ne la repete pas. Mais le jour ou l'ecart est entierement explique par
+ * les flux enregistres, l'alerte se tait, et c'est le rapport qui dit l'etat
+ * resynchronise et le refus d'executer (E60, T6) : il lit donc `resync`.
  *
  * `snapshotSeries` rejoint la liste pour exactement le meme motif que
  * `previousSnapshot` : le graphe la lit, mais par `DailyReportInput.series`, et
@@ -189,7 +196,6 @@ type NonLusAttendus =
   | 'prices'
   | 'cashFlows'
   | 'observations'
-  | 'resync'
   | 'snapshot'
   | 'report'
   | 'previousSnapshot'

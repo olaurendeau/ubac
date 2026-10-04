@@ -7,11 +7,12 @@ import type {
   OpenOrder,
   OrderStatus,
 } from '../adapters/coinbase.js';
-import type { PendingOrderRecord, TransitionToRecord, UbacDatabase } from '../adapters/db.js';
+import type { CashFlowRecord, PendingOrderRecord, TransitionToRecord, UbacDatabase } from '../adapters/db.js';
 import type { Holdings } from '../core/portfolio.js';
 import { ASSETS } from '../core/portfolio.js';
 import { RECONCILIATION_DRIFT_PCT } from '../core/risk.js';
-import type { AllowedAsset, IsoDate, Quantity } from '../core/types.js';
+import type { AllowedAsset, IsoDate, Quantity, UsdcAmount } from '../core/types.js';
+import { netFlow } from './snapshot.js';
 
 /**
  * La reconciliation de la spec §7 : **ce que l'exchange dit, confronte a ce que
@@ -132,6 +133,13 @@ export interface BalanceDivergence {
   /** La photo precedente, plus ce que nos propres ordres ont execute depuis. */
   readonly internal: Quantity;
   readonly drift: Decimal;
+  /**
+   * La ligne ne diverge plus une fois les flux enregistres de `]photo, run]`
+   * ajoutes au cache (CV15, DP1 = 1) : meme formule, meme seuil de 1 %. **Seule
+   * la ligne USDC peut l'etre** — un flux est un montant d'USDC (DC1) —, BTC,
+   * ETH et toute autre devise jamais.
+   */
+  readonly explainedByFlows: boolean;
 }
 
 /**
@@ -167,7 +175,8 @@ export const RESYNC_MARKER = 'ETAT_RESYNCHRONISE';
  * L'etat interne a-t-il du se rendre a l'exchange ce jour-la.
  *
  * **C'est le marqueur du lot, et il a deux lecteurs.** Le run le porte jusqu'a
- * `decisions.reason` et jusqu'a l'alerte `RECONCILIATION_DRIFT`, pour qu'un
+ * `decisions.reason` et jusqu'a l'alerte `RECONCILIATION_DRIFT` — ou, un jour
+ * ou les flux enregistres expliquent tout l'ecart, jusqu'au rapport (CV15) —, pour qu'un
  * lecteur du journal des decisions puisse dire, des mois plus tard, que
  * quelqu'un a bouge le portefeuille hors du systeme ce jour-la. Et un
  * **executeur futur** le consulte : en phase 3, une divergence constatee juste
@@ -185,6 +194,16 @@ export type Resynchronization =
       readonly divergences: readonly BalanceDivergence[];
       /** Texte marque : source unique de l'alerte et de `decisions.reason`. */
       readonly reason: string;
+      /**
+       * **Toutes** les lignes divergentes sont expliquees par les flux
+       * enregistres (CV15). Une seule ligne expliquee ne suffit pas : un apport
+       * le jour ou du BTC a disparu ne doit pas taire le BTC. Ce champ ne change
+       * ni la resynchronisation, ni son marqueur, ni le refus d'executer (E60) :
+       * il dit seulement que l'ecart a une cause enregistree.
+       */
+      readonly explainedByFlows: boolean;
+      /** Le net des flux enregistres de `]photo, run]`, nul s'il n'y en a pas. */
+      readonly recordedFlows: UsdcAmount;
     };
 
 /**
@@ -213,6 +232,14 @@ export interface ReconcileResult {
   readonly cancellations: readonly CancellationIntent[];
   readonly observations: ReconcileObservations;
   readonly resync: Resynchronization;
+  /**
+   * Les flux lus depuis la photo comparee, **borne incluse**, tels que la base
+   * les rend ; vides sans photo. `daily.ts` y chaine son indice de croissance :
+   * une lecture des flux par run, pas deux, donc la reconciliation et le
+   * chainage ne peuvent pas voir deux fenetres differentes. Chacun y applique
+   * le meme predicat, `netFlow`.
+   */
+  readonly flows: readonly CashFlowRecord[];
 }
 
 /**
@@ -222,7 +249,7 @@ export interface ReconcileResult {
  */
 export interface ReconcileInput {
   readonly exchange: Pick<CoinbaseReader, 'balances' | 'openOrders' | 'orderStatus'>;
-  readonly db: Pick<UbacDatabase, 'pendingOrders' | 'latestSnapshot'>;
+  readonly db: Pick<UbacDatabase, 'pendingOrders' | 'latestSnapshot' | 'recentCashFlows'>;
   /** L'instant du run, injecte (E35) : il date le denouement d'un ordre. */
   readonly now: Date;
   /**
@@ -285,6 +312,7 @@ function holdingsFrom(totaux: ReadonlyMap<string, Decimal>): Holdings {
 function divergencesOf(
   onExchange: ReadonlyMap<string, Decimal>,
   internal: Readonly<Record<string, Decimal>>,
+  flows: UsdcAmount,
 ): readonly BalanceDivergence[] {
   const lignes = [...new Set([...onExchange.keys(), ...Object.keys(internal)])].sort();
   const divergences: BalanceDivergence[] = [];
@@ -299,6 +327,7 @@ function divergencesOf(
         onExchange: reel as Quantity,
         internal: cache as Quantity,
         drift,
+        explainedByFlows: asset === 'USDC' && !relativeDrift(reel, cache.add(flows)).gt(RECONCILIATION_DRIFT_PCT),
       });
     }
   }
@@ -310,11 +339,12 @@ function divergencesOf(
  * §9 et la ligne de `decisions` du jour portent ce texte-la, pas deux redactions
  * du meme fait qui pourraient annoncer deux chiffres differents.
  */
-function resyncReason(divergences: readonly BalanceDivergence[]): string {
+function resyncReason(divergences: readonly BalanceDivergence[], flows: UsdcAmount): string {
   const detail = divergences
     .map(
       (d) =>
-        `${d.asset} : ${d.onExchange.toString()} sur l'exchange contre ${d.internal.toString()} en interne, soit ${d.drift.times(100).toFixed(4)} % d'ecart`,
+        `${d.asset} : ${d.onExchange.toString()} sur l'exchange contre ${d.internal.toString()} en interne, soit ${d.drift.times(100).toFixed(4)} % d'ecart` +
+        cause(d, flows),
     )
     .join(' ; ');
   return (
@@ -323,6 +353,18 @@ function resyncReason(divergences: readonly BalanceDivergence[]): string {
     `poursuit sur les soldes reels et la photo du jour repart de l'exchange. Le portefeuille a bouge ` +
     `hors du systeme ; rien n'a ete corrige sur l'exchange, et aucun ordre n'a ete place.`
   );
+}
+
+/**
+ * Ce que les flux enregistres disent d'une ligne USDC divergente, ecrit dans le
+ * motif : six mois plus tard, `decisions.reason` doit dire si l'ecart du jour
+ * etait un apport ou autre chose, sans l'alerte qui ne part plus.
+ */
+function cause(divergence: BalanceDivergence, flows: UsdcAmount): string {
+  if (divergence.asset !== 'USDC' || flows.isZero()) return '';
+  return divergence.explainedByFlows
+    ? `, explique par ${flows.toString()} USDC de flux enregistres depuis la photo`
+    : `, que ${flows.toString()} USDC de flux enregistres depuis la photo n'expliquent pas`;
 }
 
 // --- Ordres -----------------------------------------------------------------
@@ -558,6 +600,8 @@ export async function reconcile(input: ReconcileInput): Promise<ReconcileResult>
       orders,
       cancellations,
       observations,
+      // Sans photo, pas de fenetre : rien a lire, ni pour la comparaison ni pour le chainage.
+      flows: [],
       /*
        * Pas de comparaison, donc pas de resynchronisation. `NOT_NEEDED` n'est
        * pas « rien n'a diverge » ici : c'est `comparedTo` qui porte l'absence de
@@ -573,16 +617,37 @@ export async function reconcile(input: ReconcileInput): Promise<ReconcileResult>
    * l'exchange — ils l'etaient deja — et le cache est declare perime au lieu
    * d'arreter le run. Le cache est la photo precedente **plus nos propres
    * executions depuis** : seul ce qui reste au-dela vient d'hors du systeme.
+   *
+   * Les flux enregistres **ne changent pas le verdict**, et c'est voulu : la
+   * comparaison ci-dessous est celle d'avant CV15, donc la resynchronisation, son
+   * marqueur et le refus d'executer (E60) tombent les memes jours. Ils
+   * qualifient seulement une divergence deja constatee — expliquee ou non. Un
+   * flux ne peut donc ni creer une divergence ni en effacer une, et un flux
+   * compte deux fois (deja dans la photo, mais date apres elle) ne peut que
+   * manquer d'expliquer : l'alerte part, comme avant.
+   *
+   * La fenetre est celle du chainage, `]photo, run]`, par le meme predicat :
+   * un flux a l'instant de la photo est dans ses soldes, un flux posterieur au
+   * run n'est pas encore dans ceux qu'on vient de lire.
    */
-  const divergences = divergencesOf(totaux, attendu(photo.positions, executionsDepuisLaPhoto(orders)));
+  const flows = await input.db.recentCashFlows(photo.createdAt);
+  const apports = netFlow(flows, photo.createdAt, input.now);
+  const divergences = divergencesOf(totaux, attendu(photo.positions, executionsDepuisLaPhoto(orders)), apports);
   return {
     balances: { [RECONCILIE]: true, holdings, comparedTo: 'INTERNAL_SNAPSHOT' },
     orders,
     cancellations,
     observations,
+    flows,
     resync:
       divergences.length > 0
-        ? { status: 'RESYNCHRONIZED', divergences, reason: resyncReason(divergences) }
+        ? {
+            status: 'RESYNCHRONIZED',
+            divergences,
+            reason: resyncReason(divergences, apports),
+            explainedByFlows: divergences.every((d) => d.explainedByFlows),
+            recordedFlows: apports,
+          }
         : { status: 'NOT_NEEDED' },
   };
 }

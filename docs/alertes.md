@@ -91,7 +91,7 @@ Le §9 en nomme six. Un ajout est assumé, et un nom est élargi.
 | `REBALANCE_EXECUTED` | high | au moins un ordre a été placé ; porte le compte placé et le compte exécuté |
 | `DRAWDOWN` | urgent | la suspension du §6 est active |
 | `REBALANCE_TOO_LARGE` | urgent | un rejet porte ce code |
-| `RECONCILIATION_DRIFT` | urgent | l'état interne s'est resynchronisé sur l'exchange ; son texte dit aussi qu'aucun ordre ne part ce jour-là (E60) |
+| `RECONCILIATION_DRIFT` | urgent | l'état interne s'est resynchronisé sur l'exchange ; son texte dit aussi qu'aucun ordre ne part ce jour-là (E60). **Ne part pas** quand toutes les divergences sont expliquées par les flux enregistrés et que le run a conclu : le rapport du jour porte alors le même texte (CV15, `docs/reconciliation.md` §2 ter) |
 | `RISK_REJECTED` | high | un verdict est rejeté pour tout autre code, ou l'exchange refuse une jambe pour un autre motif que le post-only |
 | `RUN_ABORTED` | urgent | le run abandonne, à quelque étape que ce soit |
 | `JOB_FAILED` | urgent | une exception a échappé au run |

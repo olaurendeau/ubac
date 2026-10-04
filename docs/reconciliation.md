@@ -95,6 +95,11 @@ Le marqueur **précède** le motif de la stratégie et ne le remplace pas,
 contrairement à la ligne d'un jour suspendu : la décision a bien eu lieu, sur les
 soldes réels, et son motif reste lisible.
 
+**Un jour d'apport, l'alerte cède la place au rapport** (CV15, section 2 ter) :
+quand l'écart est entièrement expliqué par les flux enregistrés, le marqueur
+reste sur les quatre lignes, mais c'est le rapport du jour qui dit la
+resynchronisation, et `RECONCILIATION_DRIFT` ne part pas.
+
 ### Ce que cela ne ferme pas
 
 Si l'étape 7 ne peut pas reposer de photo — second run du même jour
@@ -201,14 +206,73 @@ resynchronisation.
 
 - **Un ordre `INDETERMINABLE` n'apporte rien** : son exécution ne se devine
   pas, et l'écart qu'il laisse doit rester visible.
-- **Les `cash_flows` ne sont pas ajoutés.** Un apport saisi à la main peut
-  dater d'avant ou d'après la photo qui le contient déjà ; l'ajouter
-  risquerait de le compter deux fois. Un apport reste donc un mouvement
-  extérieur déclaré, ce qu'il est.
+- **Les `cash_flows` ne sont pas ajoutés au cache comparé.** Un apport saisi à
+  la main peut dater d'avant ou d'après la photo qui le contient déjà ; l'ajouter
+  au verdict risquerait de le compter deux fois. Un apport reste donc un
+  mouvement extérieur, qui resynchronise. Depuis CV15, les flux **qualifient**
+  la divergence constatée sans la changer : section 2 ter.
 - **Les lectures de l'exchange ne sont pas atomiques.** Une exécution entre la
   lecture des soldes et celle du statut se retrouve dans la part de l'un des
   deux runs. L'écart est borné par une exécution partielle, et le seuil de 1 %
   l'absorbe en pratique.
+
+## 2 ter. Un écart entièrement expliqué par les flux enregistrés ne crie plus (CV15)
+
+### Le besoin
+
+Le lendemain d'un apport — le convoyeur transfère 100 EUR d'USDC chaque mois,
+environ 7 % de la ligne USDC —, la ligne USDC dépasse le seuil et le run se
+resynchronise. Avant CV15, `RECONCILIATION_DRIFT` partait en `URGENT` pour un
+mouvement que l'opérateur, ou le convoyeur, venait lui-même d'enregistrer
+(`docs/specs/ubac-convoyeur.md`, Q4 = 1, K5).
+
+### La règle
+
+La comparaison de la section 2 et de la section 2 bis **ne change pas** : même
+cache, même formule, même seuil. La resynchronisation, le marqueur
+`ETAT_RESYNCHRONISE` et le refus d'exécuter (section 3 bis, E60) tombent donc
+exactement les mêmes jours qu'avant. Ce qui est nouveau, c'est une
+**qualification** de chaque ligne divergente :
+
+- la ligne USDC est **expliquée** si, le net des `cash_flows` de `]photo, run]`
+  ajouté au cache, elle ne diverge plus au sens de Q10 — écart ≤ 1 %, même
+  formule (DP1 = 1). Un résidu de frais ou d'arrondi passe, comme il passerait
+  pour nos propres exécutions ;
+- BTC, ETH et toute autre devise ne le sont **jamais** : un flux est un montant
+  d'USDC (DC1) ;
+- la resynchronisation est **expliquée** si **toutes** ses lignes le sont. Un
+  apport le jour où du BTC a disparu ne tait pas le BTC.
+
+`RECONCILIATION_DRIFT` ne part pas quand la resynchronisation est expliquée
+**et** que le run a conclu. Le rapport du jour, qui part sur tout run conclu,
+porte alors le même texte en encadré : l'écart, l'apport qui l'explique, et la
+phrase du refus d'exécuter. Un run qui abandonne n'a pas de rapport : l'alerte
+part alors comme avant, pour que le fait ait toujours un canal. Un écart
+partiellement expliqué crie comme avant ; son motif dit le montant des flux qui
+ne l'expliquent pas.
+
+### La fenêtre, et pourquoi il n'y a pas de double comptage
+
+La fenêtre est celle du chaînage de l'indice de croissance, `]photo, run]` en
+instants, par **le même prédicat** : `netFlow`, exporté de `snapshot.ts`. Un
+flux à l'instant de la photo est dans ses soldes ; un flux postérieur au run
+n'est pas encore dans ceux qu'on vient de lire. La réconciliation lit les flux
+depuis la photo comparée, et `daily.ts` **chaîne sur cette lecture-là** au lieu
+d'en faire une seconde : la qualification et l'indice ne peuvent pas voir deux
+fenêtres différentes.
+
+Le double comptage que la section 2 bis écartait reste écarté : les flux ne
+changent jamais le verdict, donc ne créent ni n'effacent une divergence. Un flux
+compté deux fois — déjà dans la photo, mais daté après elle — ne peut que
+**manquer** d'expliquer, et l'alerte part comme avant. Avec nos exécutions
+(section 2 bis), il n'y a pas de recouvrement : une exécution échange une ligne
+contre une autre, un flux entre de l'extérieur ; les deux s'ajoutent au même
+cache, et une divergence qui mêle apport et exécution connue est expliquée.
+
+Une limite reste : un flux enregistré par erreur dans la fenêtre, le jour où un
+mouvement non enregistré du même montant a lieu, expliquerait ce dernier. C'est
+une erreur de saisie, que le rapport du jour rend visible — l'encadré et les
+« Derniers mouvements » disent l'apport retenu.
 
 ## 3. L'annulation des ordres d'un run antérieur, et le garde de l'étape 6 (S8b)
 
@@ -329,6 +393,14 @@ seconde alerte (T6), et en tête des quatre lignes de `decisions` par le marqueu
 réconciliation, parce que c'est lui qui refuse : `liquidate.ts` réconcilie aussi,
 et la sortie propre cède les soldes réels un jour de resynchronisation.
 
+**Un jour d'apport, la phrase déménage dans le rapport** (CV15, section 2 ter).
+Quand l'écart est entièrement expliqué par les flux enregistrés,
+`RECONCILIATION_DRIFT` se tait ; le même texte, refus compris, part dans
+l'encadré du rapport du jour, et l'objet du courrier le résume (« état
+resynchronisé par un apport, aucun ordre »). Le jour sans exécution n'est jamais
+muet : c'est l'alerte qui le dit, ou à sa place le rapport. Les quatre lignes
+de `decisions` portent le texte dans les deux cas.
+
 **Le refus ne dure qu'un jour.** La photo reposée à l'étape 7 porte les soldes
 réels ; le run suivant, sur les mêmes soldes, ne diverge plus et exécute. Un
 cas le prolonge, celui du §1 bis : une photo qui ne peut pas être reposée (le
@@ -428,20 +500,18 @@ attente, dernier snapshot.
   E39 / G3 tranchée dans Orca : option 1). Le cache comparé est la photo plus
   l'effet des exécutions connues depuis, lu sur `filled_qty`, `filled_price` et
   `fees` (S8a), au même seuil et avec la même formule d'écart. Ce qui reste
-  ouvert, ce sont les apports enregistrés (`cash_flows`), que Y8 (CV15) ajoute à
-  la même base, et un ordre `INDETERMINABLE`, qui n'explique rien par
+  ouvert, c'est un ordre `INDETERMINABLE`, qui n'explique rien par
   construction.
 - **Un premier run n'a pas de cache.** Sans snapshot, il n'y a rien à comparer :
   le résultat le dit (`comparedTo: 'NO_INTERNAL_STATE'`) plutôt que d'afficher
   une réconciliation qui n'a rien réconcilié. Une absence de comparaison n'est
   pas une divergence nulle.
 - **Les `cash_flows` ne sont pas déduits du cache.** Un apport de plus de 1 % de
-  la ligne USDC, survenu entre deux runs, déclenche donc une resynchronisation et
-  son alerte. Ce n'est plus un blocage depuis Q10 — le run conclut — mais c'est
-  une alerte `URGENT` pour un événement que l'opérateur a lui-même provoqué. Le
-  distinguer d'une divergence non expliquée demanderait de rapprocher l'écart de
-  la ligne USDC des `cash_flows` de la période ; c'est une amélioration possible,
-  pas une correction, et elle n'est pas faite.
+  la ligne USDC, survenu entre deux runs, déclenche donc une resynchronisation,
+  son marqueur et le refus d'exécuter du jour. Depuis CV15 (section 2 ter), il
+  ne déclenche plus d'alerte quand les flux enregistrés de la période
+  l'expliquent entièrement : c'est le rapport du jour qui le dit. Un apport non
+  enregistré, ou enregistré hors de la fenêtre, crie comme avant.
 - **Les deux lectures de l'exchange ne sont pas atomiques.** Un ordre peut se
   dénouer entre la lecture des soldes et celle des ordres ouverts. La conséquence
   va toujours dans le sens de la vérité de l'exchange — soit la ligne apparaît

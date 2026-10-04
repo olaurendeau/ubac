@@ -1193,13 +1193,15 @@ describe('§6, §8 etape 7 — la photo du jour et la suspension au drawdown', (
     /*
      * Trois appels pour deux runs : le premier n'a demande que la fenetre de
      * carence, le second y a ajoute celle du chainage, qui part de l'horodatage
-     * de la photo precedente et non de sept jours en arriere.
+     * de la photo precedente et non de sept jours en arriere. Depuis CV15, c'est
+     * la reconciliation qui la lit, **avant** la carence, et le chainage reprend
+     * sa lecture au lieu d'en faire une seconde.
      */
     expect(h.appels.filter((a) => a === 'recentCashFlows')).toHaveLength(3);
     expect(h.depuis.map((d) => d.toISOString())).toEqual([
       '2026-09-05T00:00:00.000Z',
-      '2026-09-06T00:00:00.000Z',
       '2026-09-12T07:00:00.000Z',
+      '2026-09-06T00:00:00.000Z',
     ]);
   });
 });
@@ -2781,6 +2783,103 @@ describe('E60 — un jour de resynchronisation refuse d’executer (O6 = 1)', ()
     expect(second.appels.filter((a) => a === 'placeOrder')).toHaveLength(1);
     expect(result.placements.map((p) => p.kind)).toEqual(['PLACED']);
     expect(evenements(second)).not.toContain('RECONCILIATION_DRIFT');
+  });
+});
+
+describe('CV15 — le lendemain d’un apport enregistre, l’alerte se tait et le rapport parle', () => {
+  /*
+   * La photo d'hier a 07:00 porte 30 000 USDC ; le convoyeur a transfere
+   * 2 100 USDC a 18:00 — 7 % de la ligne — et ecrit sa ligne `CONVOYEUR`. Sur
+   * `main` avant Y8, ce run poussait `RECONCILIATION_DRIFT` en `URGENT` (K5).
+   */
+  const HIER = cache({ BTC: qty('0.8'), ETH: qty('12'), USDC: qty('30000') }, '100000');
+  const APPORTE: readonly AssetBalance[] = [solde('BTC', '0.8'), solde('ETH', '12'), solde('USDC', '32100')];
+  const convoyeur = (montant: string): CashFlowRecord => ({
+    ...flux(PRICED_ON, montant, 'convoyage'),
+    occurredAt: new Date(`${PRICED_ON}T18:00:00.000Z`),
+    origin: 'CONVOYEUR',
+  });
+  const APPORT: Scenario = { balances: APPORTE, snapshot: HIER, cashFlows: [convoyeur('2100')] };
+  /** Le texte tel que le rapport l'imprime : echappe comme tout motif. */
+  const imprime = (texte: string): string => texte.replace(/'/g, '&#39;');
+  /** L'encadre du rapport, et lui seul : le motif figure aussi dans la colonne « Motif » des decisions. */
+  const encadre = (html: string): string => {
+    const debut = html.indexOf('Etat interne resynchronise, ecart explique par les flux enregistres.');
+    return debut < 0 ? '' : html.slice(debut, html.indexOf('</div>', debut));
+  };
+
+  /* **La sonde de CV15**, rouge sur `main` : l'alerte y partait. */
+  it('un apport de 7 % enregistre par le convoyeur ne pousse pas RECONCILIATION_DRIFT', async () => {
+    const h = harnais(APPORT);
+    const result = complete(await lance(h));
+
+    expect(result.resync).toMatchObject({ status: 'RESYNCHRONIZED', explainedByFlows: true });
+    expect(evenements(h)).toEqual([]);
+    expect(reported(result)).toBe(true);
+  });
+
+  /* La resynchronisation, son marqueur et E60 ne changent pas : seul le canal change. */
+  it('resynchronise, marque les quatre decisions, et ne place aucun ordre', async () => {
+    const h = harnais(APPORT);
+    const result = complete(await lance(h));
+
+    expect(h.photos.get(RUN_DATE)?.positions.USDC?.toString()).toBe('32100');
+    const motifs = [...h.table.values()].map((d) => d.intent.reason);
+    expect(motifs).toHaveLength(LES_QUATRE.length);
+    for (const motif of motifs) {
+      expect(motif.startsWith(RESYNC_MARKER)).toBe(true);
+      expect(motif).toContain(REFUS_RESYNC);
+      expect(motif).toContain('explique par 2100 USDC de flux enregistres');
+    }
+    expect(h.appels).not.toContain('placeOrder');
+    expect(result.placements).toEqual([]);
+  });
+
+  /*
+   * **La phrase d'E60 demenage** (T6, point 4 du plan) : l'alerte qui la portait
+   * ne part pas, donc le rapport du jour la porte, avec l'ecart et l'apport.
+   */
+  it('le rapport dit l’etat resynchronise, l’apport qui l’explique et le refus d’executer', async () => {
+    const h = harnais(APPORT);
+    await lance(h);
+    const mail = courrier(h);
+
+    const texte = encadre(mail.htmlContent);
+    expect(texte).toContain(RESYNC_MARKER);
+    expect(texte).toContain('explique par 2100 USDC de flux enregistres');
+    expect(texte).toContain(imprime(REFUS_RESYNC));
+    expect(mail.subject).toContain('etat resynchronise par un apport, aucun ordre');
+  });
+
+  /*
+   * Une seule lecture des flux pour la fenetre `]photo, run]` : la
+   * reconciliation la fait, le chainage la reprend. La seconde lecture est
+   * celle de la carence, sept jours en arriere.
+   */
+  it('lit la fenetre une fois, depuis la photo, et chaine sur cette lecture', async () => {
+    const h = harnais(APPORT);
+    const result = complete(await lance(h));
+
+    expect(h.depuis.map((d) => d.toISOString())).toEqual([`${PRICED_ON}T07:00:00.000Z`, '2026-09-05T00:00:00.000Z']);
+    // L'apport est neutralise : 102 100 de valeur moins 2 100 de flux, l'indice ne bouge pas.
+    expect(result.drawdown.status === 'COMPUTED' && result.drawdown.carried.index.toString()).toBe('1');
+  });
+
+  it('un apport a moitie enregistre crie comme avant, refus compris', async () => {
+    const h = harnais({ ...APPORT, cashFlows: [convoyeur('1050')] });
+    await lance(h);
+
+    expect(evenements(h)).toEqual(['RECONCILIATION_DRIFT']);
+    expect(h.pushes[0]?.payload.message).toContain(REFUS_RESYNC);
+    expect(encadre(courrier(h).htmlContent)).toBe('');
+  });
+
+  it('un apport explique et un BTC disparu : l’alerte part', async () => {
+    const h = harnais({ ...APPORT, balances: [solde('BTC', '0.7'), solde('ETH', '12'), solde('USDC', '32100')] });
+    await lance(h);
+
+    expect(evenements(h)).toEqual(['RECONCILIATION_DRIFT']);
+    expect(encadre(courrier(h).htmlContent)).toBe('');
   });
 });
 
