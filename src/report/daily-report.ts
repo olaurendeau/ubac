@@ -10,6 +10,9 @@ import type {
   Intent,
   IsoDate,
   Order,
+  Price,
+  Quantity,
+  Side,
   StrategyName,
   UsdcAmount,
   Verdict,
@@ -122,27 +125,91 @@ export interface TwrPoint {
   readonly benchmarks: Readonly<Record<string, Decimal>>;
 }
 
-/** Un mouvement enregistre, reduit a ce que la section « Derniers mouvements » lit. */
-export interface ReportMovement {
-  /** Le jour UTC du mouvement. */
+/** Un apport ou un retrait enregistre, reduit a ce que la section « Derniers mouvements » lit. */
+export interface ReportCashFlow {
+  /** Departage deux flux au meme instant. */
+  readonly id: string;
+  readonly occurredAt: Date;
+  /** Le jour UTC du flux. */
   readonly occurredOn: IsoDate;
   /** Signe : positif pour un apport, negatif pour un retrait. */
   readonly amount: UsdcAmount;
-  /** D'ou vient le mouvement, ou ou il va, quand quelqu'un l'a dit. */
+  /** D'ou vient le flux, ou ou il va, quand quelqu'un l'a dit. */
   readonly note: string | null;
 }
 
+/** Un ordre execute, en tout ou en partie, reduit a ce que la meme section lit. */
+export interface ReportExecutedOrder {
+  /** Departage deux ordres au meme instant. */
+  readonly clientOrderId: string;
+  readonly side: Side;
+  readonly asset: string;
+  readonly filledQty: Quantity;
+  /** Le prix moyen d'execution. */
+  readonly filledPrice: Price;
+  readonly fees: UsdcAmount | null;
+  /** Le denouement de l'ordre, ou sa creation tant qu'il est ouvert. */
+  readonly occurredAt: Date;
+  readonly occurredOn: IsoDate;
+  /** Encore au carnet : la ligne le dit, la quantite executee peut encore croitre. */
+  readonly open: boolean;
+}
+
+/** Une ligne du journal : un flux ou un ordre, chacun avec sa forme. */
+export type ReportMovement =
+  | { readonly kind: 'FLUX'; readonly flux: ReportCashFlow }
+  | { readonly kind: 'ORDRE'; readonly ordre: ReportExecutedOrder };
+
 /**
- * Les derniers mouvements tels que le run les a lus, **ou le motif de leur
- * absence** : une lecture en panne ne coupe pas le run, et le rapport le dit a
- * la place de la liste plutot que de la taire.
+ * Les deux sources du journal telles que le run les a lues, chacune du plus
+ * recent au plus ancien, **ou le motif de leur absence** : une lecture en panne
+ * ne coupe pas le run, et le rapport le dit a la place du tableau plutot que de
+ * le taire. Les deux viennent ensemble ou pas du tout : un journal sans ses
+ * ordres, ou sans ses flux, serait faux sans le dire.
  */
 export type ReportMovements =
-  | { readonly status: 'READ'; readonly movements: readonly ReportMovement[] }
+  | {
+      readonly status: 'READ';
+      readonly cashFlows: readonly ReportCashFlow[];
+      readonly orders: readonly ReportExecutedOrder[];
+    }
   | { readonly status: 'UNREADABLE'; readonly reason: string };
 
-/** Combien de mouvements la section montre. Le run en demande autant a la base : c'est le rapport qui decide de ce qu'il affiche. */
-export const DERNIERS_MOUVEMENTS = 5;
+/** Combien de mouvements la section montre. Le run en demande autant a chaque source : c'est le rapport qui decide de ce qu'il affiche. */
+export const DERNIERS_MOUVEMENTS = 8;
+
+const instantDe = (mouvement: ReportMovement): number =>
+  (mouvement.kind === 'FLUX' ? mouvement.flux.occurredAt : mouvement.ordre.occurredAt).getTime();
+
+const identifiantDe = (mouvement: ReportMovement): string =>
+  mouvement.kind === 'FLUX' ? mouvement.flux.id : mouvement.ordre.clientOrderId;
+
+/** Plus recent d'abord ; a instant egal, le flux avant l'ordre, puis l'identifiant decroissant comme dans la base. */
+function plusRecentDabord(a: ReportMovement, b: ReportMovement): number {
+  const instant = instantDe(b) - instantDe(a);
+  if (instant !== 0) return instant;
+  if (a.kind !== b.kind) return a.kind === 'FLUX' ? -1 : 1;
+  const ia = identifiantDe(a);
+  const ib = identifiantDe(b);
+  return ia === ib ? 0 : ia < ib ? 1 : -1;
+}
+
+/**
+ * Le journal : les deux sources fusionnees, triees par instant et coupees a
+ * `DERNIERS_MOUVEMENTS`. Huit de chaque suffisent : les huit plus recents des
+ * deux sources confondues sont forcement parmi les huit plus recents de chacune.
+ * Le resultat ne depend pas de l'ordre recu.
+ */
+export function journal(
+  cashFlows: readonly ReportCashFlow[],
+  orders: readonly ReportExecutedOrder[],
+): readonly ReportMovement[] {
+  const mouvements: ReportMovement[] = [
+    ...cashFlows.map((flux): ReportMovement => ({ kind: 'FLUX', flux })),
+    ...orders.map((ordre): ReportMovement => ({ kind: 'ORDRE', ordre })),
+  ];
+  return mouvements.sort(plusRecentDabord).slice(0, DERNIERS_MOUVEMENTS);
+}
 
 export interface DailyReportInput {
   readonly run: CompletedRun;
@@ -158,8 +225,8 @@ export interface DailyReportInput {
    */
   readonly series?: readonly TwrPoint[];
   /**
-   * Les derniers mouvements, du plus recent au plus ancien, rendus dans l'ordre
-   * recu. Obligatoire : la section est la tous les jours, et une entree absente
+   * Les derniers flux et ordres executes, que le rendu fusionne en un journal.
+   * Obligatoire : la section est la tous les jours, et une entree absente
    * ne dirait pas si la liste est vide ou si personne ne l'a lue.
    */
   readonly movements: ReportMovements;
@@ -841,15 +908,16 @@ function comparisonSection(input: DailyReportInput): string {
 
 /**
  * Un historique court, **pas le flux du jour** : les derniers mouvements
- * enregistres, apports et retraits, quelle que soit leur date. La section ne
- * disparait jamais — ni sans mouvement, ni quand la lecture a echoue — : une
- * section qui disparait ne dit pas pourquoi.
+ * enregistres — apports, retraits et ordres executes — en un seul tableau,
+ * quelle que soit leur date. La section ne disparait jamais — ni sans
+ * mouvement, ni quand une lecture a echoue — : une section qui disparait ne dit
+ * pas pourquoi.
  *
- * Le signe du montant distingue l'apport du retrait ; aucune colonne ne le
- * repete.
- *
- * « Enregistres » et non « detectes » : un mouvement arrive dans `cash_flows`
- * par une ecriture, et la section ne pretend pas savoir laquelle.
+ * Le montant est vu du cash : le signe distingue l'entree de la sortie, et la
+ * colonne Mouvement dit laquelle. Le montant d'un ordre est ce qui a change de
+ * mains, quantite executee au prix moyen, **hors frais** ; les frais sont dans
+ * le detail. La section « Ordres du jour » reste le detail du jour, rejets et
+ * ordres non executes compris.
  */
 function mouvementsSection(movements: ReportMovements): string {
   if (movements.status === 'UNREADABLE') {
@@ -858,19 +926,34 @@ function mouvementsSection(movements: ReportMovements): string {
       `<p style="${NOTE}">Les derniers mouvements n'ont pas pu etre lus : ${escape(movements.reason)}. Le reste du rapport n'en depend pas.</p>`,
     );
   }
-  if (movements.movements.length === 0) {
+  const lignes = journal(movements.cashFlows, movements.orders);
+  if (lignes.length === 0) {
     return section('Derniers mouvements', `<p style="${NOTE}">Aucun mouvement enregistre.</p>`);
   }
-  const rows = movements.movements.map((mouvement) => [
-    escape(mouvement.occurredOn),
-    usdc(mouvement.amount),
-    mouvement.note === null ? '—' : escape(mouvement.note),
-  ]);
+  const rows = lignes.map((mouvement) => (mouvement.kind === 'FLUX' ? ligneDeFlux(mouvement.flux) : ligneDOrdre(mouvement.ordre)));
   return section(
     'Derniers mouvements',
-    table(['Date', 'Montant', 'Note'], rows) +
-      `<p style="${NOTE}">Les ${String(DERNIERS_MOUVEMENTS)} plus recents au plus, du plus recent au plus ancien, quelle que soit leur date. Un montant negatif est un retrait.</p>`,
+    table(['Date', 'Mouvement', 'Montant', 'Detail'], rows) +
+      `<p style="${NOTE}">Les ${String(DERNIERS_MOUVEMENTS)} plus recents au plus, apports, retraits et ordres executes confondus, du plus recent au plus ancien, quelle que soit leur date. Montant vu du cash : un retrait ou un achat est negatif, un apport ou une vente positif. Un ordre compte pour sa quantite executee au prix moyen, hors frais ; en cours, il est encore au carnet et date de sa creation.</p>`,
   );
+}
+
+const ligneDeFlux = (flux: ReportCashFlow): readonly Cell[] => [
+  escape(flux.occurredOn),
+  flux.amount.isNegative() ? 'Retrait' : 'Apport',
+  usdc(flux.amount),
+  flux.note === null ? '—' : escape(flux.note),
+];
+
+function ligneDOrdre(ordre: ReportExecutedOrder): readonly Cell[] {
+  const echange = ordre.filledQty.times(ordre.filledPrice);
+  const sens = ordre.side === 'BUY' ? 'Achat' : 'Vente';
+  return [
+    escape(ordre.occurredOn),
+    `${sens} ${escape(ordre.asset)}${ordre.open ? ' (en cours)' : ''}`,
+    usdc(ordre.side === 'BUY' ? echange.negated() : echange),
+    `${ordre.filledQty.toFixed(8)} ${escape(ordre.asset)} a ${usdc(ordre.filledPrice)}, frais ${ordre.fees === null ? 'inconnus' : usdc(ordre.fees)}`,
+  ];
 }
 
 /** Ce que le noyau n'a pas pu rendre, et pourquoi. Une absence sans motif serait un oubli. */

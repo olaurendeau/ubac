@@ -475,7 +475,7 @@ est un run réel, et c'est là qu'on le voit.
 C'est la distinction qui décide si le mode vaut quelque chose. **Un `DRY_RUN`
 lit la vraie base et le vrai exchange** : clé, soldes, ordres ouverts, bougies,
 carnet, et en base `latestSnapshot`, `snapshotSeries`, `recentCashFlows`,
-`latestCashFlows` et `pendingOrders`. Couper ces lectures ferait tourner le run sur une journée vide
+`latestCashFlows`, `latestExecutedOrders` et `pendingOrders`. Couper ces lectures ferait tourner le run sur une journée vide
 — pas de photo de la veille, pas de flux, pas de réconciliation — qui ne
 rejouerait rien et ne prouverait rien.
 

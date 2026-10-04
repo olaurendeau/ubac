@@ -53,7 +53,7 @@ Les six points du §9, dans l'ordre où ils apparaissent :
 | Allocation | poids constatés contre cibles, et l'écart | `weights`, `params.targets` |
 | Comparaison | le **graphe du TWR cumulé** (section 10), puis TWR, max drawdown et Sharpe 90 j, portefeuille contre hold BTC et hold 50/50 ; ladder et DCA y figurent **sans courbe**, avec leur raison (section 6) | `snapshots.benchmarks`, `series` |
 | Métriques indisponibles | ce que le noyau n'a pas pu rendre, et pourquoi | `benchmarkGaps` |
-| **Derniers mouvements** | les cinq derniers mouvements enregistrés, apports et retraits, du plus récent au plus ancien, avec date, montant signé et note ; tous les jours, liste vide ou lecture en échec compris (section 11) | `movements`, lus par `latestCashFlows()` |
+| **Derniers mouvements** | les huit derniers mouvements, apports, retraits et ordres exécutés, en un seul tableau du plus récent au plus ancien : date, mouvement, montant signé vu du cash et détail ; tous les jours, liste vide ou lecture en échec compris (section 11) | `movements`, lus par `latestCashFlows()` et `latestExecutedOrders()` |
 | **Lexique** | une définition d'une phrase par terme de jargon que le corps imprime (section 9) | `src/report/lexique.ts` |
 
 HTML en ligne, une colonne, largeur maximale de 520 px : ni feuille de style, ni
@@ -568,63 +568,88 @@ sera une décision, pas un ajustement technique.
 ## 11. Les derniers mouvements : un historique court, pas le flux du jour
 
 Demande de l'opérateur : voir dans le courrier quotidien les derniers mouvements
-de trésorerie. La section **« Derniers mouvements »** liste les cinq dernières
-lignes de `cash_flows`, **apports et retraits confondus**, du plus récent au plus
-ancien, avec leur jour UTC, leur montant signé en USDC et leur note — la note dit
-d'où vient le mouvement ou où il va, un tiret la remplace quand personne ne l'a
-dit.
+de trésorerie et d'ordres, **en un seul tableau de huit lignes au plus**. La
+section **« Derniers mouvements »** fusionne les dernières lignes de
+`cash_flows` — **apports et retraits** — et les derniers **ordres exécutés**,
+du plus récent au plus ancien, quelle que soit leur date (plan
+`ubac-journal-mouvements`, critères J1 à J9).
 
-Elle remplace « Derniers apports » (#73), qui listait les trois derniers apports
-seuls : l'opérateur a préféré voir aussi les retraits (plan
-`ubac-derniers-mouvements`, D1 = 2). **Le signe du montant distingue l'apport du
-retrait** (`1000.00 USDC`, `-300.00 USDC`) ; aucune colonne ne le répète, et la
-note sous le tableau le dit.
+Elle succède à la liste des seuls flux (#76), qui succédait elle-même aux trois
+derniers apports (#73).
+
+| Colonne | Flux | Ordre exécuté |
+|---|---|---|
+| Date | jour UTC d'`occurred_at` | jour UTC de `settled_at`, ou de `created_at` tant que l'ordre est ouvert (D4) |
+| Mouvement | `Apport` ou `Retrait` | `Achat BTC`, `Vente ETH`… ; suivi de `(en cours)` si l'ordre est encore au carnet (`PARTIAL`) |
+| Montant | USDC signé, tel qu'enregistré | `filled_qty × filled_price`, **hors frais** (D5), négatif pour un achat, positif pour une vente (D2) |
+| Detail | la note, un tiret si personne ne l'a dite | `<qty> <actif> a <prix> USDC, frais <frais> USDC` ; `frais inconnus` tant qu'ils ne sont pas lus |
+
+**Le montant est vu du cash** : un retrait ou un achat fait sortir de l'USDC et
+est négatif, un apport ou une vente en fait entrer et est positif. Un achat de
+0,01 BTC à 41 230 USDC s'affiche `-412.30 USDC`.
+
+**Seuls les ordres exécutés y figurent** (D1) : `filled_qty > 0`, pour la partie
+réellement exécutée. Un ordre annulé après une exécution partielle compte pour
+sa partie exécutée ; un ordre rejeté, ou annulé sans rien d'exécuté, n'y est
+pas. La section « Ordres du jour » reste inchangée (D3) : elle est le détail du
+jour, rejets et ordres non exécutés compris.
 
 | Cas | Ce que la section affiche |
 |---|---|
-| un à cinq mouvements ou plus | un tableau `Date / Montant / Note`, cinq lignes au plus, puis une note qui rappelle l'ordre et qu'un montant négatif est un retrait |
+| au moins un mouvement | un tableau `Date / Mouvement / Montant / Detail`, huit lignes au plus, puis une note qui rappelle l'ordre, le signe vu du cash, le montant hors frais et le sens de `(en cours)` |
 | aucun mouvement | la ligne « Aucun mouvement enregistre. » |
-| lecture en échec | « Les derniers mouvements n'ont pas pu etre lus : <motif>. Le reste du rapport n'en depend pas. » |
+| une des deux lectures en échec | « Les derniers mouvements n'ont pas pu etre lus : <motif>. Le reste du rapport n'en depend pas. » |
 
 **Toujours visible, quelle que soit la date des mouvements.** Un apport d'il y a
-six mois y figure encore tant que cinq plus récents ne l'ont pas remplacé. Ce
-n'est donc pas la liste des flux tombés depuis la photo précédente, qu'un autre
-lot peut rendre à part : là, un flux n'apparaît qu'un jour. Et la section ne
-disparaît jamais, ni sans mouvement ni en panne : une section qui disparaît ne
-dit pas laquelle des trois situations est vraie.
+six mois y figure encore tant que huit plus récents ne l'ont pas remplacé. Ce
+n'est donc pas la liste des flux tombés depuis la photo précédente. Et la
+section ne disparaît jamais, ni sans mouvement ni en panne : une section qui
+disparaît ne dit pas laquelle des trois situations est vraie.
 
-**« Enregistrés », pas « détectés ».** Un mouvement arrive dans `cash_flows` par
-une écriture — à la main aujourd'hui, par une détection automatique demain — et
-la section ne prétend pas savoir laquelle. Elle continuera de fonctionner sans
-changement quand une détection ajoutera des lignes.
+**« Enregistrés », pas « détectés ».** Un flux arrive dans `cash_flows` par une
+écriture — de l'opérateur, du convoyeur, d'une détection demain — et la section
+ne prétend pas savoir laquelle.
 
-### L'ordre et la borne sont dans la requête
+### Chaque source est bornée dans sa requête, la fusion est dans le rendu
 
 `UbacDatabase.latestCashFlows(limit)` trie `occurred_at` décroissant, départagé
-par l'identifiant, et borne à `limit` **en SQL** : la table n'est jamais lue en
-entier pour en garder cinq. Aucun filtre de signe, aucun montant ne passe par un
-flottant. `test/adapters/db.test.ts` le sonde contre Postgres (`make test-db`),
-avec un retrait comme flux le plus récent et un sixième flux, le plus ancien, que
-la borne laisse tomber ; inverser le tri fait rougir la sonde. Le nombre, 5, est
-`DERNIERS_MOUVEMENTS` dans le rendu : c'est le rapport qui décide de ce qu'il
-affiche, le run en demande autant.
+par l'identifiant. `UbacDatabase.latestExecutedOrders(limit)` lit les ordres où
+`filled_qty > 0` **et** `filled_price` non nul — une ligne ancienne sans prix
+moyen n'a pas de montant —, triés `coalesce(settled_at, created_at)` décroissant
+puis `client_order_id` décroissant. Les deux bornent à `limit` **en SQL**, et
+aucun montant ne passe par un flottant. `test/adapters/db.test.ts` les sonde
+contre Postgres (`make test-db`) : ordres `FILLED`, `PARTIAL`, `CANCELLED`
+partiel, `CANCELLED` vide, `REJECTED`, ouvert vide et exécuté sans prix — seuls
+les trois premiers reviennent, dans l'ordre de D4 —, puis la borne.
+
+Le run demande `DERNIERS_MOUVEMENTS` (8) lignes **à chaque source** : les huit
+plus récents des deux sources confondues sont forcément parmi les huit plus
+récents de chacune. La fusion, le tri par instant et la coupe à huit sont la
+fonction pure `journal()` du rendu ; à instant égal, le flux passe avant
+l'ordre, puis l'identifiant décroissant, comme dans la base. Le résultat ne
+dépend pas de l'ordre reçu.
 
 ### Lue à l'étape 4bis, mais sa panne ne coupe pas le run
 
 La lecture a lieu au même endroit que `snapshotSeries()` (section 10), et pour
 le même motif : avant toute écriture. Elle en diffère sur un point, voulu : **une
-panne de `latestCashFlows()` ne fait pas échouer le run.** Elle est rattrapée par
-`lireMouvements()` dans `src/jobs/daily.ts`, journalisée
+panne de `latestCashFlows()` ou de `latestExecutedOrders()` ne fait pas échouer
+le run.** Les deux lectures partent ensemble dans `lireMouvements()`
+(`src/jobs/daily.ts`) ; la panne de l'une est rattrapée, journalisée
 (`derniers mouvements non lus : <motif>`), et revient en valeur —
-`{ status: 'UNREADABLE', reason }` — jusqu'au rendu, qui la dit à la place de la
-liste. Le reste du run, décisions, photo, courrier et ping, n'en dépend pas. Un
-historique court ne vaut pas qu'on abandonne une journée pour lui ; la carence
-du déclencheur A, elle, lit `recentCashFlows()`, qui reste fatale en panne.
+`{ status: 'UNREADABLE', reason }` — jusqu'au rendu, qui la dit à la place du
+tableau. **Pas de tableau à moitié** : un journal sans ses ordres, ou sans ses
+flux, serait faux sans le dire. Le reste du run, décisions, photo, courrier et
+ping, n'en dépend pas ; la carence du déclencheur A, elle, lit
+`recentCashFlows()`, qui reste fatale en panne.
 
 Le rendu reste pur : il reçoit `movements` dans `DailyReportInput`, champ
 **obligatoire** — une entrée absente ne dirait pas si la liste est vide ou si
 personne ne l'a lue. `test/report/contrat-run.test-d.ts` (V6 ter) ferme la
-compatibilité entre `DailyRunResult.latestCashFlows` et ce champ.
+compatibilité entre `DailyRunResult.latestMovements` et ce champ, et entre les
+deux enregistrements de la base et leurs formes du rendu.
 
-Le terme « mouvement » entre au lexique (section 9) comme entrée fixe, à la place
-d'« apport » : la section est là tous les jours, le mot aussi.
+Le terme « mouvement » est une entrée fixe du lexique (section 9) : un apport ou
+un retrait d'USDC, ou un ordre exécuté en tout ou en partie, montant vu du cash.
+La glose du refus `REBALANCE_TOO_LARGE` parle désormais d'« un seul
+rééquilibrage » et non d'« un seul mouvement », pour ne pas croiser ce sens.

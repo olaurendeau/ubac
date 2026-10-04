@@ -14,6 +14,7 @@ import { openCoinbaseExecution } from '../../src/adapters/coinbase.js';
 import type {
   CashFlowRecord,
   DecisionToRecord,
+  ExecutedOrderRecord,
   PendingOrderRecord,
   RecordDecisionOutcome,
   SnapshotRecord,
@@ -107,12 +108,29 @@ function flux(occurredOn: string, amount: string, note: string | null = null): C
   };
 }
 
+/** Un ordre execute tel que `latestExecutedOrders` le rend, denoue ce jour-la. */
+function execute(occurredOn: string, side: 'BUY' | 'SELL', asset: string, qty: string, prix: string, fees: string): ExecutedOrderRecord {
+  return {
+    clientOrderId: `ubac-${occurredOn}`,
+    side,
+    asset,
+    filledQty: new Decimal(qty) as Quantity,
+    filledPrice: new Decimal(prix) as Price,
+    fees: new Decimal(fees) as UsdcAmount,
+    occurredAt: new Date(`${occurredOn}T07:30:00.000Z`),
+    occurredOn,
+    open: false,
+  };
+}
+
 interface Scenario {
   readonly balances?: readonly AssetBalance[];
   readonly snapshot?: SnapshotRecord | undefined;
   readonly cashFlows?: readonly CashFlowRecord[];
   /** Ce que rend `latestCashFlows`, deja ordonne comme la base le ferait. */
   readonly mouvements?: readonly CashFlowRecord[];
+  /** Ce que rend `latestExecutedOrders`, deja ordonne comme la base le ferait. */
+  readonly ordresExecutes?: readonly ExecutedOrderRecord[];
   readonly closes?: Readonly<Record<'BTC' | 'ETH', string>>;
   /** Remplace la serie rendue : sert a produire une serie mal bornee. */
   readonly serie?: (asset: string, window: DailyWindow) => readonly DailyCandle[];
@@ -129,7 +147,13 @@ interface Scenario {
    * la derniere ecriture. `recordPlacement` leve a la **deuxieme** issue
    * seulement : la premiere jambe est placee et ecrite, la seconde placee et non ecrite.
    */
-  readonly panne?: 'keyPermissions' | 'dailyCandles' | 'latestCashFlows' | 'recordSnapshot' | 'recordPlacement';
+  readonly panne?:
+    | 'keyPermissions'
+    | 'dailyCandles'
+    | 'latestCashFlows'
+    | 'latestExecutedOrders'
+    | 'recordSnapshot'
+    | 'recordPlacement';
   /** La cle de phase 1, qui ne peut pas trader. Par defaut : celle de phase 3. */
   readonly sansTrade?: true;
   /** Les `client_order_id` que l'exchange rejette, comme un post-only qui croiserait. */
@@ -416,6 +440,11 @@ function harnais(scenario: Scenario = {}): Harnais {
           if (scenario.panne === 'latestCashFlows') return Promise.reject(new Error(PANNE));
           return Promise.resolve((scenario.mouvements ?? []).slice(0, limit));
         },
+        latestExecutedOrders: (limit) => {
+          appels.push(`latestExecutedOrders:${String(limit)}`);
+          if (scenario.panne === 'latestExecutedOrders') return Promise.reject(new Error(PANNE));
+          return Promise.resolve((scenario.ordresExecutes ?? []).slice(0, limit));
+        },
         recordDecision: (input) => {
           appels.push('recordDecision');
           const cle = `${input.intent.runDate}|${input.intent.strategy}|${String(input.isShadow)}`;
@@ -598,8 +627,9 @@ describe('§8 etapes 1 a 5 — l’enchainement du run', () => {
       // a deja tout ecrit.
       'snapshotSeries',
       // Les derniers mouvements du rapport, au meme endroit et pour le meme motif ;
-      // cinq demandes, le nombre que la section affiche.
-      'latestCashFlows:5',
+      // huit de chaque source, le nombre que la section affiche.
+      'latestCashFlows:8',
+      'latestExecutedOrders:8',
       'recordDecision',
       'recordDecision',
       'recordDecision',
@@ -1328,31 +1358,44 @@ describe('§9 — le rapport quotidien part par Brevo', () => {
    * `test/adapters/db.test.ts` l'ordre et la borne contre Postgres ; ce qui est
    * etabli ici est le branchement, et la panne qui ne coupe pas le run.
    */
-  it('porte les derniers mouvements lus jusqu’au courrier, retrait signe et note compris', async () => {
+  it('porte les derniers flux et ordres lus jusqu’au courrier, en un tableau', async () => {
     const retrait = flux('2026-09-27', '-300', 'retrait vers le compte courant');
     const apport = flux('2026-09-26', '1000', 'virement initial');
-    const h = harnais({ balances: DANS_LA_BANDE, mouvements: [retrait, apport] });
+    const achat = execute('2026-09-28', 'BUY', 'BTC', '0.01', '41230', '0.25');
+    const h = harnais({ balances: DANS_LA_BANDE, mouvements: [retrait, apport], ordresExecutes: [achat] });
     const result = complete(await lance(h));
 
-    expect(result.latestCashFlows).toEqual({ status: 'READ', movements: [retrait, apport] });
+    expect(result.latestMovements).toEqual({ status: 'READ', cashFlows: [retrait, apport], orders: [achat] });
     const html = courrier(h).htmlContent;
     expect(html).toContain('Derniers mouvements');
-    expect(html).toMatch(/>2026-09-27<\/td><td[^>]*>-300\.00 USDC<\/td><td[^>]*>retrait vers le compte courant</);
-    expect(html).toMatch(/>2026-09-26<\/td><td[^>]*>1000\.00 USDC<\/td><td[^>]*>virement initial</);
+    expect(html).toMatch(/>2026-09-28<\/td><td[^>]*>Achat BTC<\/td><td[^>]*>-412\.30 USDC<\/td><td[^>]*>0\.01000000 BTC a 41230\.00 USDC, frais 0\.25 USDC</);
+    expect(html).toMatch(/>2026-09-27<\/td><td[^>]*>Retrait<\/td><td[^>]*>-300\.00 USDC<\/td><td[^>]*>retrait vers le compte courant</);
+    expect(html).toMatch(/>2026-09-26<\/td><td[^>]*>Apport<\/td><td[^>]*>1000\.00 USDC<\/td><td[^>]*>virement initial</);
   });
 
-  it('une lecture des mouvements en panne ne coupe pas le run : le rapport part et le dit', async () => {
-    const h = harnais({ balances: DANS_LA_BANDE, panne: 'latestCashFlows' });
-    const result = complete(await lance(h));
+  /* Une seule source en panne suffit : un journal sans ses ordres, ou sans ses flux, serait faux sans le dire. */
+  for (const panne of ['latestCashFlows', 'latestExecutedOrders'] as const) {
+    it(`${panne} en panne ne coupe pas le run : le rapport part et le dit, sans tableau a moitie`, async () => {
+      const h = harnais({
+        balances: DANS_LA_BANDE,
+        panne,
+        mouvements: [flux('2026-09-26', '1000', 'virement initial')],
+        ordresExecutes: [execute('2026-09-28', 'BUY', 'BTC', '0.01', '41230', '0.25')],
+      });
+      const result = complete(await lance(h));
 
-    expect(result.latestCashFlows).toEqual({ status: 'UNREADABLE', reason: PANNE });
-    // Tout ce qui suit la lecture a eu lieu : decisions, photo, courrier, ping.
-    expect(h.appels).toContain('recordSnapshot');
-    expect(result.report.mail.status).toBe('SENT');
-    expect(reported(result)).toBe(true);
-    expect(courrier(h).htmlContent).toContain(`Les derniers mouvements n'ont pas pu etre lus : ${PANNE}.`);
-    expect(h.lignes).toContain(`derniers mouvements non lus : ${PANNE}`);
-  });
+      expect(result.latestMovements).toEqual({ status: 'UNREADABLE', reason: PANNE });
+      // Tout ce qui suit la lecture a eu lieu : decisions, photo, courrier, ping.
+      expect(h.appels).toContain('recordSnapshot');
+      expect(result.report.mail.status).toBe('SENT');
+      expect(reported(result)).toBe(true);
+      const html = courrier(h).htmlContent;
+      expect(html).toContain(`Les derniers mouvements n'ont pas pu etre lus : ${PANNE}.`);
+      expect(html).not.toContain('virement initial');
+      expect(html).not.toContain('Achat BTC');
+      expect(h.lignes).toContain(`derniers mouvements non lus : ${PANNE}`);
+    });
+  }
 
   it('part apres les alertes, et apres la derniere ecriture', async () => {
     const h = harnais({ balances: HORS_BANDE, snapshot: veille('200000') });
@@ -2817,7 +2860,7 @@ describe('DRY_RUN — des ports inertes a la place des vrais (E14, E15, E16)', (
     const essai = harnais({ ...JOURNEE, snapshot: cache({ BTC: qty('0.9'), ETH: qty('12'), USDC: qty('30000') }, '100000') });
     const result = complete(await enDryRun(essai));
 
-    for (const lecture of ['pendingOrders', 'latestSnapshot', 'snapshotSeries', 'recentCashFlows', 'latestCashFlows:5']) {
+    for (const lecture of ['pendingOrders', 'latestSnapshot', 'snapshotSeries', 'recentCashFlows', 'latestCashFlows:8', 'latestExecutedOrders:8']) {
       expect(essai.appels, lecture).toContain(lecture);
     }
     expect(result.previousSnapshot?.runDate).toBe(PRICED_ON);

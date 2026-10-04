@@ -1,10 +1,11 @@
-import type { CashFlowRecord, SnapshotPoint, SnapshotRecord } from '../../src/adapters/db.js';
+import type { CashFlowRecord, ExecutedOrderRecord, SnapshotPoint, SnapshotRecord } from '../../src/adapters/db.js';
 import type { DailyRunResult } from '../../src/jobs/daily.js';
 import type {
   CompletedRun,
   DailyReportInput,
   PreviousSnapshot,
-  ReportMovement,
+  ReportCashFlow,
+  ReportExecutedOrder,
   ReportMovements,
   ReportDrawdown,
   ReportExecution,
@@ -127,16 +128,19 @@ void [unPoint, serieDuRun];
 
 /**
  * V6 ter — les derniers mouvements, meme sonde que V6 bis : le rendu les lit par
- * `DailyReportInput.movements`. Un flux tel que la base le rend est un mouvement du
- * rapport, et les deux branches du run — lu, illisible — en sont une chacune.
+ * `DailyReportInput.movements`. Un flux et un ordre execute tels que la base les
+ * rend sont les deux sources du journal, et les deux branches du run — lu,
+ * illisible — en sont une chacune.
  */
 declare const flux: CashFlowRecord;
-declare const lus: Extract<Completed['latestCashFlows'], { status: 'READ' }>;
-declare const illisibles: Extract<Completed['latestCashFlows'], { status: 'UNREADABLE' }>;
-const unMouvement: ReportMovement = flux;
-const mouvementsDuRun: DailyReportInput['movements'] = acheve.latestCashFlows;
+declare const ordre: ExecutedOrderRecord;
+declare const lus: Extract<Completed['latestMovements'], { status: 'READ' }>;
+declare const illisibles: Extract<Completed['latestMovements'], { status: 'UNREADABLE' }>;
+const unFlux: ReportCashFlow = flux;
+const unOrdre: ReportExecutedOrder = ordre;
+const mouvementsDuRun: DailyReportInput['movements'] = acheve.latestMovements;
 const deuxBranches: readonly [ReportMovements, ReportMovements] = [lus, illisibles];
-void [unMouvement, mouvementsDuRun, deuxBranches];
+void [unFlux, unOrdre, mouvementsDuRun, deuxBranches];
 
 /**
  * V8 — ce que le run porte et que le rendu ne lit pas. Un champ **ajoute** a
@@ -175,7 +179,7 @@ type NonLus = Exclude<keyof Completed, keyof CompletedRun>;
  *
  * `snapshotSeries` rejoint la liste pour exactement le meme motif que
  * `previousSnapshot` : le graphe la lit, mais par `DailyReportInput.series`, et
- * V6 bis le tient. `latestCashFlows` la rejoint pour le meme motif encore : la
+ * V6 bis le tient. `latestMovements` la rejoint pour le meme motif encore : la
  * section « Derniers mouvements » le lit par `DailyReportInput.movements`, et V6 ter
  * le tient.
  */
@@ -190,7 +194,7 @@ type NonLusAttendus =
   | 'report'
   | 'previousSnapshot'
   | 'snapshotSeries'
-  | 'latestCashFlows'
+  | 'latestMovements'
   | 'placements';
 type MemeEnsemble<A extends B, B> = A;
 declare const nonLus: [MemeEnsemble<NonLus, NonLusAttendus>, MemeEnsemble<NonLusAttendus, NonLus>];

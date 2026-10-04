@@ -161,7 +161,7 @@ const FIXES: readonly EntreeLexique[] = [
   ),
   entree(
     'mouvement',
-    "Un apport ou un retrait d'USDC enregistre dans les flux de tresorerie ; un retrait porte un montant negatif. Le TWR neutralise l'un comme l'autre.",
+    "Une ligne des derniers mouvements : un apport ou un retrait d'USDC, ou un ordre execute en tout ou en partie. Le montant est vu du cash : un retrait ou un achat est negatif. Le TWR neutralise les apports et les retraits ; un ordre ne fait qu'echanger une ligne contre une autre.",
   ),
 ];
 
@@ -185,7 +185,7 @@ const REJETS: Readonly<Record<RejectionCode, string>> = {
   MAX_EXPOSURE: 'La decision porterait une ligne au-dela de son exposition maximale.',
   MIN_CASH: 'La decision laisserait moins de cash que le plancher exige.',
   REBALANCE_TOO_LARGE:
-    "Le reequilibrage deplacerait une part du portefeuille superieure au plafond d'un seul mouvement.",
+    "Le reequilibrage deplacerait une part du portefeuille superieure au plafond fixe pour un seul reequilibrage.",
   LEG_TOO_SMALL: 'Une jambe porte un montant trop petit pour valoir ses frais.',
   COOLDOWN: "Un reequilibrage trop recent interdit d'en declencher un autre tout de suite.",
   PRICE_SANITY: "Le prix limite d'une jambe s'ecarte trop du cours constate pour etre credible.",
