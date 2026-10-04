@@ -681,12 +681,12 @@ describe.skipIf(URL_DE_TEST === undefined)('adapter de base, contre un Postgres 
     it('pendingOrders ne rend que les ordres ouverts, PENDING et PARTIAL', async () => {
       await brut.query(`
         INSERT INTO orders
-          (client_order_id, side, asset, requested_qty, limit_price, status, created_at) VALUES
-          ('ubac-2', 'SELL', 'ETH', '2.50000000', '3210.12345678', 'PARTIAL', '2026-09-10T07:01:00Z'),
-          ('ubac-1', 'BUY', 'BTC', '0.01234567', '64321.09876543', 'PENDING', '2026-09-10T07:00:00Z'),
-          ('ubac-3', 'BUY', 'BTC', '0.5', '60000', 'FILLED', '2026-09-09T07:00:00Z'),
-          ('ubac-4', 'BUY', 'BTC', '0.5', '60000', 'CANCELLED', '2026-09-09T07:00:00Z'),
-          ('ubac-5', 'BUY', 'BTC', '0.5', '60000', 'REJECTED', '2026-09-09T07:00:00Z')`);
+          (client_order_id, side, asset, requested_qty, limit_price, status, filled_qty, filled_price, fees, created_at) VALUES
+          ('ubac-2', 'SELL', 'ETH', '2.50000000', '3210.12345678', 'PARTIAL', '1.25', '3210.5', '4.01234567', '2026-09-10T07:01:00Z'),
+          ('ubac-1', 'BUY', 'BTC', '0.01234567', '64321.09876543', 'PENDING', NULL, NULL, NULL, '2026-09-10T07:00:00Z'),
+          ('ubac-3', 'BUY', 'BTC', '0.5', '60000', 'FILLED', NULL, NULL, NULL, '2026-09-09T07:00:00Z'),
+          ('ubac-4', 'BUY', 'BTC', '0.5', '60000', 'CANCELLED', NULL, NULL, NULL, '2026-09-09T07:00:00Z'),
+          ('ubac-5', 'BUY', 'BTC', '0.5', '60000', 'REJECTED', NULL, NULL, NULL, '2026-09-09T07:00:00Z')`);
 
       const attente = await db.pendingOrders();
 
@@ -696,6 +696,13 @@ describe.skipIf(URL_DE_TEST === undefined)('adapter de base, contre un Postgres 
       expect(attente[0]?.side).toBe('BUY');
       expect(attente[0]?.decisionId).toBeNull();
       expect(attente[0]?.runDate).toBeNull();
+      // Rien d'ecrit vaut zero execute ; un partiel rend ce que sa transition a constate.
+      expect(attente[0]?.filledQty.toFixed()).toBe('0');
+      expect(attente[0]?.filledPrice).toBeNull();
+      expect(attente[0]?.fees.toFixed()).toBe('0');
+      expect(attente[1]?.filledQty.toFixed()).toBe('1.25');
+      expect(attente[1]?.filledPrice?.toFixed()).toBe('3210.5');
+      expect(attente[1]?.fees.toFixed()).toBe('4.01234567');
     });
 
     /* D5 : le jour qui decide de l'annulation est celui de la decision, lu par jointure. */

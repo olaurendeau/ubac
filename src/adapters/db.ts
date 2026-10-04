@@ -1,4 +1,4 @@
-import type { Decimal } from 'decimal.js';
+import { Decimal } from 'decimal.js';
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lte, or, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import pg from 'pg';
@@ -223,6 +223,15 @@ export interface PendingOrderRecord {
   readonly requestedQty: Quantity;
   readonly limitPrice: Price;
   readonly createdAt: Date;
+  /**
+   * Ce que la derniere transition ecrite a deja constate : quantite executee,
+   * prix moyen et frais cumules, a zero tant que rien n'est ecrit. La
+   * reconciliation en deduit la part executee **depuis** la photo precedente,
+   * qui ne la contient pas (`docs/reconciliation.md` §2 bis).
+   */
+  readonly filledQty: Quantity;
+  readonly filledPrice: Price | null;
+  readonly fees: UsdcAmount;
 }
 
 /**
@@ -651,6 +660,9 @@ export function openDatabase(secrets: Pick<Secrets, 'databaseUrl'>): UbacDatabas
         requestedQty: ligne.requestedQty as Quantity,
         limitPrice: ligne.limitPrice as Price,
         createdAt: ligne.createdAt,
+        filledQty: (ligne.filledQty ?? new Decimal(0)) as Quantity,
+        filledPrice: ligne.filledPrice as Price | null,
+        fees: (ligne.fees ?? new Decimal(0)) as UsdcAmount,
       }));
     },
 

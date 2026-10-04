@@ -2,7 +2,7 @@ import { Decimal } from 'decimal.js';
 import { describe, expect, it } from 'vitest';
 
 import { RECONCILIATION_DRIFT_PCT } from '../../src/core/risk.js';
-import type { Price } from '../../src/core/types.js';
+import type { Price, UsdcAmount } from '../../src/core/types.js';
 import { reconcile, RESYNC_MARKER } from '../../src/jobs/reconcile.js';
 import type { ReconcileResult, Resynchronization } from '../../src/jobs/reconcile.js';
 import { harnais, MAINTENANT, ordreEnAttente, ordreOuvert, photo, qty, solde, statutConnu } from './doubles.js';
@@ -503,5 +503,83 @@ describe('D5 — les ordres ouverts d’un run anterieur sont rendus a annuler, 
       ],
     });
     expect(result.cancellations.map((c) => c.clientOrderId)).toEqual(['a', 'c']);
+  });
+});
+
+describe('§2 bis — nos propres executions ne sont pas un mouvement hors du systeme', () => {
+  /*
+   * La photo d'un jour est calculee avant que l'etape 6 ne place quoi que ce
+   * soit : elle ne contient jamais les executions des ordres qu'elle precede.
+   * Le lendemain, la reconciliation compare donc les soldes reels a la photo
+   * **plus** ce que nos ordres ont execute depuis.
+   */
+  const prix = (valeur: string): Price => new Decimal(valeur) as Price;
+  const usdc = (valeur: string): UsdcAmount => new Decimal(valeur) as UsdcAmount;
+
+  it('le cas reel du 2026-10-02 : deux achats executes ne resynchronisent plus', async () => {
+    const achatBtc = ordreEnAttente({ clientOrderId: 'btc', exchangeId: 'x-btc', asset: 'BTC', requestedQty: qty('0.00466624') });
+    const achatEth = ordreEnAttente({ clientOrderId: 'eth', exchangeId: 'x-eth', asset: 'ETH', requestedQty: qty('0.10004603') });
+    const scenario = {
+      balances: [solde('BTC', '0.03310391'), solde('ETH', '0.77294351'), solde('USDC', '2073.541091011459')],
+      snapshot: photo({ BTC: qty('0.02843767'), ETH: qty('0.67289748'), USDC: qty('2732.9359764608') }),
+      pending: [achatBtc, achatEth],
+    };
+    const statuts = {
+      'x-btc': statutConnu({ exchangeId: 'x-btc', clientOrderId: 'btc', filled: qty('0.00466624'), averageFilledPrice: prix('84500'), fees: usdc('1.18') }),
+      'x-eth': statutConnu({ exchangeId: 'x-eth', clientOrderId: 'eth', filled: qty('0.10004603'), averageFilledPrice: prix('2630'), fees: usdc('0.79') }),
+    };
+
+    expect((await lance({ ...scenario, statuts })).resync.status).toBe('NOT_NEEDED');
+
+    // Le meme jour sans issue lisible : l'ecart reste visible, il ne se devine pas.
+    const aveugle = resynchronise(await lance(scenario));
+    expect(aveugle.divergences.map((d) => d.asset)).toEqual(['BTC', 'ETH', 'USDC']);
+  });
+
+  it('un partiel sur deux runs ne compte que la part executee depuis la photo', async () => {
+    // La photo d'hier portait deja 0.2 BTC executes a 60 000, frais 12 compris.
+    const partiel = ordreEnAttente({ filledQty: qty('0.2'), filledPrice: prix('60000'), fees: usdc('12') });
+    const scenario = {
+      balances: [solde('BTC', '1.5'), solde('USDC', '1982')],
+      snapshot: photo({ BTC: qty('1.2'), USDC: qty('20000') }),
+      statuts: { 'exch-1': statutConnu({ filled: qty('0.5'), averageFilledPrice: prix('60000'), fees: usdc('30') }) },
+    };
+
+    // 1.2 + 0.3 BTC ; 20 000 - 0.3 x 60 000 - 18 de frais nouveaux = 1 982 USDC.
+    expect((await lance({ ...scenario, pending: [partiel] })).resync.status).toBe('NOT_NEEDED');
+
+    // Compter les 0.5 entiers attendrait 1.7 BTC : 11,8 % d'ecart.
+    const recompte = ordreEnAttente();
+    expect(resynchronise(await lance({ ...scenario, pending: [recompte] })).divergences.map((d) => d.asset)).toEqual([
+      'BTC',
+      'USDC',
+    ]);
+  });
+
+  it('une vente retire l’actif et credite l’USDC, frais deduits', async () => {
+    const vente = ordreEnAttente({ side: 'SELL', asset: 'ETH' });
+    const result = await lance({
+      balances: [solde('ETH', '15'), solde('USDC', '24985')],
+      snapshot: photo({ ETH: qty('20'), USDC: qty('10000') }),
+      pending: [vente],
+      statuts: { 'exch-1': statutConnu({ filled: qty('5'), averageFilledPrice: prix('3000'), fees: usdc('15') }) },
+    });
+    expect(result.resync.status).toBe('NOT_NEEDED');
+  });
+
+  it('un vrai mouvement exterieur, en plus de nos executions, resynchronise encore', async () => {
+    const achat = ordreEnAttente();
+    const resync = resynchronise(
+      await lance({
+        // Nos 0.5 BTC a 60 000 expliquent 1.5 BTC et 69 970 USDC  ; 5 000 USDC sont partis ailleurs.
+        balances: [solde('BTC', '1.5'), solde('USDC', '64970')],
+        snapshot: photo({ BTC: qty('1'), USDC: qty('100000') }),
+        pending: [achat],
+        statuts: { 'exch-1': statutConnu({ filled: qty('0.5'), averageFilledPrice: prix('60000'), fees: usdc('30') }) },
+      }),
+    );
+    expect(resync.divergences.map((d) => d.asset)).toEqual(['USDC']);
+    expect(resync.divergences[0]?.internal.toString()).toBe('69970');
+    expect(resync.reason).toContain('photo precedente et executions de nos ordres');
   });
 });
