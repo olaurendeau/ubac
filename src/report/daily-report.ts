@@ -473,8 +473,9 @@ const ESCAPES: Readonly<Record<string, string>> = {
  */
 const escape = (text: string): string => text.replace(/[&<>"']/g, (char) => ESCAPES[char] ?? char);
 
-const metricText = (metric: Metric, show: (value: Decimal) => string): string =>
-  metric.status === 'VALUE' ? show(metric.value) : 'indisponible';
+/** `absent` n'a qu'un autre usage que le corps : l'objet, ou « indisponible » ne tiendrait pas sur un ecran verrouille. */
+const metricText = (metric: Metric, show: (value: Decimal) => string, absent = 'indisponible'): string =>
+  metric.status === 'VALUE' ? show(metric.value) : absent;
 
 // --- Le corps HTML ----------------------------------------------------------
 
@@ -1039,9 +1040,14 @@ function resyncEncadre(run: CompletedRun): string {
 const production = (run: CompletedRun): ReportOutcome | undefined =>
   run.outcomes.find((outcome) => !outcome.isShadow);
 
-/** L'objet tient sur un ecran verrouille. Une suspension passe devant le trigger : c'est la seule ligne qui demande une decision humaine. */
-function subjectOf(run: CompletedRun): string {
-  const tete = `Ubac ${run.runDate} — ${usdc(run.totalValue)}`;
+/**
+ * L'objet tient sur un ecran verrouille. Une suspension passe devant le trigger : c'est la seule ligne qui demande une decision humaine.
+ * Les deux P&L sont les metriques **memes** que la case d'en-tete, mises en forme par le meme `signedPct` : l'objet ne peut pas dire
+ * autre chose que le corps. Absents, ils disent « n/d », jamais une variation de valeur brute (C27).
+ */
+function subjectOf(run: CompletedRun, jour: Metric, cumul: Metric): string {
+  const twr = `jour ${metricText(jour, signedPct, 'n/d')} · cumul ${metricText(cumul, signedPct, 'n/d')}`;
+  const tete = `Ubac ${run.runDate} — ${usdc(run.totalValue)} — ${twr}`;
   if (run.suspension.status === 'ACTIVE') {
     return `${tete} — SUSPENDU (recul ${signedPct(run.suspension.drawdown)})`;
   }
@@ -1062,9 +1068,10 @@ export function renderDailyReport(input: DailyReportInput): DailyReportMail {
       : '';
 
   const jour = dayReturn(run, input.previous);
+  const cumul = cumulativeReturn(run);
   const entete = table(
     ['Valeur totale', 'P&L jour (TWR)', 'P&L cumule (TWR)'],
-    [[usdc(run.totalValue), metricText(jour, signedPct), metricText(cumulativeReturn(run), signedPct)]],
+    [[usdc(run.totalValue), metricText(jour, signedPct), metricText(cumul, signedPct)]],
   );
   const noteJour =
     jour.status === 'MISSING' ? `<p style="${NOTE}">P&L du jour : ${escape(jour.reason)}</p>` : '';
@@ -1088,5 +1095,5 @@ export function renderDailyReport(input: DailyReportInput): DailyReportMail {
     lexiqueSection(run) +
     '</div>';
 
-  return { subject: subjectOf(run), html, tags: [REPORT_TAG] };
+  return { subject: subjectOf(run, jour, cumul), html, tags: [REPORT_TAG] };
 }

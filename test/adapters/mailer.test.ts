@@ -26,7 +26,7 @@ const SECRETS = {
 };
 
 const courrier = (overrides: Partial<DailyReportMail> = {}): DailyReportMail => ({
-  subject: 'Ubac 2026-09-12 — 100000.00 USDC — aucun declenchement',
+  subject: 'Ubac 2026-09-12 — 100000.00 USDC — jour +0.42 % · cumul +3.10 % — aucun declenchement',
   html: '<div>rapport</div>',
   tags: [REPORT_TAG],
   ...overrides,

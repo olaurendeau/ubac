@@ -312,7 +312,7 @@ describe('rendu — la sortie attendue, ligne a ligne', () => {
     const mail = renderDailyReport(INPUT);
     expect(mail.tags).toEqual([REPORT_TAG]);
     expect(REPORT_TAG).toBe('daily-report');
-    expect(mail.subject).toBe('Ubac 2026-09-13 — 100000.00 USDC — aucun declenchement');
+    expect(mail.subject).toBe('Ubac 2026-09-13 — 100000.00 USDC — jour +4.17 % · cumul +25.00 % — aucun declenchement');
     /* HTML en ligne : ni feuille distante, ni image, ni script. */
     expect(mail.html).not.toMatch(/<(link|img|script|style)\b/);
     expect(mail.html).toContain('style="font-family');
@@ -349,7 +349,7 @@ describe('§9 — un rapport part meme quand le trigger vaut NONE', () => {
       },
     };
     const mail = renderDailyReport(avecRun({ outcomes: [tire, ...OUTCOMES.slice(1)] }));
-    expect(mail.subject).toBe('Ubac 2026-09-13 — 100000.00 USDC — CASH_BAND, 1 jambe(s)');
+    expect(mail.subject).toBe('Ubac 2026-09-13 — 100000.00 USDC — jour +4.17 % · cumul +25.00 % — CASH_BAND, 1 jambe(s)');
     expect(lignes(mail.html)).toContain(
       'rebalance | CASH_BAND | 1 jambe(s) | ACCEPTED | poids USDC sous la borne basse : retour a la cible',
     );
@@ -359,7 +359,7 @@ describe('§9 — un rapport part meme quand le trigger vaut NONE', () => {
     const mail = renderDailyReport(
       avecRun({ suspension: { status: 'ACTIVE', drawdown: dec('-0.2612'), reason: 'SUSPENSION_DRAWDOWN : recul a -26.12 %' } }),
     );
-    expect(mail.subject).toBe('Ubac 2026-09-13 — 100000.00 USDC — SUSPENDU (recul -26.12 %)');
+    expect(mail.subject).toBe('Ubac 2026-09-13 — 100000.00 USDC — jour +4.17 % · cumul +25.00 % — SUSPENDU (recul -26.12 %)');
     expect(mail.html).toContain('SUSPENSION_DRAWDOWN : recul a -26.12 %');
   });
 
@@ -398,7 +398,7 @@ describe('CV15 — un jour d’apport, le rapport dit ce que l’alerte ne dit p
     expect(encadre(mail.html)).toEqual([
       `Etat interne resynchronise, ecart explique par les flux enregistres. Aucune alerte n'est partie pour cet ecart : c'est ce rapport qui le dit. Aucun ordre n'est place aujourd'hui.${MOTIF}`,
     ]);
-    expect(mail.subject).toBe('Ubac 2026-09-13 — 100000.00 USDC — etat resynchronise par un apport, aucun ordre');
+    expect(mail.subject).toBe('Ubac 2026-09-13 — 100000.00 USDC — jour +4.17 % · cumul +25.00 % — etat resynchronise par un apport, aucun ordre');
   });
 
   /* Un ecart non explique part deja en `RECONCILIATION_DRIFT`, qui porte ce texte : le rapport ne le repete pas. */
@@ -456,6 +456,85 @@ describe('§9 et C27 — le P&L se lit sur l’indice de croissance, jamais sur 
     const memeJour = renderDailyReport({ ...INPUT, previous: { runDate: '2026-09-13', benchmarks: BENCHMARKS } });
     expect(lignes(memeJour.html)).toContain('100000.00 USDC | indisponible | +25.00 %');
     expect(memeJour.html).toContain('se lirait comme une journee plate');
+  });
+});
+
+// --- L'objet porte les deux TWR du corps ------------------------------------
+
+/**
+ * L'objet resume la case d'en-tete pour l'ecran verrouille : « jour X · cumul Y »
+ * apres la valeur. Les sondes litterales tiennent le signe et l'ordre ; la
+ * derniere confronte l'objet au corps sur une grille d'indices, de sorte qu'un
+ * objet qui calculerait son propre P&L — ou arrondirait autrement — rougisse.
+ */
+describe('objet — les TWR du jour et cumule, ceux du corps et pas d’autres', () => {
+  /** Le segment TWR de l'objet : entre la valeur et la mention finale. */
+  const twrDe = (subject: string): string => subject.split(' — ')[2] ?? '';
+  const avecIndices = (aujourdhui: string | undefined, veille: string | undefined): DailyReportInput => ({
+    params: DEFAULT_REBALANCE_PARAMS,
+    series: SERIE,
+    movements: MOUVEMENTS,
+    run: {
+      ...RUN,
+      benchmarks:
+        aujourdhui === undefined
+          ? Object.fromEntries(Object.entries(BENCHMARKS).filter(([cle]) => cle !== PORTFOLIO_KEYS.index))
+          : { ...BENCHMARKS, [PORTFOLIO_KEYS.index]: dec(aujourdhui) },
+    },
+    ...(veille === undefined ? {} : { previous: { runDate: '2026-09-12', benchmarks: { [PORTFOLIO_KEYS.index]: dec(veille) } } }),
+  });
+
+  it.each([
+    ['positifs', '1.25', '1.20', 'jour +4.17 % · cumul +25.00 %'],
+    ['negatif le jour, positif en cumul', '1.10', '1.20', 'jour -8.33 % · cumul +10.00 %'],
+    ['negatifs tous deux', '0.90', '0.95', 'jour -5.26 % · cumul -10.00 %'],
+    ['nuls', '1', '1', 'jour +0.00 % · cumul +0.00 %'],
+  ])('jour et cumul %s', (_cas, aujourdhui, veille, attendu) => {
+    expect(renderDailyReport(avecIndices(aujourdhui, veille)).subject).toBe(
+      `Ubac 2026-09-13 — 100000.00 USDC — ${attendu} — aucun declenchement`,
+    );
+  });
+
+  it('dit « jour n/d » sans photo de la veille, jamais la variation de valeur (C27)', () => {
+    expect(renderDailyReport(avecIndices('1.25', undefined)).subject).toBe(
+      'Ubac 2026-09-13 — 100000.00 USDC — jour n/d · cumul +25.00 % — aucun declenchement',
+    );
+    /* Une photo du jour meme n'est pas une reference : le corps dit « indisponible », l'objet aussi. */
+    const memeJour = renderDailyReport({ ...INPUT, previous: { runDate: '2026-09-13', benchmarks: BENCHMARKS } });
+    expect(twrDe(memeJour.subject)).toBe('jour n/d · cumul +25.00 %');
+  });
+
+  it('dit « n/d » aux deux quand l’indice du jour manque ou n’est pas fini', () => {
+    expect(twrDe(renderDailyReport(avecIndices(undefined, '1.20')).subject)).toBe('jour n/d · cumul n/d');
+    expect(twrDe(renderDailyReport(avecIndices('NaN', '1.20')).subject)).toBe('jour n/d · cumul n/d');
+  });
+
+  it('garde le segment un jour de suspension, la mention SUSPENDU en fin', () => {
+    const mail = renderDailyReport(
+      avecRun({ suspension: { status: 'ACTIVE', drawdown: dec('-0.2612'), reason: 'SUSPENSION_DRAWDOWN' } }),
+    );
+    expect(mail.subject).toBe('Ubac 2026-09-13 — 100000.00 USDC — jour +4.17 % · cumul +25.00 % — SUSPENDU (recul -26.12 %)');
+  });
+
+  it('garde le segment un jour de resynchronisation, la mention en fin', () => {
+    const mail = renderDailyReport(
+      avecRun({ resync: { status: 'RESYNCHRONIZED', explainedByFlows: true, reason: 'ETAT_RESYNCHRONISE' } }),
+    );
+    expect(mail.subject).toBe(
+      'Ubac 2026-09-13 — 100000.00 USDC — jour +4.17 % · cumul +25.00 % — etat resynchronise par un apport, aucun ordre',
+    );
+  });
+
+  it('rend exactement les chiffres de la case d’en-tete, absence comprise', () => {
+    const indices = [undefined, '0.5', '0.95', '1', '1.0000499', '1.004999', '1.2', '1.25', '3.33333'];
+    for (const aujourdhui of indices) {
+      for (const veille of indices) {
+        const mail = renderDailyReport(avecIndices(aujourdhui, veille));
+        const caseEntete = lignes(mail.html).find((ligne) => ligne.startsWith('100000.00 USDC | '));
+        const [, jour, cumul] = (caseEntete ?? '').split(' | ').map((cellule) => (cellule === 'indisponible' ? 'n/d' : cellule));
+        expect(twrDe(mail.subject)).toBe(`jour ${jour ?? '?'} · cumul ${cumul ?? '?'}`);
+      }
+    }
   });
 });
 
