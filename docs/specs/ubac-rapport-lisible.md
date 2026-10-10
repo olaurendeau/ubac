@@ -41,7 +41,9 @@ en D5 et validée par le coordinateur.
 1. **Une section « Lexique »**, dernière section du corps du rapport, définissant
    en une phrase chaque terme de jargon que le rapport imprime.
 2. **Un graphe du TWR cumulé du portefeuille**, rendu en cellules de tableau,
-   dans la section « Comparaison », au-dessus du tableau.
+   dans sa propre section « Evolution du portefeuille (TWR cumule) », troisième
+   bloc du rapport, après l'en-tête et la distance (décision de l'opérateur du
+   2026-10-10, voir R7).
 3. **La lecture de la série des photos** nécessaire au graphe : une opération de
    plus sur `UbacDatabase`, appelée par `src/jobs/daily.ts`.
 4. **La documentation** correspondante dans `docs/rapport-quotidien.md`.
@@ -344,8 +346,13 @@ est propre à ce cadrage et n'entre en collision avec aucun C de la phase 0.
 
 ### Le graphe
 
-- **R7** — Le graphe est rendu dans la section « Comparaison », entre le titre et
-  le tableau.
+- **R7** — Le graphe est rendu dans sa propre section « Evolution du portefeuille
+  (TWR cumule) », troisième bloc du rapport : après l'en-tête chiffré et la
+  distance au prochain déclenchement, avant la décision. L'alerte de suspension
+  et l'encadré de resynchronisation restent au-dessus de l'en-tête ; la section
+  « Comparaison » ne porte plus le graphe. *Révisé le 2026-10-10 sur décision de
+  l'opérateur (« qu'il apparaisse dès l'ouverture ») ; d'abord rendu dans
+  « Comparaison ».*
 - **R8** — Le HTML rendu ne contient ni `<img`, ni `<svg`, ni `background-image`,
   ni `url(`, ni aucune URL absolue. Sonde sur le rapport entier.
 - **R9** — Le graphe trace l'indice TWR et jamais la valeur : doubler
@@ -418,7 +425,9 @@ bloc `describe`, jamais un relèvement du délai global
 
 ## Incertitudes
 
-1. **La place du graphe.** Il est mis dans « Comparaison » (R7) parce qu'il
+1. **La place du graphe.** *Tranchée le 2026-10-10 par l'opérateur : troisième
+   bloc, après la distance (R7 révisé).* Le cadrage initial l'avait mis dans
+   « Comparaison » parce qu'il
    est l'histoire de la ligne « Portefeuille » de ce tableau, et parce que le §9
    a placé la distance au prochain déclenchement en deuxième position
    délibérément — « l'information la plus utile du rapport ». Le mettre juste
