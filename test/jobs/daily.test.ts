@@ -1230,7 +1230,7 @@ describe('§9 — le rapport quotidien part par Brevo', () => {
     expect(result.outcomes.every((o) => o.intent.trigger === 'NONE')).toBe(true);
     expect(h.courriers).toHaveLength(1);
     expect(courrier(h).subject).toBe(
-      `Ubac ${RUN_DATE} — 100000.00 USDC — aucun declenchement`,
+      `Ubac ${RUN_DATE} — 100000.00 USDC — jour n/d · cumul +0.00 % — aucun declenchement`,
     );
     expect(result.report.mail).toEqual({ status: 'SENT', httpStatus: 201 });
   });
@@ -3038,7 +3038,7 @@ describe('DRY_RUN — le journal dit « retenu », jamais « parti » (E15, E16)
     statut: 'FILLED',
   };
   const ORDRE = clientOrderId({ runDate: RUN_DATE, asset: 'BTC', side: 'SELL', legIndex: 0 });
-  const RAPPORT = 'Ubac 2026-09-12 — 100000.00 USDC — CASH_BAND, 2 jambe(s)';
+  const RAPPORT = 'Ubac 2026-09-12 — 100000.00 USDC — jour +0.00 % · cumul +0.00 % — CASH_BAND, 2 jambe(s)';
 
   /** Ce qu'une ligne ne doit jamais dire d'un effet retenu : un envoi parti, ou le statut d'un vrai succes. */
   const SUCCES = [/\bpartie?\b/i, /pingue/i, /\b(?:SENT|PINGED|RECORDED|PLACED|CANCELLED|ANNULE)\b/];

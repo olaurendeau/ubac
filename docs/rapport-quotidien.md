@@ -73,11 +73,20 @@ celui-là ; un rendu qui oublierait le tag part quand même tagué.
 `undefined`, et l'objet du message dit ce qui s'est passé :
 
 ```
-Ubac 2026-09-13 — 100000.00 USDC — aucun declenchement
-Ubac 2026-09-13 — 100000.00 USDC — CASH_BAND, 2 jambe(s)
-Ubac 2026-09-13 — 100000.00 USDC — SUSPENDU (recul -26.12 %)
-Ubac 2026-09-13 — 100000.00 USDC — etat resynchronise par un apport, aucun ordre
+Ubac 2026-09-13 — 100000.00 USDC — jour +4.17 % · cumul +25.00 % — aucun declenchement
+Ubac 2026-09-13 — 100000.00 USDC — jour -8.33 % · cumul +10.00 % — CASH_BAND, 2 jambe(s)
+Ubac 2026-09-13 — 100000.00 USDC — jour n/d · cumul +25.00 % — SUSPENDU (recul -26.12 %)
+Ubac 2026-09-13 — 100000.00 USDC — jour +4.17 % · cumul +25.00 % — etat resynchronise par un apport, aucun ordre
 ```
+
+Le segment « jour X · cumul Y » reprend la case d'en-tete du corps — P&L jour et
+P&L cumulé en TWR, §4 — pour que l'objet se lise sur un écran verrouillé. Ce sont
+les **mêmes** métriques, mises en forme par le même `signedPct` : signe explicite,
+deux décimales, point décimal. L'objet ne peut donc pas dire autre chose que le
+corps. Là où la case dit « indisponible » (pas de photo de la veille, indice du
+jour absent ou non fini), l'objet dit « n/d » : jamais une variation de valeur
+brute (C27). Le segment figure aussi les jours de suspension et de
+resynchronisation ; la mention qui demande l'attention reste en fin.
 
 La dernière forme est celle d'un jour où l'état interne s'est resynchronisé et
 où **toutes** les divergences sont expliquées par les flux enregistrés (CV15,
