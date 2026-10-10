@@ -843,6 +843,16 @@ function grapheSection(input: DailyReportInput): string {
   );
 }
 
+/**
+ * Le graphe a sa propre section, en troisieme bloc : sous l'en-tete chiffre et
+ * la distance au prochain declenchement, que le §9 place en tete, et avant la
+ * decision du jour. C'est ce que l'operateur voit a l'ouverture, sans faire
+ * defiler. Il raconte la case « P&L cumule (TWR) » de l'en-tete, que la ligne
+ * « Portefeuille » de la comparaison reprend plus bas.
+ */
+const evolutionSection = (input: DailyReportInput): string =>
+  section('Evolution du portefeuille (TWR cumule)', grapheSection(input));
+
 /** L'en-tete du tableau de comparaison : le nom, puis les colonnes de metriques. */
 const COMPARISON_HEADER: readonly string[] = [
   '',
@@ -902,17 +912,9 @@ function comparisonSection(input: DailyReportInput): string {
     signedPct,
   );
 
-  /*
-   * Le graphe est **dans** « Comparaison », entre le titre et le tableau : il est
-   * l'histoire de la ligne « Portefeuille » de ce tableau. Le mettre sous
-   * l'en-tete, en premier coup d'oeil, est defendable, mais repousserait d'autant
-   * la distance au prochain declenchement, que le §9 a placee en deuxieme
-   * position deliberement.
-   */
   return section(
     'Comparaison',
-    grapheSection(input) +
-      table(COMPARISON_HEADER, rows) +
+    table(COMPARISON_HEADER, rows) +
       `<p style="${NOTE}">Portefeuille : TWR depuis la premiere photo. Hold : fenetre OHLCV de ${String(window.length)} jour(s), du ${escape(first)} au ${escape(last)}. Les deux periodes ne coincident pas tant que le systeme n'a pas tourne aussi longtemps que la fenetre.</p>` +
       `<p style="${NOTE}">Recul actuel depuis le plus haut : ${recul}. Ce n'est pas un max drawdown : la photo porte l'indice et son sommet, pas la serie — ni le pire recul passe ni le Sharpe du portefeuille ne s'en lisent.</p>` +
       `<p style="${NOTE}">Ladder et DCA : leur decision du jour figure ci-dessus ; leur P&L demande un rejeu jour par jour, pas une photo.</p>`,
@@ -1085,6 +1087,7 @@ export function renderDailyReport(input: DailyReportInput): DailyReportMail {
     entete +
     noteJour +
     distanceSection(input) +
+    evolutionSection(input) +
     decisionSection(run) +
     ordresSection(run) +
     allocationSection(run, input.params.targets) +

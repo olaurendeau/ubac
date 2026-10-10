@@ -42,16 +42,18 @@ s'arrête au 201 ; la réception est affaire de DNS.
 
 ## 2. Ce que le rapport contient
 
-Les six points du §9, dans l'ordre où ils apparaissent :
+Les six points du §9, dans l'ordre où ils apparaissent. L'alerte de suspension
+et l'encadré de resynchronisation, quand ils existent, passent avant l'en-tête :
 
 | Section | Contenu | Source |
 |---|---|---|
 | En-tête | valeur totale, P&L jour et cumulé en TWR | `totalValue`, `portfolio_twr_index` |
 | Distance au prochain déclenchement | poids USDC contre sa bande, ratio BTC/ETH contre la sienne quand B est armé | calculée par le rendu |
+| **Évolution du portefeuille (TWR cumulé)** | le **graphe du TWR cumulé** (section 10), ou la phrase qui dit pourquoi il n'y en a pas encore | `snapshots.benchmarks`, `series` |
 | Décision du jour | les quatre stratégies, `trigger NONE` compris, avec le verdict de risque | `outcomes` |
 | **Ordres du jour** (E28, S7b) | les comptes **placé**, **exécuté**, **partiel**, **non exécuté**, statut non lu, rejeté post-only et rejeté pour un autre motif, puis les **frais réels** ; le détail jambe par jambe quand un ordre est parti. Le tableau des comptes est là tous les jours, zéros compris : une section qui disparaîtrait les jours sans ordre ne dirait pas si rien n'est parti | `executions`, lues par `src/jobs/suivi.ts` |
 | Allocation | poids constatés contre cibles, et l'écart | `weights`, `params.targets` |
-| Comparaison | le **graphe du TWR cumulé** (section 10), puis TWR, max drawdown et Sharpe 90 j, portefeuille contre hold BTC et hold 50/50 ; ladder et DCA y figurent **sans courbe**, avec leur raison (section 6) | `snapshots.benchmarks`, `series` |
+| Comparaison | TWR, max drawdown et Sharpe 90 j, portefeuille contre hold BTC et hold 50/50 ; ladder et DCA y figurent **sans courbe**, avec leur raison (section 6) | `snapshots.benchmarks` |
 | Métriques indisponibles | ce que le noyau n'a pas pu rendre, et pourquoi | `benchmarkGaps` |
 | **Derniers mouvements** | les huit derniers mouvements, apports, retraits et ordres exécutés, en un seul tableau du plus récent au plus ancien : date, mouvement, montant signé vu du cash et détail ; tous les jours, liste vide ou lecture en échec compris (section 11) | `movements`, lus par `latestCashFlows()` et `latestExecutedOrders()` |
 | **Lexique** | une définition d'une phrase par terme de jargon que le corps imprime (section 9) | `src/report/lexique.ts` |
@@ -464,8 +466,18 @@ dire ; c'est un point de relecture.
 ## 10. Le graphe du TWR cumulé, en cellules de tableau
 
 « Comment le portefeuille a évolué depuis le début — une courbe, pas un
-chiffre. » Le graphe est rendu dans « Comparaison », entre le titre et le
-tableau : il est l'histoire de la ligne « Portefeuille » de ce tableau.
+chiffre. » Le graphe a sa propre section, « Evolution du portefeuille (TWR
+cumule) », en **troisième bloc** : après l'en-tête chiffré et la distance au
+prochain déclenchement, avant la décision du jour. C'est ce que l'opérateur voit
+à l'ouverture du courrier, sans faire défiler.
+
+Il était d'abord rendu dans « Comparaison », entre le titre et le tableau, comme
+l'histoire de la ligne « Portefeuille » ; la spec du rapport lisible
+(`docs/specs/ubac-rapport-lisible.md`, R7) laissait cette place ouverte en
+première incertitude, à trancher sur un vrai courrier. L'opérateur l'a tranchée
+le 2026-10-10 : remonté en troisième bloc pour qu'il apparaisse dès l'ouverture.
+La distance au prochain déclenchement garde la deuxième place que le §9 lui
+donne. Le tableau de comparaison reste où il était, sans le graphe.
 
 ### Ce qu'il trace, et ce qu'il ne trace pas
 
