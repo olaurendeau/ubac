@@ -237,6 +237,8 @@ describe('rendu — la sortie attendue, ligne a ligne', () => {
       'Bande | Constate | Bornes | Distance',
       'Bande de cash (A) | USDC 31.00 % | [24.00 %, 36.00 %] | 5.00 pt de la borne haute',
       "Declencheur B desarme : le ratio BTC/ETH n'est pas surveille en production (§5.2).",
+      'Evolution du portefeuille (TWR cumule)',
+      "P&L cumule (TWR) depuis la premiere photo, lu sur l'indice de croissance : 5 photo(s), du 2026-09-09 au 2026-09-13, 1 colonne = 1 photo. Echelle de +10.00 % a +25.00 %, et non depuis zero : une variation faible occupe toute la hauteur.",
       'Decision du jour',
       'Strategie | Trigger | Jambes | Risque | Motif',
       'rebalance | NONE | 0 jambe(s) | ACCEPTED | poids USDC dans la bande : aucun reequilibrage',
@@ -260,7 +262,6 @@ describe('rendu — la sortie attendue, ligne a ligne', () => {
       'ETH | 8.00000000 | 28.00 % | 30.00 % | -2.00 %',
       'USDC | 31000.00000000 | 31.00 % | 30.00 % | +1.00 %',
       'Comparaison',
-      "P&L cumule (TWR) depuis la premiere photo, lu sur l'indice de croissance : 5 photo(s), du 2026-09-09 au 2026-09-13, 1 colonne = 1 photo. Echelle de +10.00 % a +25.00 %, et non depuis zero : une variation faible occupe toute la hauteur.",
       '| TWR cumule | Max drawdown | Sharpe 90 j',
       'Portefeuille | +25.00 % | indisponible | indisponible',
       'Hold BTC | +41.23 % | -27.18 % | 1.41',
@@ -866,22 +867,71 @@ describe('R1 a R6 — le lexique vit dans le rapport, et n’y est ni mort ni mu
  * defaut, et une piece jointe serait un fichier a ouvrir.
  */
 describe('R7 a R16 — le graphe du TWR cumule', () => {
-  /** Le graphe rendu : entre le titre « Comparaison » et le tableau de comparaison, qui est le premier a 100 % de large. */
-  function graphe(html: string): string {
-    const apres = html.split('Comparaison</h2>')[1];
+  const TITRE = 'Evolution du portefeuille (TWR cumule)';
+
+  /** Le corps d'une section : de la fin de son titre au titre suivant. */
+  function corps(html: string, titre: string): string {
+    const apres = html.split(`${titre}</h2>`)[1];
     expect(apres).toBeDefined();
-    return (apres ?? '').split('<table style="width:100%')[0] ?? '';
+    return (apres ?? '').split('<h2')[0] ?? '';
   }
+
+  /** Le graphe rendu : toute sa section, titre exclu. */
+  const graphe = (html: string): string => corps(html, TITRE);
 
   const hauteurs = (html: string): readonly string[] =>
     [...graphe(html).matchAll(/height:(\d+)px;background/g)].map(([, px]) => px ?? '');
 
-  it('R7 — il est dans « Comparaison », entre le titre et le tableau', () => {
-    const rendu = graphe(renderDailyReport(INPUT).html);
-    expect(rendu).toContain('<td style="width:4px');
-    expect(rendu).toContain('1 colonne = 1 photo');
+  /** La position de chaque bloc dans le HTML : la valeur totale pour l'en-tete, le titre pour les sections. */
+  function positions(html: string): readonly number[] {
+    const blocs = ['>Valeur totale<', '>Distance au prochain declenchement<', `>${TITRE}<`, '>Decision du jour<'];
+    const rangs = blocs.map((bloc) => html.indexOf(bloc));
+    for (const rang of rangs) expect(rang).toBeGreaterThan(-1);
+    return rangs;
+  }
+
+  const croissantes = (rangs: readonly number[]): boolean =>
+    rangs.every((rang, i) => i === 0 || (rangs[i - 1] ?? Infinity) < rang);
+
+  it('R7 — il est le troisieme bloc : en-tete, distance, graphe, puis la decision', () => {
+    const html = renderDailyReport(INPUT).html;
+    expect(croissantes(positions(html))).toBe(true);
+    /* Sa section porte les barres et la note, rien d'autre. */
+    expect(graphe(html)).toContain('<td style="width:4px');
+    expect(graphe(html)).toContain('1 colonne = 1 photo');
+    expect(graphe(html)).not.toContain('Max drawdown');
     /* Et pas ailleurs : une seule table de barres dans tout le rapport. */
-    expect(renderDailyReport(INPUT).html.split('table-layout:fixed')).toHaveLength(2);
+    expect(html.split('table-layout:fixed')).toHaveLength(2);
+  });
+
+  it('R7 — la section « Comparaison » garde son tableau, sans le graphe', () => {
+    const comparaison = corps(renderDailyReport(INPUT).html, 'Comparaison');
+    /* Le tableau ouvre la section, sans rien avant lui. */
+    expect(comparaison.startsWith('<table style="width:100%')).toBe(true);
+    expect(comparaison).toContain('Max drawdown');
+    expect(comparaison).not.toContain('table-layout:fixed');
+    expect(comparaison).not.toContain('depuis la premiere photo, lu sur l');
+  });
+
+  it('R7 — graphe indisponible : la phrase occupe la meme place, sous la distance et avant la decision', () => {
+    const html = renderDailyReport({ run: RUN, params: DEFAULT_REBALANCE_PARAMS, movements: SANS_MOUVEMENT }).html;
+    expect(croissantes(positions(html))).toBe(true);
+    expect(graphe(html)).toContain('Il apparaitra des le run suivant.');
+    expect(corps(html, 'Comparaison')).not.toContain('Il apparaitra des le run suivant.');
+  });
+
+  it('R7 — alerte et resynchronisation restent au-dessus de l’en-tete, donc du graphe', () => {
+    const html = renderDailyReport(
+      avecRun({
+        suspension: { status: 'ACTIVE', drawdown: dec('-0.2612'), reason: 'SUSPENSION_DRAWDOWN' },
+        resync: { status: 'RESYNCHRONIZED', explainedByFlows: true, reason: 'ETAT_RESYNCHRONISE' },
+      }),
+    ).html;
+    const entete = positions(html)[0] ?? -1;
+    for (const tete of ['SUSPENSION_DRAWDOWN', 'Etat interne resynchronise']) {
+      expect(html.indexOf(tete)).toBeGreaterThan(-1);
+      expect(html.indexOf(tete)).toBeLessThan(entete);
+    }
   });
 
   it('R8 — rien a charger : ni image, ni SVG, ni URL, sur le rapport entier', () => {
