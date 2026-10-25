@@ -1,0 +1,17 @@
+{
+  "mode": "integrated",
+  "language": {
+    "human": "français",
+    "artifacts": "français",
+    "agents": "français"
+  },
+  "check": {
+    "full": "make check-db",
+    "affected": "make check",
+    "cleanup": "make db-down"
+  },
+  "context": {
+    "product": "docs/specs/ubac-rebalance.md",
+    "architecture": "docs/phase-1-frontieres.md"
+  }
+}
