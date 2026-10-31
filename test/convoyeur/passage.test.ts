@@ -338,6 +338,122 @@ describe('Y4b — arreter, et le dire (CV10, CV13)', () => {
   });
 });
 
+describe('Y4b — le credit de l’USDC apres l’achat (incident du 2026-10-27)', () => {
+  const POUSSIERE = '0.0000008962268961';
+
+  /**
+   * Coinbase remplit l'ordre avant de crediter `available` : le 2026-10-27,
+   * `ACHETE` a 18:02:11.016Z, la relecture 0,3 s plus tard rendait encore la
+   * poussiere. Le double credite a l'achat ; ici les `lectures` suivant
+   * l'achat rendent `POUSSIERE` a la place du solde.
+   */
+  function creditTardif(coinbase: DoubleCoinbase, lectures: number): void {
+    const lire = coinbase.balances.bind(coinbase);
+    let reste = lectures;
+    coinbase.balances = async () => {
+      const soldes = await lire();
+      if (coinbase.ordresCrees.length === 0 || reste <= 0) return soldes;
+      reste -= 1;
+      return { ...soldes, usdc: { ...soldes.usdc, available: new Decimal(POUSSIERE) as typeof soldes.usdc.available } };
+    };
+  }
+
+  const lectures = (coinbase: DoubleCoinbase): number => coinbase.appels.filter((m) => m === 'balances').length;
+
+  it('une poussiere puis filled_size : pas de panne, le transfert est demande, une pause', async () => {
+    const coinbase = doubleCoinbase('130');
+    creditTardif(coinbase, 1);
+    const base = doubleBase();
+    const { compteRendu, pauses } = await passer(coinbase, base, '2026-11-27');
+    expect(etapes(base)).toEqual(['ACHAT_DEMANDE', 'ACHETE', 'TRANSFERT_DEMANDE', 'TRANSFERE', 'ENREGISTRE']);
+    expect(compteRendu).toMatchObject({ nature: 'CONVOYAGE', etape: 'ENREGISTRE', motif: undefined });
+    expect(coinbase.transferts.map((d) => d.toFixed())).toEqual([RECU.toFixed()]);
+    expect(pauses).toEqual([PAUSE_MS]);
+  });
+
+  it('une poussiere sur toutes les lectures : EN_PANNE du meme motif, tentatives lectures, tentatives - 1 pauses', async () => {
+    const coinbase = doubleCoinbase('130');
+    creditTardif(coinbase, Number.POSITIVE_INFINITY);
+    const base = doubleBase();
+    const { compteRendu, pauses } = await passer(coinbase, base, '2026-11-27');
+    expect(etapes(base)).toEqual(['ACHAT_DEMANDE', 'ACHETE', 'EN_PANNE']);
+    expect(compteRendu).toMatchObject({ nature: 'PANNE', etape: 'EN_PANNE' });
+    expect(compteRendu?.motif).toBe(
+      "convoyage 2026-11-27 a ACHETE : l'USDC est parti de Primary sans demande de transfert.",
+    );
+    expect(urgent(compteRendu)).toBe(true);
+    // La lecture initiale, puis `tentatives` apres l'achat.
+    expect(lectures(coinbase)).toBe(1 + TENTATIVES);
+    expect(pauses).toEqual(Array.from({ length: TENTATIVES - 1 }, () => PAUSE_MS));
+    expect(coinbase.appels).not.toContain('moveFunds');
+  });
+
+  it('filled_size des la premiere lecture : aucune pause ajoutee', async () => {
+    const coinbase = doubleCoinbase('130');
+    const base = doubleBase();
+    const { compteRendu, pauses } = await passer(coinbase, base, '2026-11-27');
+    expect(compteRendu?.etape).toBe('ENREGISTRE');
+    expect(pauses).toEqual([]);
+    // Initiale, apres l'achat, apres le transfert.
+    expect(lectures(coinbase)).toBe(3);
+  });
+
+  it('aucune lecture n’aboutit apres l’achat : le passage s’arrete sur ACHETE, sans panne', async () => {
+    const coinbase = doubleCoinbase('130');
+    coinbase.espion = (m) => {
+      if (m === 'marketBuy') coinbase.pannes.balances = { fois: TENTATIVES };
+    };
+    const base = doubleBase();
+    const { compteRendu } = await passer(coinbase, base, '2026-11-27');
+    expect(etapes(base)).toEqual(['ACHAT_DEMANDE', 'ACHETE']);
+    expect(compteRendu).toMatchObject({ nature: 'PANNE', etape: 'ACHETE' });
+    expect(coinbase.appels).not.toContain('moveFunds');
+
+    // Le passage suivant reprend a ACHETE, l'USDC etant la.
+    const suite = await passer(coinbase, base, '2026-11-28');
+    expect(suite.compteRendu).toMatchObject({ nature: 'REPRISE', etape: 'ENREGISTRE' });
+  });
+
+  it('une poussiere puis des echecs jusqu’a la fin : pas de panne sur une lecture perimee, la reprise transfere', async () => {
+    const coinbase = doubleCoinbase('130');
+    const lire = coinbase.balances.bind(coinbase);
+    let apresAchat = 0;
+    coinbase.balances = async () => {
+      if (coinbase.ordresCrees.length === 0 || coinbase.transferts.length > 0) return lire();
+      apresAchat += 1;
+      if (apresAchat > 1) throw new Error('balances : panne');
+      const soldes = await lire();
+      return { ...soldes, usdc: { ...soldes.usdc, available: new Decimal(POUSSIERE) as typeof soldes.usdc.available } };
+    };
+    const base = doubleBase();
+    const { compteRendu, logs, pauses } = await passer(coinbase, base, '2026-11-27');
+    expect(etapes(base)).toEqual(['ACHAT_DEMANDE', 'ACHETE']);
+    expect(compteRendu).toMatchObject({ nature: 'PANNE', etape: 'ACHETE' });
+    expect(compteRendu?.etape).not.toBe('EN_PANNE');
+    expect(pauses).toHaveLength(TENTATIVES - 1);
+    expect(coinbase.appels).not.toContain('moveFunds');
+    expect(logs.join('\n')).toContain('soldes : relecture en echec');
+
+    // Plus de panne de lecture : le passage suivant reprend a ACHETE et transfere.
+    apresAchat = 0;
+    coinbase.balances = lire;
+    const suite = await passer(coinbase, base, '2026-11-28');
+    expect(suite.compteRendu).toMatchObject({ nature: 'REPRISE', etape: 'ENREGISTRE' });
+    expect(coinbase.transferts.map((d) => d.toFixed())).toEqual([RECU.toFixed()]);
+  });
+
+  it('chaque lecture non PRESENT laisse une ligne de journal : numero, solde lu, filled_size', async () => {
+    const coinbase = doubleCoinbase('130');
+    creditTardif(coinbase, 2);
+    const { logs } = await passer(coinbase, doubleBase(), '2026-11-27');
+    const lignes = logs.filter((l) => l.startsWith('soldes apres achat'));
+    expect(lignes).toEqual([
+      `soldes apres achat : lecture 1/${String(TENTATIVES)}, ${POUSSIERE} USDC lus, filled_size ${RECU.toFixed()}`,
+      `soldes apres achat : lecture 2/${String(TENTATIVES)}, ${POUSSIERE} USDC lus, filled_size ${RECU.toFixed()}`,
+    ]);
+  });
+});
+
 describe('DC10 — une poussiere dans Primary (decision du 2026-10-03)', () => {
   /** Le solde du premier DRY_RUN reel, le 2026-10-03 a 21:54Z, avec 0.0077 EUR. */
   const CONSTATEE = '0.0000008962268961';
