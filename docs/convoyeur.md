@@ -356,6 +356,14 @@ relit l'exchange.
   `filled_size` plus cette poussière : non constaté, DC10) et ne rappelle
   jamais. S'il le faut, c'est le passage suivant qui
   transfère, l'USDC étant encore là (DC3).
+- **Le crédit de l'USDC après l'achat** : Coinbase remplit l'ordre avant de
+  créditer `available`. Le 2026-10-27, le solde relu 0,3 s après `ACHETE` n'avait
+  pas encore l'USDC, et le passage a conclu à tort à « l'USDC est parti de
+  Primary sans demande de transfert » (`EN_PANNE`). Après `ACHETE`, le passage
+  relit donc *Primary* quatre fois au plus, 3 s entre deux, et s'arrête dès que
+  `filled_size` est là. Si ce n'est jamais le cas, la panne reste : un USDC
+  réellement parti sans demande n'est pas rattrapé. Si aucune lecture n'aboutit,
+  le passage s'arrête sur `ACHETE`, sans panne, et le suivant reprend.
 - **L'instant de l'apport** (DC5) est celui de la `TRANSFERT_DEMANDE` du
   passage qui a appelé `move_funds`. Un transfert **refait** par un passage
   ultérieur prend l'instant de sa propre demande, pas celui de la première,
@@ -370,7 +378,8 @@ relit l'exchange.
   (USDC relu ni nul ni `filled_size`, USDC parti sans demande) et à un ordre
   clos sans être rempli ; rien ne reprend alors sans l'opérateur.
 - **Le délai du job** : au pire 25 appels à l'exchange au délai ccxt de 10 s,
-  sept séries d'écriture en base et 117 s de pauses, environ 6 min. La
+  sept séries d'écriture en base et 117 s de pauses, environ 6 min (la relecture
+  après l'achat est l'une de ces séries : elle n'ajoute rien au pire cas). La
   définition Scaleway (OP4) a un délai de **10 min** et **aucune tentative** :
   un passage tué se reprend au suivant, jamais par un relancement automatique.
 

@@ -338,6 +338,83 @@ describe('Y4b — arreter, et le dire (CV10, CV13)', () => {
   });
 });
 
+describe('Y4b — le credit de l’USDC apres l’achat (incident du 2026-10-27)', () => {
+  const POUSSIERE = '0.0000008962268961';
+
+  /**
+   * Coinbase remplit l'ordre avant de crediter `available` : le 2026-10-27,
+   * `ACHETE` a 18:02:11.016Z, la relecture 0,3 s plus tard rendait encore la
+   * poussiere. Le double credite a l'achat ; ici les `lectures` suivant
+   * l'achat rendent `POUSSIERE` a la place du solde.
+   */
+  function creditTardif(coinbase: DoubleCoinbase, lectures: number): void {
+    const lire = coinbase.balances.bind(coinbase);
+    let reste = lectures;
+    coinbase.balances = async () => {
+      const soldes = await lire();
+      if (coinbase.ordresCrees.length === 0 || reste <= 0) return soldes;
+      reste -= 1;
+      return { ...soldes, usdc: { ...soldes.usdc, available: new Decimal(POUSSIERE) as typeof soldes.usdc.available } };
+    };
+  }
+
+  const lectures = (coinbase: DoubleCoinbase): number => coinbase.appels.filter((m) => m === 'balances').length;
+
+  it('une poussiere puis filled_size : pas de panne, le transfert est demande, une pause', async () => {
+    const coinbase = doubleCoinbase('130');
+    creditTardif(coinbase, 1);
+    const base = doubleBase();
+    const { compteRendu, pauses } = await passer(coinbase, base, '2026-11-27');
+    expect(etapes(base)).toEqual(['ACHAT_DEMANDE', 'ACHETE', 'TRANSFERT_DEMANDE', 'TRANSFERE', 'ENREGISTRE']);
+    expect(compteRendu).toMatchObject({ nature: 'CONVOYAGE', etape: 'ENREGISTRE', motif: undefined });
+    expect(coinbase.transferts.map((d) => d.toFixed())).toEqual([RECU.toFixed()]);
+    expect(pauses).toEqual([PAUSE_MS]);
+  });
+
+  it('une poussiere sur toutes les lectures : EN_PANNE du meme motif, tentatives lectures, tentatives - 1 pauses', async () => {
+    const coinbase = doubleCoinbase('130');
+    creditTardif(coinbase, Number.POSITIVE_INFINITY);
+    const base = doubleBase();
+    const { compteRendu, pauses } = await passer(coinbase, base, '2026-11-27');
+    expect(etapes(base)).toEqual(['ACHAT_DEMANDE', 'ACHETE', 'EN_PANNE']);
+    expect(compteRendu).toMatchObject({ nature: 'PANNE', etape: 'EN_PANNE' });
+    expect(compteRendu?.motif).toBe(
+      "convoyage 2026-11-27 a ACHETE : l'USDC est parti de Primary sans demande de transfert.",
+    );
+    expect(urgent(compteRendu)).toBe(true);
+    // La lecture initiale, puis `tentatives` apres l'achat.
+    expect(lectures(coinbase)).toBe(1 + TENTATIVES);
+    expect(pauses).toEqual(Array.from({ length: TENTATIVES - 1 }, () => PAUSE_MS));
+    expect(coinbase.appels).not.toContain('moveFunds');
+  });
+
+  it('filled_size des la premiere lecture : aucune pause ajoutee', async () => {
+    const coinbase = doubleCoinbase('130');
+    const base = doubleBase();
+    const { compteRendu, pauses } = await passer(coinbase, base, '2026-11-27');
+    expect(compteRendu?.etape).toBe('ENREGISTRE');
+    expect(pauses).toEqual([]);
+    // Initiale, apres l'achat, apres le transfert.
+    expect(lectures(coinbase)).toBe(3);
+  });
+
+  it('aucune lecture n’aboutit apres l’achat : le passage s’arrete sur ACHETE, sans panne', async () => {
+    const coinbase = doubleCoinbase('130');
+    coinbase.espion = (m) => {
+      if (m === 'marketBuy') coinbase.pannes.balances = { fois: TENTATIVES };
+    };
+    const base = doubleBase();
+    const { compteRendu } = await passer(coinbase, base, '2026-11-27');
+    expect(etapes(base)).toEqual(['ACHAT_DEMANDE', 'ACHETE']);
+    expect(compteRendu).toMatchObject({ nature: 'PANNE', etape: 'ACHETE' });
+    expect(coinbase.appels).not.toContain('moveFunds');
+
+    // Le passage suivant reprend a ACHETE, l'USDC etant la.
+    const suite = await passer(coinbase, base, '2026-11-28');
+    expect(suite.compteRendu).toMatchObject({ nature: 'REPRISE', etape: 'ENREGISTRE' });
+  });
+});
+
 describe('DC10 — une poussiere dans Primary (decision du 2026-10-03)', () => {
   /** Le solde du premier DRY_RUN reel, le 2026-10-03 a 21:54Z, avec 0.0077 EUR. */
   const CONSTATEE = '0.0000008962268961';

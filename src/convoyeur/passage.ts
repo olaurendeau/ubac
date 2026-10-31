@@ -3,7 +3,15 @@ import type { Decimal } from 'decimal.js';
 import type { ConvoyeurBase, EtapeAEcrire } from './base.js';
 import type { ClePermissions, ConvoyeurCoinbase } from './coinbase.js';
 import type { CompteRendu, ConvoyageOuvert } from './regles.js';
-import { constater, deciderPassage, jourDuPassage, lignePoussiere, reprendre, verifierCle } from './regles.js';
+import {
+  constater,
+  deciderPassage,
+  jourDuPassage,
+  lignePoussiere,
+  montantATransferer,
+  reprendre,
+  verifierCle,
+} from './regles.js';
 import type { Achat, Convoyage, Etape, EurAmount, UsdcAmount } from './types.js';
 
 /**
@@ -56,6 +64,10 @@ export interface ConfigPassage {
  * series a l'exchange (cle, soldes, achat, ordre, soldes apres achat, soldes
  * apres transfert) plus un `move_funds`, soit 25 appels au delai ccxt de 10 s,
  * et sept a la base : 13 x 3 x 3 s = 117 s de pauses, environ 6 min en tout.
+ * La relecture des soldes apres l'achat (incident du 2026-10-27 : l'USDC n'est
+ * pas credite a l'instant du remplissage) est l'une de ces six series : quatre
+ * lectures et trois pauses au plus, qu'elles echouent ou rendent une poussiere.
+ * Elle ne change ni le nombre d'appels ni les pauses du pire cas.
  * La definition Scaleway (OP4) porte un delai de 10 min et aucune tentative
  * (`docs/convoyeur.md` §8).
  */
@@ -225,7 +237,27 @@ export async function passage(
           suivi.achat = achat;
           await ecrire({ etape: 'ACHETE', convoyage, le: horloge(), achat }, false);
           etat = { etape: 'ACHETE', convoyage, achat };
-          usdcRelu = (await lireSoldes()).usdc;
+          /*
+           * Coinbase remplit l'ordre avant de crediter `available` (incident du
+           * 2026-10-27 : relu 0,3 s apres `ACHETE`, l'USDC n'y etait pas encore,
+           * et la table a vu « parti sans demande »). Meme motif que la relecture
+           * apres `move_funds` : jusqu'a `tentatives` lectures, une pause entre
+           * deux, et on s'arrete des que filled_size est la. Si elle ne l'est
+           * jamais, la table decide comme avant : un USDC reellement parti sans
+           * demande reste une panne.
+           */
+          const montant = montantATransferer(achat);
+          let lu: UsdcAmount | undefined;
+          for (let lecture = 1; lecture <= config.tentatives; lecture += 1) {
+            if (lecture > 1) await ports.pause(config.pauseMs);
+            lu = (await relire('soldes', soldes))?.usdc ?? lu;
+            if (lu !== undefined && constater(lu, montant).usdc === 'PRESENT') break;
+          }
+          // Sans aucune lecture aboutie, rien n'est constate : le passage s'arrete sur `ACHETE`, reprenable.
+          if (lu === undefined) {
+            throw new Arret(`soldes non lus apres l'achat, en ${String(config.tentatives)} lectures.`);
+          }
+          usdcRelu = lu;
           break;
         }
         case 'TRANSFERER': {
