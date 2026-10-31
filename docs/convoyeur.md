@@ -362,8 +362,11 @@ relit l'exchange.
   Primary sans demande de transfert » (`EN_PANNE`). Après `ACHETE`, le passage
   relit donc *Primary* quatre fois au plus, 3 s entre deux, et s'arrête dès que
   `filled_size` est là. Si ce n'est jamais le cas, la panne reste : un USDC
-  réellement parti sans demande n'est pas rattrapé. Si aucune lecture n'aboutit,
-  le passage s'arrête sur `ACHETE`, sans panne, et le suivant reprend.
+  réellement parti sans demande n'est pas rattrapé. Seule la dernière lecture
+  de la série compte : si elle échoue sans qu'aucune n'ait rendu `filled_size`,
+  le passage s'arrête sur `ACHETE`, sans panne, et le suivant reprend. Chaque
+  lecture qui n'a pas `filled_size` laisse une ligne de journal (numéro, solde
+  lu, `filled_size`), pour distinguer un crédit tardif d'un USDC réellement parti.
 - **L'instant de l'apport** (DC5) est celui de la `TRANSFERT_DEMANDE` du
   passage qui a appelé `move_funds`. Un transfert **refait** par un passage
   ultérieur prend l'instant de sa propre demande, pas celui de la première,

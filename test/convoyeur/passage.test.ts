@@ -413,6 +413,45 @@ describe('Y4b — le credit de l’USDC apres l’achat (incident du 2026-10-27)
     const suite = await passer(coinbase, base, '2026-11-28');
     expect(suite.compteRendu).toMatchObject({ nature: 'REPRISE', etape: 'ENREGISTRE' });
   });
+
+  it('une poussiere puis des echecs jusqu’a la fin : pas de panne sur une lecture perimee, la reprise transfere', async () => {
+    const coinbase = doubleCoinbase('130');
+    const lire = coinbase.balances.bind(coinbase);
+    let apresAchat = 0;
+    coinbase.balances = async () => {
+      if (coinbase.ordresCrees.length === 0 || coinbase.transferts.length > 0) return lire();
+      apresAchat += 1;
+      if (apresAchat > 1) throw new Error('balances : panne');
+      const soldes = await lire();
+      return { ...soldes, usdc: { ...soldes.usdc, available: new Decimal(POUSSIERE) as typeof soldes.usdc.available } };
+    };
+    const base = doubleBase();
+    const { compteRendu, logs, pauses } = await passer(coinbase, base, '2026-11-27');
+    expect(etapes(base)).toEqual(['ACHAT_DEMANDE', 'ACHETE']);
+    expect(compteRendu).toMatchObject({ nature: 'PANNE', etape: 'ACHETE' });
+    expect(compteRendu?.etape).not.toBe('EN_PANNE');
+    expect(pauses).toHaveLength(TENTATIVES - 1);
+    expect(coinbase.appels).not.toContain('moveFunds');
+    expect(logs.join('\n')).toContain('soldes : relecture en echec');
+
+    // Plus de panne de lecture : le passage suivant reprend a ACHETE et transfere.
+    apresAchat = 0;
+    coinbase.balances = lire;
+    const suite = await passer(coinbase, base, '2026-11-28');
+    expect(suite.compteRendu).toMatchObject({ nature: 'REPRISE', etape: 'ENREGISTRE' });
+    expect(coinbase.transferts.map((d) => d.toFixed())).toEqual([RECU.toFixed()]);
+  });
+
+  it('chaque lecture non PRESENT laisse une ligne de journal : numero, solde lu, filled_size', async () => {
+    const coinbase = doubleCoinbase('130');
+    creditTardif(coinbase, 2);
+    const { logs } = await passer(coinbase, doubleBase(), '2026-11-27');
+    const lignes = logs.filter((l) => l.startsWith('soldes apres achat'));
+    expect(lignes).toEqual([
+      `soldes apres achat : lecture 1/${String(TENTATIVES)}, ${POUSSIERE} USDC lus, filled_size ${RECU.toFixed()}`,
+      `soldes apres achat : lecture 2/${String(TENTATIVES)}, ${POUSSIERE} USDC lus, filled_size ${RECU.toFixed()}`,
+    ]);
+  });
 });
 
 describe('DC10 — une poussiere dans Primary (decision du 2026-10-03)', () => {

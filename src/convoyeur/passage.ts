@@ -250,12 +250,17 @@ export async function passage(
           let lu: UsdcAmount | undefined;
           for (let lecture = 1; lecture <= config.tentatives; lecture += 1) {
             if (lecture > 1) await ports.pause(config.pauseMs);
-            lu = (await relire('soldes', soldes))?.usdc ?? lu;
-            if (lu !== undefined && constater(lu, montant).usdc === 'PRESENT') break;
+            // La table ne conclut que sur la derniere lecture de la serie : un echec l'efface.
+            lu = (await relire('soldes', soldes))?.usdc;
+            if (lu === undefined) continue;
+            if (constater(lu, montant).usdc === 'PRESENT') break;
+            log(
+              `soldes apres achat : lecture ${String(lecture)}/${String(config.tentatives)}, ${lu.toFixed()} USDC lus, filled_size ${montant.toFixed()}`,
+            );
           }
-          // Sans aucune lecture aboutie, rien n'est constate : le passage s'arrete sur `ACHETE`, reprenable.
+          // Une derniere lecture perdue sans `PRESENT` ne constate rien : le passage s'arrete sur `ACHETE`, reprenable.
           if (lu === undefined) {
-            throw new Arret(`soldes non lus apres l'achat, en ${String(config.tentatives)} lectures.`);
+            throw new Arret(`soldes non lus apres l'achat : derniere des ${String(config.tentatives)} lectures en echec.`);
           }
           usdcRelu = lu;
           break;
