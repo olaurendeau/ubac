@@ -702,11 +702,12 @@ ils sont cités.
 - **Une phase 3 peut se terminer sans aucun rééquilibrage.** 10 à 15
   déclenchements par an, et une jambe post-only peut ne jamais s'exécuter. C'est
   le même avertissement que le §13 donne déjà pour la phase 1, et il vaut ici.
-  La bande cash a été resserrée à ±10 % par décision de l'opérateur (§5.7 de
-  `docs/specs/ubac-rebalance.md`, 2026-11-12), pour des rééquilibrages plus
-  fréquents ; ce choix ne change pas l'ordre de grandeur ci-dessus. Régler une
-  bande reste une décision consignée, jamais un réglage pour faire bouger une
-  phase.
+  La bande cash à ±10 % et la jambe minimale à 100 USDC ont été choisies
+  ensemble par l'opérateur (§5.7 de `docs/specs/ubac-rebalance.md`, 2026-11-12),
+  pour des rééquilibrages plus fréquents et plus petits : c'est ce qui fait passer
+  la fréquence de 4 à 8 à 10 à 15 par an. Un mois peut encore n'en montrer aucun.
+  Régler une bande ou ce plancher reste une décision consignée, jamais un réglage
+  pour faire bouger une phase.
 - **La phase 3 ne démontre rien sur la valeur de la stratégie.** Le §5.6 pose
   que battre le DCA sur 12 mois est la condition de justification. Un mois de
   rééquilibrages réels n'en dit rien.
