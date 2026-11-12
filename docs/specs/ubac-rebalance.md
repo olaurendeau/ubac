@@ -199,6 +199,14 @@ Un rééquilibrage typique fait bouger environ 3 % de la valeur du portefeuille 
 
 C'est un ordre de grandeur en dessous du ladder (0,55 % par aller-retour). La contrainte de conception n'est donc plus le coût mais la **fréquence de déclenchement** : des bandes trop serrées produiraient du bruit sans créer de valeur. La bande à ±10 % est le choix assumé de la fréquence, voir §5.7.
 
+### 5.6 Stratégies shadow
+
+Tournent en simulation sur les mêmes données, apparaissent dans le rapport quotidien, ne passent aucun ordre.
+
+- **Ladder** : ancre unique, achat à -7 % (BTC) / -9 % (ETH), vente à +12 % / +15 %. Le concurrent direct, conservé pour arbitrer empiriquement.
+- **DCA** : achat d'un montant fixe à date fixe. Benchmark de simplicité. Si le rééquilibrage ne bat pas le DCA sur 12 mois, il ne se justifie pas.
+- **Hold** : BTC seul et 50/50 BTC/ETH, calculés en `benchmark.ts`.
+
 ### 5.7 Décision du 2026-11-12 : bande à ±10 % et jambe minimale à 100 USDC
 
 Decision: la bande cash relative de `rebalance` passe de ±20 % à **±10 %** (USDC déclenche hors de [27 %, 33 %] au lieu de [24 %, 36 %]), et la jambe minimale `MIN_LEG_USDC` de la couche risque passe de 200 à **100 USDC**. — Reason: l'opérateur veut des rééquilibrages plus fréquents sur des montants plus petits (« j'ai envie que ça bouge plus »), décidé le 2026-11-12.
@@ -211,14 +219,6 @@ Mesure à l'appui (rejeu local, non versionné, 2024-01-01 → 2026-08-31, frais
 | ±10 % / 100 USDC (après) | 32 | 53 USDC | 23 241 | 44,41 % |
 
 Pas de gagnant net : la fréquence est le choix assumé. Les deux valeurs vont ensemble : avec ±10 % mais un plancher resté à 200, 16 des 52 déclenchements n'exécutaient aucune jambe. Aucun autre seuil de la couche risque ne change (`COOLDOWN`, `MIN_CASH`, `REBALANCE_TOO_LARGE`…).
-
-### 5.6 Stratégies shadow
-
-Tournent en simulation sur les mêmes données, apparaissent dans le rapport quotidien, ne passent aucun ordre.
-
-- **Ladder** : ancre unique, achat à -7 % (BTC) / -9 % (ETH), vente à +12 % / +15 %. Le concurrent direct, conservé pour arbitrer empiriquement.
-- **DCA** : achat d'un montant fixe à date fixe. Benchmark de simplicité. Si le rééquilibrage ne bat pas le DCA sur 12 mois, il ne se justifie pas.
-- **Hold** : BTC seul et 50/50 BTC/ETH, calculés en `benchmark.ts`.
 
 ---
 
@@ -363,7 +363,7 @@ Contrainte qui a un impact direct sur le code :
 
 - En France, une cession crypto vers EUR est un **fait générateur d'imposition**, un échange crypto vers crypto ne l'est pas. La jambe cash doit donc être **USDC et jamais EUR**. La couche risque rejette toute paire `*-EUR` (`QUOTE_NOT_ALLOWED`).
 - L'historique 2024-2025 contient des ventes SOL-EUR et ETH-EUR. L'agent ne doit reproduire ce schéma sous aucune condition.
-- Avantage du rééquilibrage à bandes sur le ladder : **4 à 8 événements par an contre 15 à 25**. Nettement moins de cessions à tracer, et un profil d'activité bien moins susceptible d'être requalifié en BIC professionnels, ce qui n'est pas neutre avec une SASU à côté.
+- Avantage du rééquilibrage à bandes sur le ladder : **de l'ordre de 10 à 15 événements par an (bande à ±10 %, §5.7) contre 15 à 25**. Moins de cessions à tracer (l'écart se réduit depuis le 2026-11-12), et un profil d'activité bien moins susceptible d'être requalifié en BIC professionnels, ce qui n'est pas neutre avec une SASU à côté.
 - Prévoir un export CSV des cessions (`orders` avec fills et frais) pour la déclaration. Penser au formulaire 3916-bis pour les comptes d'actifs numériques à l'étranger.
 
 Ces points sont des contraintes techniques constatées, pas un conseil fiscal. À cadrer avec le comptable avant passage en réel.

@@ -29,6 +29,10 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
  * passe de 12 a 32 declenchements (valeur finale 23 368.54 -> 23 296.17, TWR 44.62 % ->
  * 44.94 %), `rebalance_ab` de 97 a 36 (23 304.05 -> 23 296.17). Les quatre autres series
  * ne bougent pas. Ce sont des valeurs de non-regression, pas un verdict de rentabilite.
+ * `rebalance` et `rebalance_ab` ont desormais les memes valeurs, ce qui n'est pas un
+ * copier-coller : les 4 declenchements de plus de `rebalance_ab` sont des RATIO_BAND
+ * (2025-08-22, 23, 24 et 26), tous refuses en REBALANCE_TOO_LARGE (environ 16 % du
+ * portefeuille), donc sans effet sur la valeur. Le rejeu versionne ne compte aucun frais.
  */
 const ORACLES: Record<
   SeriesName,
