@@ -104,7 +104,7 @@ Ce qui manque est la lecture de l'historique d'exécutions, pas la règle.
   verdict.
 - **Toute migration depuis la chaîne** (`docs/base-de-donnees.md` §5), inchangé.
 - **Toute conclusion sur la valeur de la stratégie.** Un mois de rééquilibrages
-  réels, avec 4 à 8 déclenchements par an, ne démontre rien. La phase 3 valide
+  réels, avec 10 à 15 déclenchements par an, ne démontre rien. La phase 3 valide
   l'exécution, pas la stratégie.
 
 ## Décisions prises pendant le cadrage
@@ -203,7 +203,7 @@ E34, et il est tenu par le dépôt lui-même. L'option 4 aurait contredit
 variable préfixée `UBAC_RISK_`.
 
 **O4 = 1 découple la sortie de phase du marché.** Un mois calendaire de runs
-armés sans incident se constate ; N rééquilibrages réels dépendent de 4 à 8
+armés sans incident se constate ; N rééquilibrages réels dépendent de 10 à 15
 franchissements de bande par an et d'une jambe post-only qui peut ne jamais
 s'exécuter. Le §13 prévient déjà que la période peut n'en montrer aucun.
 
@@ -316,7 +316,7 @@ refuse d'en faire une erreur.
 Ce n'est pas une hypothèse à changer : c'est le bon arbitrage. Mais il faut en
 tirer la conséquence que ni le §7 ni le §13 ne tirent. **La phase 3 peut se
 terminer sans qu'aucun rééquilibrage complet n'ait jamais abouti**, soit parce
-qu'aucune bande n'a été franchie — 4 à 8 déclenchements par an —, soit parce que
+qu'aucune bande n'a été franchie — 10 à 15 déclenchements par an —, soit parce que
 les jambes ont été rejetées. Un critère de sortie de phase 3 qui exigerait un
 rééquilibrage réel serait donc un critère que le marché, et non le code, décide
 de satisfaire.
@@ -699,7 +699,7 @@ ils sont cités.
   toujours pas tranchée**, et elle doit l'être avant l'armement. Ne pas supposer
   que non. Le dépôt ne peut pas y répondre seul : c'est une mesure à faire sur
   la nouvelle clé.
-- **Une phase 3 peut se terminer sans aucun rééquilibrage.** 4 à 8
+- **Une phase 3 peut se terminer sans aucun rééquilibrage.** 10 à 15
   déclenchements par an, et une jambe post-only peut ne jamais s'exécuter. C'est
   le même avertissement que le §13 donne déjà pour la phase 1, et il vaut ici :
   ne pas resserrer les bandes pour « voir quelque chose ».

@@ -128,7 +128,7 @@ Le jour où l'une se ferme, son test devient rouge — c'est le signal.
   `true` ; `false` ne compile pas.
 - **`client_order_id` déterministe (§7).** Dérivé de `src/core/order-id.ts`,
   dans le domaine propre de la sortie, jamais recalculé.
-- **Plancher de `MIN_LEG_USDC`.** Sous 200 USDC, la ligne devient un **résidu**
+- **Plancher de `MIN_LEG_USDC`.** Sous 100 USDC, la ligne devient un **résidu**
   déclaré dans le rapport au lieu d'un ordre que l'exchange refuserait. Une sortie
   qui laisse 12 USDC de poussière est propre ; une sortie qui émet un ordre
   irrecevable ne l'est pas.

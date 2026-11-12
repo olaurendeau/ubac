@@ -235,7 +235,7 @@ describe('rendu — la sortie attendue, ligne a ligne', () => {
       '100000.00 USDC | +4.17 % | +25.00 %',
       'Distance au prochain declenchement',
       'Bande | Constate | Bornes | Distance',
-      'Bande de cash (A) | USDC 31.00 % | [24.00 %, 36.00 %] | 5.00 pt de la borne haute',
+      'Bande de cash (A) | USDC 31.00 % | [27.00 %, 33.00 %] | 2.00 pt de la borne haute',
       "Declencheur B desarme : le ratio BTC/ETH n'est pas surveille en production (§5.2).",
       'Evolution du portefeuille (TWR cumule)',
       "P&L cumule (TWR) depuis la premiere photo, lu sur l'indice de croissance : 5 photo(s), du 2026-09-09 au 2026-09-13, 1 colonne = 1 photo. Echelle de +10.00 % a +25.00 %, et non depuis zero : une variation faible occupe toute la hauteur.",
@@ -647,30 +647,30 @@ describe('§9 — ladder et DCA : l’absence de courbe se dit la ou on la cherc
 
 // --- La distance au prochain declenchement ----------------------------------
 
-/** La seule valeur que le noyau ne produit pas. Bande par defaut : `[0.24, 0.36]` autour d'une cible USDC a 0.30. */
+/** La seule valeur que le noyau ne produit pas. Bande par defaut : `[0.27, 0.33]` autour d'une cible USDC a 0.30. */
 describe('§9 — la distance au prochain declenchement, aux deux bornes', () => {
   const BANDE = cashBand(DEFAULT_REBALANCE_PARAMS);
   const distance = (cash: string) => bandDistance(dec(cash), BANDE.lower, BANDE.upper);
 
-  it('la bande par defaut est bien [0.24, 0.36]', () => {
-    expect(BANDE.lower.toFixed(2)).toBe('0.24');
-    expect(BANDE.upper.toFixed(2)).toBe('0.36');
+  it('la bande par defaut est bien [0.27, 0.33]', () => {
+    expect(BANDE.lower.toFixed(2)).toBe('0.27');
+    expect(BANDE.upper.toFixed(2)).toBe('0.33');
   });
 
   it('dans la bande : les deux marges, et la plus courte designee', () => {
-    const bas = distance('0.26');
-    expect(bas.status === 'INSIDE' && bas.toLower.toFixed(4)).toBe('0.0200');
-    expect(bas.status === 'INSIDE' && bas.toUpper.toFixed(4)).toBe('0.1000');
+    const bas = distance('0.28');
+    expect(bas.status === 'INSIDE' && bas.toLower.toFixed(4)).toBe('0.0100');
+    expect(bas.status === 'INSIDE' && bas.toUpper.toFixed(4)).toBe('0.0500');
     expect(bas.status === 'INSIDE' && bas.side).toBe('LOWER');
     expect(bas.status === 'INSIDE' && bas.onEdge).toBe(false);
 
-    const haut = distance('0.35');
-    expect(haut.status === 'INSIDE' && haut.gap.toFixed(4)).toBe('0.0100');
+    const haut = distance('0.325');
+    expect(haut.status === 'INSIDE' && haut.gap.toFixed(4)).toBe('0.0050');
     expect(haut.status === 'INSIDE' && haut.side).toBe('UPPER');
   });
 
   it('exactement sur la borne basse : distance nulle, mais pas encore franchie', () => {
-    const sur = distance('0.24');
+    const sur = distance('0.27');
     expect(sur.status).toBe('INSIDE');
     expect(sur.status === 'INSIDE' && sur.onEdge).toBe(true);
     expect(sur.status === 'INSIDE' && sur.gap.isZero()).toBe(true);
@@ -678,27 +678,27 @@ describe('§9 — la distance au prochain declenchement, aux deux bornes', () =>
   });
 
   it('exactement sur la borne haute : distance nulle, mais pas encore franchie', () => {
-    const sur = distance('0.36');
+    const sur = distance('0.33');
     expect(sur.status).toBe('INSIDE');
     expect(sur.status === 'INSIDE' && sur.onEdge).toBe(true);
     expect(sur.status === 'INSIDE' && sur.side).toBe('UPPER');
   });
 
   it('le dernier pas avant chaque borne reste dedans, le premier apres est dehors', () => {
-    expect(distance('0.2400000001').status).toBe('INSIDE');
-    expect(distance('0.2399999999').status).toBe('CROSSED');
-    expect(distance('0.3599999999').status).toBe('INSIDE');
-    expect(distance('0.3600000001').status).toBe('CROSSED');
+    expect(distance('0.2700000001').status).toBe('INSIDE');
+    expect(distance('0.2699999999').status).toBe('CROSSED');
+    expect(distance('0.3299999999').status).toBe('INSIDE');
+    expect(distance('0.3300000001').status).toBe('CROSSED');
   });
 
   it('deja hors bande : aucune distance, le depassement a la place', () => {
     const dessous = distance('0.20');
     expect(dessous.status === 'CROSSED' && dessous.side).toBe('LOWER');
-    expect(dessous.status === 'CROSSED' && dessous.overshoot.toFixed(4)).toBe('0.0400');
+    expect(dessous.status === 'CROSSED' && dessous.overshoot.toFixed(4)).toBe('0.0700');
 
     const dessus = distance('0.42');
     expect(dessus.status === 'CROSSED' && dessus.side).toBe('UPPER');
-    expect(dessus.status === 'CROSSED' && dessus.overshoot.toFixed(4)).toBe('0.0600');
+    expect(dessus.status === 'CROSSED' && dessus.overshoot.toFixed(4)).toBe('0.0900');
   });
 
   it('a egalite parfaite, designe la borne basse, et toujours la meme', () => {
@@ -719,10 +719,10 @@ describe('§9 — la distance au prochain declenchement, aux deux bornes', () =>
    * inversion de comparaison visible — `lte` a la place de `lt`.
    */
   it.each([
-    ['0.24', 'INSIDE', 'NONE'],
-    ['0.2399', 'CROSSED', 'CASH_BAND'],
-    ['0.36', 'INSIDE', 'NONE'],
-    ['0.3601', 'CROSSED', 'CASH_BAND'],
+    ['0.27', 'INSIDE', 'NONE'],
+    ['0.2699', 'CROSSED', 'CASH_BAND'],
+    ['0.33', 'INSIDE', 'NONE'],
+    ['0.3301', 'CROSSED', 'CASH_BAND'],
     ['0.31', 'INSIDE', 'NONE'],
   ] as const)('cash %s : le rapport dit %s, decide() dit %s', (cash, attendu, trigger) => {
     const total = dec('100000');

@@ -167,8 +167,8 @@ describe('montant fixe', () => {
 
   /*
    * Le defaut de 500 USDC n'est pas cosmetique : reparti en deux il donne des
-   * jambes de 250, au-dessus du seuil de C19. Un defaut a 300 produirait deux
-   * jambes de 150 que la couche risque ecarterait sans rejeter le run — le
+   * jambes de 250, au-dessus du seuil de C19. Un defaut a 150 produirait deux
+   * jambes de 75 que la couche risque ecarterait sans rejeter le run — le
    * benchmark n'acheterait jamais rien et personne ne le verrait.
    */
   it('produit par defaut des jambes au-dessus du seuil LEG_TOO_SMALL', () => {

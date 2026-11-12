@@ -54,8 +54,8 @@ export interface DcaConfig {
  * 500 USDC le 1er de chaque mois, moitie BTC moitie ETH.
  *
  * Le montant n'est pas cosmetique : reparti en deux, il donne des jambes de 250
- * USDC, au-dessus du seuil `MIN_LEG_USDC` de 200 de `core/risk.ts`. Un DCA de
- * 300 USDC produirait deux jambes de 150 que la couche risque ecarterait au
+ * USDC, au-dessus du seuil `MIN_LEG_USDC` de 100 de `core/risk.ts`. Un DCA de
+ * 150 USDC produirait deux jambes de 75 que la couche risque ecarterait au
  * titre de C19 — sans rejeter le run, donc sans que rien ne l'annonce. Le
  * benchmark n'acheterait jamais rien et le rejeu comparerait le reequilibrage a
  * un portefeuille immobile.

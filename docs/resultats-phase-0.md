@@ -1,13 +1,20 @@
 # Résultats du rejeu — phase 0
 
+> **Résultat historique.** Les chiffres ci-dessous sont ceux de la configuration de
+> l'époque (bande cash à ±20 %, jambe minimale à 200 USDC). La configuration de
+> production a changé le 2026-11-12 (±10 % et 100 USDC) : voir
+> [la spec](specs/ubac-rebalance.md), §5.7.
+
 Généré le 2026-09-10 sur `main`, commit `12cbac0`.
 Reproductible par `make ci` puis `./scripts/dev.sh npm run replay`, **sur ce
 commit** : depuis le plafond réduit de la phase 3, `REBALANCE_TOO_LARGE_PCT`
 ne vaut plus 25 %. De 8 % (2026-09-21), les lignes `rebalance*`, qui passent
 par `validate()`, n'étaient plus celles-ci sur `main`. Relevé à 11 % le
-2026-09-27, le plafond ne refuse plus aucun rééquilibrage de `rebalance` : sa
-ligne est de nouveau identique à celle-ci. Celle de `rebalance_ab`, qui bute
-encore 84 jours, reste différente (23 304,05 USDC, 97 déclenchements). Voir
+2026-09-27, le plafond ne refusait plus aucun rééquilibrage de `rebalance` : sa
+ligne était alors identique à celle-ci. Celle de `rebalance_ab`, qui butait
+encore 84 jours, restait différente (23 304,05 USDC, 97 déclenchements). Depuis
+le 2026-11-12 (bande à ±10 %, jambe minimale à 100 USDC), ces deux lignes ont
+encore changé sur `main` : voir la spec, §5.7. Voir aussi
 [run-quotidien.md](run-quotidien.md#le-plafond-réduit-de-la-phase-3).
 
 ## Ce que ce document est, et ce qu'il n'est pas

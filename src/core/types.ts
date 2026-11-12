@@ -115,7 +115,7 @@ export interface CashFlow {
  * pouvoir en recevoir une invalide.
  *
  * Une jambe est libellee en USDC, pas en unites d'actif : c'est la forme dont
- * raisonnent C19 (jambe sous 200 USDC ignoree) et C20 (somme des jambes sur la
+ * raisonnent C19 (jambe sous 100 USDC ignoree) et C20 (somme des jambes sur la
  * valeur totale). La quantite d'actif n'apparait qu'a la conversion en `Order`,
  * ou elle vaut `amount / limitPrice`.
  */

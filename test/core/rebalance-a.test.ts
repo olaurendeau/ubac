@@ -117,11 +117,11 @@ function driftFromTarget(state: RebalanceState, legs: readonly IntentLeg[]): Dec
 }
 
 describe('bande de cash', () => {
-  it('vaut [0.24, 0.36] pour une cible a 30 % et un ecart relatif de 20 %', () => {
+  it('vaut [0.27, 0.33] pour une cible a 30 % et un ecart relatif de 10 %', () => {
     const band = cashBand(DEFAULT_REBALANCE_PARAMS);
 
-    expect(band.lower.toString()).toBe('0.24');
-    expect(band.upper.toString()).toBe('0.36');
+    expect(band.lower.toString()).toBe('0.27');
+    expect(band.upper.toString()).toBe('0.33');
   });
 });
 
@@ -130,19 +130,19 @@ describe('bande de cash', () => {
  * seule facon de distinguer `lt` de `lte`, et de voir une comparaison qui serait
  * partie en coercition de chaine plutot qu'en comparaison numerique.
  */
-describe('C6 : bornes incluses, A ne tire pas dans [0.24, 0.36]', () => {
-  it('ne tire pas au poids USDC de 0.24 exactement', () => {
-    const intent = intentAt(stateAt('0.40', '0.36', '0.24'));
+describe('C6 : bornes incluses, A ne tire pas dans [0.27, 0.33]', () => {
+  it('ne tire pas au poids USDC de 0.27 exactement', () => {
+    const intent = intentAt(stateAt('0.40', '0.33', '0.27'));
 
-    expect(intent.weightsBefore.USDC.toString()).toBe('0.24');
+    expect(intent.weightsBefore.USDC.toString()).toBe('0.27');
     expect(intent.trigger).toBe('NONE');
     expect(intent.legs).toEqual([]);
   });
 
-  it('ne tire pas au poids USDC de 0.36 exactement', () => {
-    const intent = intentAt(stateAt('0.34', '0.30', '0.36'));
+  it('ne tire pas au poids USDC de 0.33 exactement', () => {
+    const intent = intentAt(stateAt('0.37', '0.30', '0.33'));
 
-    expect(intent.weightsBefore.USDC.toString()).toBe('0.36');
+    expect(intent.weightsBefore.USDC.toString()).toBe('0.33');
     expect(intent.trigger).toBe('NONE');
     expect(intent.legs).toEqual([]);
   });
@@ -155,19 +155,39 @@ describe('C6 : bornes incluses, A ne tire pas dans [0.24, 0.36]', () => {
   });
 });
 
-describe('C7 : A tire a 0.2399 et a 0.3601', () => {
-  it('tire au poids USDC de 0.2399', () => {
-    const intent = intentAt(stateAt('0.44', '0.3201', '0.2399'));
+describe('C7 : A tire a 0.2699 et a 0.3301', () => {
+  it('tire au poids USDC de 0.2699', () => {
+    const intent = intentAt(stateAt('0.44', '0.2901', '0.2699'));
 
-    expect(intent.weightsBefore.USDC.toString()).toBe('0.2399');
+    expect(intent.weightsBefore.USDC.toString()).toBe('0.2699');
     expect(intent.trigger).toBe('CASH_BAND');
     expect(intent.legs.length).toBeGreaterThan(0);
   });
 
-  it('tire au poids USDC de 0.3601', () => {
-    const intent = intentAt(stateAt('0.32', '0.3199', '0.3601'));
+  it('tire au poids USDC de 0.3301', () => {
+    const intent = intentAt(stateAt('0.36', '0.3099', '0.3301'));
 
-    expect(intent.weightsBefore.USDC.toString()).toBe('0.3601');
+    expect(intent.weightsBefore.USDC.toString()).toBe('0.3301');
+    expect(intent.trigger).toBe('CASH_BAND');
+    expect(intent.legs.length).toBeGreaterThan(0);
+  });
+});
+
+/*
+ * Decision du 2026-11-12 : la bande passe de +/-20 % a +/-10 % (de [0.24, 0.36]
+ * a [0.27, 0.33]). Un cash a 25 % ou a 35 %, tenu jusque-la, declenche desormais.
+ */
+describe('bande de +/-10 % : ce que l ancienne bande laissait passer', () => {
+  it('tire a 0.25, qui etait dans [0.24, 0.36]', () => {
+    const intent = intentAt(stateAt('0.45', '0.30', '0.25'));
+
+    expect(intent.trigger).toBe('CASH_BAND');
+    expect(intent.legs.length).toBeGreaterThan(0);
+  });
+
+  it('tire a 0.35, qui etait dans [0.24, 0.36]', () => {
+    const intent = intentAt(stateAt('0.35', '0.30', '0.35'));
+
     expect(intent.trigger).toBe('CASH_BAND');
     expect(intent.legs.length).toBeGreaterThan(0);
   });
@@ -373,13 +393,13 @@ describe('intention', () => {
    */
   it('explique le declenchement en clair, a format fige', () => {
     expect(intentAt(stateAt('0.44', '0.3201', '0.2399')).reason).toBe(
-      'poids USDC 0.239900 sous la borne basse 0.240000 : retour a la cible',
+      'poids USDC 0.239900 sous la borne basse 0.270000 : retour a la cible',
     );
     expect(intentAt(stateAt('0.32', '0.3199', '0.3601')).reason).toBe(
-      'poids USDC 0.360100 au-dessus de la borne haute 0.360000 : retour a la cible',
+      'poids USDC 0.360100 au-dessus de la borne haute 0.330000 : retour a la cible',
     );
     expect(intentAt(stateAt('0.40', '0.30', '0.30')).reason).toBe(
-      'poids USDC 0.300000 dans la bande [0.240000, 0.360000] : aucun reequilibrage',
+      'poids USDC 0.300000 dans la bande [0.270000, 0.330000] : aucun reequilibrage',
     );
   });
 });

@@ -189,7 +189,7 @@ describe('C10 : A et B hors bande, A l emporte', () => {
   it('ne mentionne ni la bande de ratio ni le cooldown dans le motif', () => {
     const { reason } = intentAt(stateAt(CASH_BELOW, RATIO_HIGH, '2026-03-13'));
 
-    expect(reason).toBe('poids USDC 0.100000 sous la borne basse 0.240000 : retour a la cible');
+    expect(reason).toBe('poids USDC 0.100000 sous la borne basse 0.270000 : retour a la cible');
   });
 });
 
@@ -217,8 +217,8 @@ describe('C11 : B n est evalue que si A est dans sa bande', () => {
 
   /*
    * Les 41 poids de cash de 0.10 a 0.50, ratio a 3.0 sur toute la plage. B ne
-   * prend la main que sur les points ou A est dans sa bande, bornes 0.24 et
-   * 0.36 comprises — les memes bornes incluses que mesure C6, vues cette fois
+   * prend la main que sur les points ou A est dans sa bande, bornes 0.27 et
+   * 0.33 comprises — les memes bornes incluses que mesure C6, vues cette fois
    * depuis B.
    */
   it('ne prend la main que sur la bande de A, de 0.10 a 0.50 de cash', () => {
@@ -373,7 +373,7 @@ describe('C12 : le cooldown propre de B', () => {
    */
   it('journalise le constat de cooldown derriere celui de la bande franchie', () => {
     expect(intentAt(wants('2026-03-08'), clockAt('2026-03-14')).reason).toBe(
-      'poids USDC 0.300000 dans la bande [0.240000, 0.360000]' +
+      'poids USDC 0.300000 dans la bande [0.270000, 0.330000]' +
         ' ; ratio BTC/ETH 3.000000 au-dessus de la borne haute 1.733333' +
         ' ; dernier arbitrage de ratio le 2026-03-08, 6 jours ecoules sur les 7 du cooldown' +
         ' : aucun reequilibrage',

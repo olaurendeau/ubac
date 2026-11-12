@@ -16,7 +16,7 @@ import type {
 } from '../types.js';
 
 /**
- * Declencheur A : la bande de cash. Le poids USDC sort de `[0.24, 0.36]`, on
+ * Declencheur A : la bande de cash. Le poids USDC sort de `[0.27, 0.33]`, on
  * ramene toutes les lignes a la cible exacte (mode `target`, defaut du §5.3) ou
  * seulement au bord franchi (mode `band_edge`).
  *
@@ -84,7 +84,7 @@ export interface RebalanceParams {
   readonly strategy: StrategyName;
   /** Allocation visee. Somme a 1 a 1e-8 pres, verifie a chaque appel. */
   readonly targets: Weights;
-  /** Ecart relatif tolere autour de la cible USDC : 0.20 donne `[0.24, 0.36]`. */
+  /** Ecart relatif tolere autour de la cible USDC : 0.10 donne `[0.27, 0.33]`. */
   readonly cashBandRelative: Decimal;
   /** Ou se pose le run une fois qu'il a tire : sur la cible, ou sur le bord. */
   readonly rebalanceMode: RebalanceMode;
@@ -123,7 +123,7 @@ export const DEFAULT_REBALANCE_PARAMS: RebalanceParams = {
     ETH: new Decimal('0.30') as Weight,
     USDC: new Decimal('0.30') as Weight,
   },
-  cashBandRelative: new Decimal('0.20'),
+  cashBandRelative: new Decimal('0.10'),
   rebalanceMode: 'target',
   newCashFreezeDays: 7,
   ratioBandEnabled: false,
@@ -246,7 +246,7 @@ export interface CashBand {
   readonly upper: Weight;
 }
 
-/** `[cible x (1 - ecart), cible x (1 + ecart)]`, soit `[0.24, 0.36]` par defaut. */
+/** `[cible x (1 - ecart), cible x (1 + ecart)]`, soit `[0.27, 0.33]` par defaut. */
 export function cashBand(params: RebalanceParams): CashBand {
   return {
     lower: params.targets.USDC.mul(ONE.minus(params.cashBandRelative)) as Weight,
@@ -256,8 +256,8 @@ export function cashBand(params: RebalanceParams): CashBand {
 
 /**
  * `edge` porte la borne franchie, pas une borne fixe : c'est ce dont a besoin
- * le mode `band_edge` de C9, qui remonte le cash a 24 % par le bas et le
- * redescend a 36 % par le haut.
+ * le mode `band_edge` de C9, qui remonte le cash a 27 % par le bas et le
+ * redescend a 33 % par le haut.
  */
 type BandPosition =
   | { readonly side: 'INSIDE' }
@@ -265,8 +265,8 @@ type BandPosition =
   | { readonly side: 'ABOVE'; readonly edge: Weight };
 
 /**
- * Bornes incluses (C6) : on tire strictement sous 0.24 et strictement au-dessus
- * de 0.36, jamais dessus. D'ou `lt` et `gt`, jamais `lte` ni `gte`.
+ * Bornes incluses (C6) : on tire strictement sous 0.27 et strictement au-dessus
+ * de 0.33, jamais dessus. D'ou `lt` et `gt`, jamais `lte` ni `gte`.
  *
  * Et jamais non plus `<` ni `>` : sur deux objets `Decimal`, JavaScript passe
  * par la coercition et compare des chaines. Le resultat reste plausible sur des
@@ -602,8 +602,8 @@ function riskyTargets(params: RebalanceParams): Decimal {
 /**
  * Ou se pose le run. En `target`, sur la cible permanente. En `band_edge`, sur
  * `position.edge`, c'est-a-dire la borne **franchie** et non une borne fixe :
- * un cash a 20 % remonte a 24 %, un cash a 40 % redescend a 36 %. Ramener
- * systematiquement a 24 % est l'erreur naturelle et elle ne se voit que sur le
+ * un cash a 20 % remonte a 27 %, un cash a 40 % redescend a 33 %. Ramener
+ * systematiquement a 27 % est l'erreur naturelle et elle ne se voit que sur le
  * franchissement par le haut, ou elle vend tout le cash excedentaire au lieu de
  * la seule fraction qui depasse.
  *
@@ -662,7 +662,7 @@ function aimedWeights(params: RebalanceParams, position: BandPosition): Weights 
  *
  * Une jambe a 0 USDC ne devient pas un ordre pour autant : `risk.ts` prend son
  * `legIndex` sur `intent.legs.entries()`, donc avant le filtre, puis l'ecarte
- * sous `LEG_TOO_SMALL` (seuil a 200 USDC) sans decaler personne. Son `side` vaut
+ * sous `LEG_TOO_SMALL` (seuil a 100 USDC) sans decaler personne. Son `side` vaut
  * `SELL` par la convention de l'expression ci-dessous ; sur un montant nul le
  * sens ne designe rien, et il n'atteint jamais l'exchange.
  */
@@ -963,7 +963,7 @@ export function decide(state: RebalanceState, clock: Clock, params: RebalancePar
       /*
        * Ce que le run vise reellement, et non la cible permanente : en
        * `band_edge` un run qui tire se pose sur le bord franchi, et journaliser
-       * 30 % la ou les jambes menent a 24 % rendrait le rapport faux sur le seul
+       * 30 % la ou les jambes menent a 27 % rendrait le rapport faux sur le seul
        * chiffre qu'on lit face aux poids constates. Sur un run de B c'est le
        * poids USDC constate qui ressort, puisque B n'y touche pas. En mode
        * `target`, et hors declenchement dans les deux modes, c'est bien la cible

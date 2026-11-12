@@ -109,22 +109,22 @@ const near = (actual: Decimal, expected: Decimal | string): boolean =>
 
 /*
  * Les deux tests que le plan exige, un par sens de franchissement. Le sens haut
- * est celui qui compte : ramener systematiquement le cash a 24 %, quel que soit
+ * est celui qui compte : ramener systematiquement le cash a 27 %, quel que soit
  * le bord franchi, passe le test du bas sans broncher. Ici un cash a 40 % doit
- * redescendre a 36 %, et rien d'autre ne le distingue.
+ * redescendre a 33 %, et rien d'autre ne le distingue.
  */
 describe('C9 : les poids recalcules egalent la bande franchie', () => {
-  it('remonte le cash a 0.24 quand il est passe sous la borne basse', () => {
+  it('remonte le cash a 0.27 quand il est passe sous la borne basse', () => {
     const after = weightsAfter(stateAt('0.45', '0.35', '0.20'));
 
-    expect(after.USDC.toFixed(8)).toBe('0.24000000');
+    expect(after.USDC.toFixed(8)).toBe('0.27000000');
     expect(near(after.USDC, BAND.lower)).toBe(true);
   });
 
-  it('redescend le cash a 0.36 quand il est passe au-dessus de la borne haute', () => {
+  it('redescend le cash a 0.33 quand il est passe au-dessus de la borne haute', () => {
     const after = weightsAfter(stateAt('0.30', '0.30', '0.40'));
 
-    expect(after.USDC.toFixed(8)).toBe('0.36000000');
+    expect(after.USDC.toFixed(8)).toBe('0.33000000');
     expect(near(after.USDC, BAND.upper)).toBe(true);
   });
 
@@ -197,7 +197,7 @@ describe('C9 : les poids recalcules egalent la bande franchie', () => {
 
 describe('jambes du mode band_edge', () => {
   /*
-   * Le cash remonte de 0.20 a 0.24, soit 4 000 USDC sur un total de 100 000 :
+   * Le cash remonte de 0.20 a 0.27, soit 7 000 USDC sur un total de 100 000 :
    * c'est la somme des deux ventes, et rien de plus. En mode `target` la meme
    * situation deplacerait 10 000 USDC. « Trade moins » est cette difference.
    */
@@ -205,12 +205,12 @@ describe('jambes du mode band_edge', () => {
     const { legs } = intentAt(stateAt('0.45', '0.35', '0.20'));
 
     expect(legs.map((leg) => [leg.asset, leg.side, leg.amount.toFixed(4)])).toEqual([
-      ['BTC', 'SELL', '1571.4286'],
-      ['ETH', 'SELL', '2428.5714'],
+      ['BTC', 'SELL', '3285.7143'],
+      ['ETH', 'SELL', '3714.2857'],
     ]);
 
     const moved = legs.reduce((acc, leg) => acc.plus(leg.amount), new Decimal(0));
-    expect(moved.toFixed(4)).toBe('4000.0000');
+    expect(moved.toFixed(4)).toBe('7000.0000');
   });
 
   /*
@@ -222,8 +222,8 @@ describe('jambes du mode band_edge', () => {
     const { legs } = intentAt(stateAt('0.30', '0.30', '0.40'));
 
     expect(legs.map((leg) => [leg.asset, leg.side, leg.amount.toFixed(4)])).toEqual([
-      ['BTC', 'BUY', '6571.4286'],
-      ['ETH', 'SELL', '2571.4286'],
+      ['BTC', 'BUY', '8285.7143'],
+      ['ETH', 'SELL', '1285.7143'],
     ]);
   });
 
@@ -239,20 +239,20 @@ describe('jambes du mode band_edge', () => {
 describe('intention en mode band_edge', () => {
   /*
    * `weightsTarget` part dans `decisions` et s'affiche face aux poids constates.
-   * Y journaliser 30 % pendant que les jambes menent a 24 % rendrait le rapport
+   * Y journaliser 30 % pendant que les jambes menent a 27 % rendrait le rapport
    * faux sur le seul chiffre qu'on y lit.
    */
   it('journalise le bord franchi comme cible du run, pas la cible permanente', () => {
     const below = intentAt(stateAt('0.45', '0.35', '0.20'));
     const above = intentAt(stateAt('0.30', '0.30', '0.40'));
 
-    expect(below.weightsTarget.USDC.toString()).toBe('0.24');
-    expect(below.weightsTarget.BTC.toFixed(8)).toBe('0.43428571');
-    expect(below.weightsTarget.ETH.toFixed(8)).toBe('0.32571429');
+    expect(below.weightsTarget.USDC.toString()).toBe('0.27');
+    expect(below.weightsTarget.BTC.toFixed(8)).toBe('0.41714286');
+    expect(below.weightsTarget.ETH.toFixed(8)).toBe('0.31285714');
 
-    expect(above.weightsTarget.USDC.toString()).toBe('0.36');
-    expect(above.weightsTarget.BTC.toFixed(8)).toBe('0.36571429');
-    expect(above.weightsTarget.ETH.toFixed(8)).toBe('0.27428571');
+    expect(above.weightsTarget.USDC.toString()).toBe('0.33');
+    expect(above.weightsTarget.BTC.toFixed(8)).toBe('0.38285714');
+    expect(above.weightsTarget.ETH.toFixed(8)).toBe('0.28714286');
   });
 
   /*
@@ -260,7 +260,7 @@ describe('intention en mode band_edge', () => {
    * la cible permanente qui ressort. La bande, elle, ne depend pas du mode.
    */
   it('ne tire pas dans la bande et journalise alors la cible permanente', () => {
-    const intent = intentAt(stateAt('0.40', '0.36', '0.24'));
+    const intent = intentAt(stateAt('0.40', '0.33', '0.27'));
 
     expect(intent.trigger).toBe('NONE');
     expect(intent.legs).toEqual([]);
@@ -271,13 +271,13 @@ describe('intention en mode band_edge', () => {
   /* C30 exige une sortie de rejeu identique octet pour octet : format fige. */
   it('explique le declenchement en clair, a format fige', () => {
     expect(intentAt(stateAt('0.45', '0.35', '0.20')).reason).toBe(
-      'poids USDC 0.200000 sous la borne basse 0.240000 : retour a cette borne',
+      'poids USDC 0.200000 sous la borne basse 0.270000 : retour a cette borne',
     );
     expect(intentAt(stateAt('0.30', '0.30', '0.40')).reason).toBe(
-      'poids USDC 0.400000 au-dessus de la borne haute 0.360000 : retour a cette borne',
+      'poids USDC 0.400000 au-dessus de la borne haute 0.330000 : retour a cette borne',
     );
     expect(intentAt(stateAt('0.40', '0.30', '0.30')).reason).toBe(
-      'poids USDC 0.300000 dans la bande [0.240000, 0.360000] : aucun reequilibrage',
+      'poids USDC 0.300000 dans la bande [0.270000, 0.330000] : aucun reequilibrage',
     );
   });
 

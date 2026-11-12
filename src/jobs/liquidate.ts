@@ -344,7 +344,7 @@ function cessions(runDate: IsoDate, holdings: Holdings, carnet: Carnet): Cession
     const fourchette = fourchetteDe(asset, carnet);
     const limitPrice = prixLimite('SELL', fourchette);
     const valeur = quantity.mul(limitPrice) as UsdcAmount;
-    // Strict, comme `risk.ts` : une ligne a 200 USDC pile se cede.
+    // Strict, comme `risk.ts` : une ligne a 100 USDC pile se cede.
     if (valeur.lt(MIN_LEG_USDC)) {
       residus.push({
         asset,

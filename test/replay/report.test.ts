@@ -32,14 +32,15 @@ const fake = (name: (typeof SERIES_NAMES)[number], n: number): SeriesMetrics => 
 
 /**
  * Rapport ASCII fige pour la fixture (toFixed 2/6) — oracle de contenu, pas de classement (C31).
- * Les deux lignes `rebalance*` suivent le plafond de la phase 3 : voir `engine.test.ts`.
+ * Les deux lignes `rebalance*` suivent le plafond de la phase 3 et la bande de +/-10 % avec jambe
+ * minimale a 100 USDC (decision du 2026-11-12) : voir `engine.test.ts`.
  */
 const EXPECTED_REPORT = [
   'Ubac phase 0 — rejeu historique',
   'serie           valeur_finale     twr           sharpe_90j    max_drawdown    declenchements',
   '--------------  ----------------  ------------  ------------  --------------  --------------',
-  'rebalance               23368.54      0.446203      2.181820       -0.457047              12',
-  'rebalance_ab            23304.05      0.440104      2.181892       -0.456979              97',
+  'rebalance               23296.17      0.449376      2.144468       -0.451951              32',
+  'rebalance_ab            23296.17      0.449376      2.144468       -0.451951              36',
   'ladder                  20985.00      0.068455      2.181232       -0.048270              27',
   'dca                     20064.33      0.060182      2.141429       -0.503161              32',
   'hold_btc                25099.90      0.776602      1.916047       -0.530758               0',

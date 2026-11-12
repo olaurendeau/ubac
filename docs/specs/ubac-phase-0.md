@@ -85,6 +85,8 @@ En cas de contradiction avec la v2.0 sur le périmètre phase 0, **c'est ce fich
 
 **Déclencheur A**
 
+> Valeurs d'origine de la phase 0 pour C6, C7 et C19 : depuis le 2026-11-12 la bande est `[0.27, 0.33]` et la jambe minimale 100 USDC (spec rebalance §5.7).
+
 6. A ne tire pas quand le poids USDC est dans `[0.24, 0.36]`, bornes incluses. Test aux bornes exactes.
 7. A tire à 0.2399 et à 0.3601.
 8. Symétrie : après application des jambes produites par `decide()` en mode `target`, les poids recalculés égalent la cible à 1e-8 près.
