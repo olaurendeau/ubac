@@ -208,9 +208,9 @@ describe('plafond d\'ampleur d\'un run (E29, E30, E32)', () => {
   it('vaut 25 %, la valeur de la phase 0 (decision du 2026-11-12)', () => {
     expect(REBALANCE_TOO_LARGE_PCT.toString()).toBe('0.25');
   });
-  /* Le cas qui a motive le relevement : un retour a la cible de l'ordre de 16 %. */
-  it('laisse passer un run a 16 % du portefeuille, que le plafond de 11 % refusait', () => {
-    expect(validate(intent(arbitrage(new Decimal('8000'))), context()).status).toBe('ACCEPTED');
+  /* Le cas qui a motive le relevement : un retour a la cible de 13,2 %, le premier des quatre RATIO_BAND. */
+  it('laisse passer un run a 13,2 % du portefeuille, que le plafond de 11 % refusait', () => {
+    expect(validate(intent(arbitrage(new Decimal('6600'))), context()).status).toBe('ACCEPTED');
   });
   it('laisse passer un run pile a 25 % du portefeuille (strict)', () => {
     expect(validate(intent(arbitrage(new Decimal('12500'))), context()).status).toBe('ACCEPTED');

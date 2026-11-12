@@ -177,7 +177,7 @@ clé primaire **remplace** la ligne du jour au lieu de la refuser. C'est la règ
 d'antériorité de la section 4 qui la tient. Relancer le même `--run-date` reste
 sans danger.
 
-### Le plafond réduit de la phase 3
+### Le plafond d'ampleur d'un run (phase 3)
 
 `REBALANCE_TOO_LARGE_PCT` vaut **25 %** (B2, O1 = 3) — 25 % en phase 0, 8 %
 retenu le 2026-09-21, 11 % le 2026-09-27, puis 25 % de nouveau le 2026-11-12 par
@@ -222,16 +222,17 @@ figer le portefeuille : une fois la bande franchie après une longue dérive
 BTC/ETH, le retour à la cible dépasse 11 %, le run est refusé en bloc et l'écart
 ne redescend jamais sous le plafond (à ±20 %, 205 runs refusés dès 2025-04-08 ;
 sur le rejeu versionné, 4 RATIO_BAND de `rebalance_ab` refusés en août 2025, pour
-environ 16 %). Le plafond reste un garde-fou contre un bug de dimensionnement :
+environ 13 %, de 12,9 à 13,8 %). Le plafond reste un garde-fou contre un bug de dimensionnement :
 1 550 USDC par run au plus sur 6 200 USDC. Le refus du run entier est conservé
 (O2), préféré au rabotage et à une simple alerte. La décision est consignée dans
 la [spec générale](specs/ubac-rebalance.md), §5.8.
 
 **Le bruit des ombres (E31).** `validate()` est appelée pour les quatre
-stratégies : `rebalance_ab`, `ladder` et `dca` verront aussi plus de
+stratégies : `rebalance_ab`, `ladder` et `dca` voient aussi les refus
 `REBALANCE_TOO_LARGE` dans `decisions`, dans le rapport et dans les alertes.
-Elles ne placent rien : ce n'est pas une panne, et ce bruit éprouve le chemin
-d'E32 avant qu'un ordre soit en jeu. La sortie propre n'appelle pas `validate()`
+Aux plafonds de 8 % et de 11 %, ce bruit était fréquent ; à 25 %, valeur de la
+phase 0, il redevient rare. Elles ne placent rien : ce n'est pas une panne, et ce
+bruit éprouve le chemin d'E32 avant qu'un ordre soit en jeu. La sortie propre n'appelle pas `validate()`
 ([sortie-propre.md](sortie-propre.md)) : le plafond ne la touche pas.
 
 **La levée ou le relèvement (E34, O3 = 3)** est un commit qui change la constante, en PR relue,

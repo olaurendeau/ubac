@@ -31,7 +31,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
  * 44.94 %), `rebalance_ab` de 97 a 36 (23 304.05 -> 23 296.17). Apres cette decision,
  * `rebalance` et `rebalance_ab` avaient les memes valeurs : les 4 declenchements de
  * plus de `rebalance_ab` etaient des RATIO_BAND (2025-08-22, 23, 24 et 26), tous
- * refuses en REBALANCE_TOO_LARGE (environ 16 % du portefeuille), donc sans effet.
+ * refuses en REBALANCE_TOO_LARGE (environ 13 % du portefeuille, de 12,9 a 13,8 %), donc sans effet.
  *
  * Decision du 2026-11-12 (2) : le plafond d'ampleur repasse de 11 % a 25 %. Ces quatre
  * RATIO_BAND ne sont plus refuses : le declencheur B de `rebalance_ab` execute enfin

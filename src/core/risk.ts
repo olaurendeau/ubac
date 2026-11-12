@@ -36,9 +36,9 @@ export const MIN_CASH_PCT = new Decimal('0.22');
  * 11 % peut figer le portefeuille. Une fois la bande franchie apres une longue derive
  * BTC/ETH, le retour a la cible depasse 11 %, le run est refuse en bloc et l'ecart ne
  * redescend jamais sous le plafond (a +/-20 %, 205 runs refuses des 2025-04-08 ; 4
- * RATIO_BAND de `rebalance_ab` refuses en aout 2025, pour environ 16 %). Il reste un
- * garde-fou contre un bug de dimensionnement. Il refuse le run entier, sans raboter
- * (O2). Il se releve ou se leve par un commit relu qui change cette valeur, jamais
+ * RATIO_BAND de `rebalance_ab` refuses en aout 2025, pour environ 13 %, de 12,9 a
+ * 13,8 %). Il reste un garde-fou contre un bug de dimensionnement. Il refuse le run
+ * entier, sans raboter (O2). Il se releve ou se leve par un commit relu qui change cette valeur, jamais
  * par l'environnement ni automatiquement (O3 = 3, E34).
  */
 export const REBALANCE_TOO_LARGE_PCT = new Decimal('0.25');

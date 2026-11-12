@@ -1610,6 +1610,11 @@ describe('§9 — les alertes push', () => {
     const result = complete(await lance(h));
 
     expect(result.outcomes.some((o) => o.intent.legs.length > 0)).toBe(true);
+    const production = result.outcomes.find((o) => o.strategy === 'rebalance');
+    expect(production?.verdict).toEqual({
+      status: 'REJECTED',
+      rejections: [expect.objectContaining({ code: 'REBALANCE_TOO_LARGE' })],
+    });
     expect(evenements(h)).not.toContain('REBALANCE_EXECUTED');
   });
 
@@ -2277,8 +2282,12 @@ describe('§8 etape 6 — seule la production transmet ses ordres (E18)', () => 
 
   it('un verdict REJECTED de la production ne transmet rien', async () => {
     const h = harnais({ balances: TROP_AMPLE });
-    await lance(h);
+    const result = complete(await lance(h));
 
+    expect(result.outcomes.find((o) => o.strategy === 'rebalance')?.verdict).toEqual({
+      status: 'REJECTED',
+      rejections: [expect.objectContaining({ code: 'REBALANCE_TOO_LARGE' })],
+    });
     expect(h.appels).not.toContain('placeOrder');
   });
 });
