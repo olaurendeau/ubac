@@ -176,7 +176,8 @@ sens.
    plus bas n'invalide aucun cas de test existant, il en laisse simplement
    passer davantage. Un assouplissement silencieux du risque est exactement ce
    que la couche risque est censée rendre impossible.
-3. **La cible de cash est à 30 % et le bord bas de la bande à 24 %.** Avec
+3. **La cible de cash est à 30 % et le bord bas de la bande à 24 %.**
+   (Depuis le 2026-11-12 la bande est à ±10 % et son bord bas à 27 %.) Avec
    `MIN_CASH` à 22 %, le seuil mord avant que la ligne de cash n'atteigne son
    bord bas : il reste un vrai garde-fou. À 15 %, il ne mordrait qu'après une
    dérive de plus d'un tiers sous la bande, donc à peu près jamais.

@@ -1,5 +1,10 @@
 # Résultats du rejeu — phase 0
 
+> **Résultat historique.** Les chiffres ci-dessous sont ceux de la configuration de
+> l'époque (bande cash à ±20 %, jambe minimale à 200 USDC). La configuration de
+> production a changé le 2026-11-12 (±10 % et 100 USDC) : voir
+> [la spec](specs/ubac-rebalance.md), §5.7.
+
 Généré le 2026-09-10 sur `main`, commit `12cbac0`.
 Reproductible par `make ci` puis `./scripts/dev.sh npm run replay`, **sur ce
 commit** : depuis le plafond réduit de la phase 3, `REBALANCE_TOO_LARGE_PCT`

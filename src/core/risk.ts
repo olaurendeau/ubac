@@ -17,8 +17,8 @@ import type {
 } from './types.js';
 
 /** Couche de risque : Intent -> Order. Pas de contournement. */
-/** Seuil sous lequel une jambe est ecartee du run (C19). Strict : 200 passe. */
-export const MIN_LEG_USDC = new Decimal('200');
+/** Seuil sous lequel une jambe est ecartee du run (C19). Strict : 100 passe. */
+export const MIN_LEG_USDC = new Decimal('100');
 
 export const QUOTE: Extract<AllowedAsset, 'USDC'> = 'USDC';
 

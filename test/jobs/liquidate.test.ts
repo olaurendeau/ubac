@@ -262,29 +262,29 @@ describe('§7 — le client_order_id est derive, pas recalcule', () => {
 
 describe('§14.2 — le plancher de MIN_LEG_USDC separe une cession d’un residu', () => {
   it('sous le plancher, la ligne devient un residu et n’est pas cedee', async () => {
-    // 0.002 BTC a 60 000, soit 120 USDC : sous les 200 du noyau.
-    const p = await plan({ balances: [solde('BTC', '0.002'), solde('ETH', '10')] });
+    // 0.001 BTC a 60 000, soit 60 USDC : sous les 100 du noyau.
+    const p = await plan({ balances: [solde('BTC', '0.001'), solde('ETH', '10')] });
 
     expect(cessionsDe(p).map((c) => c.ordre.asset)).toEqual(['ETH']);
     expect(p.rapport.residus.map((r) => r.asset)).toEqual(['BTC']);
-    expect(p.rapport.residus[0]?.valeurUsdc.toString()).toBe('120');
+    expect(p.rapport.residus[0]?.valeurUsdc.toString()).toBe('60');
     expect(p.rapport.residus[0]?.motif).toContain(MIN_LEG_USDC.toString());
   });
 
   it('au plancher pile, la ligne se cede : strict, comme risk.ts', async () => {
     /*
-     * Un mid rond pour que la valeur tombe sur 200 sans arrondi : 2 x 100. La
-     * borne est celle du noyau, et elle est stricte des deux cotes — 200 passe,
-     * 199 non.
+     * Un mid rond pour que la valeur tombe sur 100 sans arrondi : 1 x 100. La
+     * borne est celle du noyau, et elle est stricte des deux cotes — 100 passe,
+     * 99 non.
      */
     const centUsdc = { ...CARNET, BTC: cote('99.99', '100') };
-    const auPlancher = await plan({ balances: [solde('BTC', '2')] }, { carnet: centUsdc });
+    const auPlancher = await plan({ balances: [solde('BTC', '1')] }, { carnet: centUsdc });
     expect(cessionsDe(auPlancher)[0]?.ordre.quantity.mul(100).toString()).toBe(
       MIN_LEG_USDC.toString(),
     );
     expect(auPlancher.rapport.residus).toEqual([]);
 
-    const sousLePlancher = await plan({ balances: [solde('BTC', '1.99')] }, { carnet: centUsdc });
+    const sousLePlancher = await plan({ balances: [solde('BTC', '0.99')] }, { carnet: centUsdc });
     expect(cessionsDe(sousLePlancher)).toEqual([]);
     expect(sousLePlancher.rapport.residus.map((r) => r.asset)).toEqual(['BTC']);
   });

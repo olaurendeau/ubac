@@ -156,7 +156,7 @@ Les `cash_flows` ne sont pas cosmétiques : sans eux, un apport se lit comme une
 |---|---|---|---|
 | BTC | 40 % | | |
 | ETH | 30 % | | |
-| USDC | 30 % | 20 % | 24 % – 36 % |
+| USDC | 30 % | 10 % | 27 % – 33 % |
 
 ### 5.2 Deux déclencheurs distincts
 
@@ -165,7 +165,7 @@ BTC et ETH sont corrélés à environ 0,85. Ils montent et descendent ensemble, 
 **Déclencheur A : bande de cash (le principal)**
 
 ```
-si poids(USDC) < 0.24 ou poids(USDC) > 0.36
+si poids(USDC) < 0.27 ou poids(USDC) > 0.33
   → rééquilibrage complet : toutes les lignes ramenées à la cible
 ```
 
@@ -195,9 +195,22 @@ Alternative disponible en config (`newCashPolicy: "immediate" | "delay7d" | "man
 
 ### 5.5 Coût
 
-Un rééquilibrage typique fait bouger 6 à 8 % de la valeur du portefeuille. À 0,25 % en maker, cela coûte environ **0,02 % de la valeur totale** par événement. Avec 4 à 8 déclenchements par an, le coût annuel du système est de l'ordre de 0,1 %.
+Un rééquilibrage typique fait bouger environ 3 % de la valeur du portefeuille (le retour à la cible depuis un bord de la bande à ±10 %). À 0,25 % en maker (palier Intro Coinbase), cela coûte environ **0,01 % de la valeur totale** par événement. Avec 10 à 15 déclenchements par an (le rejeu 2024-01-01 → 2026-08-31 en donne 32 en 32 mois), le coût annuel du système reste de l'ordre de 0,1 %.
 
-C'est un ordre de grandeur en dessous du ladder (0,55 % par aller-retour). La contrainte de conception n'est donc plus le coût mais la **fréquence de déclenchement** : des bandes trop serrées produiraient du bruit sans créer de valeur.
+C'est un ordre de grandeur en dessous du ladder (0,55 % par aller-retour). La contrainte de conception n'est donc plus le coût mais la **fréquence de déclenchement** : des bandes trop serrées produiraient du bruit sans créer de valeur. La bande à ±10 % est le choix assumé de la fréquence, voir §5.7.
+
+### 5.7 Décision du 2026-11-12 : bande à ±10 % et jambe minimale à 100 USDC
+
+Decision: la bande cash relative de `rebalance` passe de ±20 % à **±10 %** (USDC déclenche hors de [27 %, 33 %] au lieu de [24 %, 36 %]), et la jambe minimale `MIN_LEG_USDC` de la couche risque passe de 200 à **100 USDC**. — Reason: l'opérateur veut des rééquilibrages plus fréquents sur des montants plus petits (« j'ai envie que ça bouge plus »), décidé le 2026-11-12.
+
+Mesure à l'appui (rejeu local, non versionné, 2024-01-01 → 2026-08-31, frais maker de 0,25 %, palier Intro Coinbase constaté par l'opérateur) :
+
+| Configuration | Déclenchements | Frais | Valeur finale | TWR |
+|---|---|---|---|---|
+| ±20 % / 200 USDC (avant) | 12 | 34 USDC | 23 333 | 44,30 % |
+| ±10 % / 100 USDC (après) | 32 | 53 USDC | 23 241 | 44,41 % |
+
+Pas de gagnant net : la fréquence est le choix assumé. Les deux valeurs vont ensemble : avec ±10 % mais un plancher resté à 200, 16 des 52 déclenchements n'exécutaient aucune jambe. Aucun autre seuil de la couche risque ne change (`COOLDOWN`, `MIN_CASH`, `REBALANCE_TOO_LARGE`…).
 
 ### 5.6 Stratégies shadow
 
@@ -220,7 +233,7 @@ Déterministe, testée exhaustivement, appliquée à toute intention quelle que 
 | Exposition max par actif | 50 % de la valeur totale | `MAX_EXPOSURE` |
 | Réserve USDC minimale | 15 % après rééquilibrage | `MIN_CASH` |
 | Ampleur max d'un rééquilibrage | 25 % de la valeur totale en un run | `REBALANCE_TOO_LARGE` |
-| Jambe minimale | 200 USDC, sinon la jambe est ignorée | `LEG_TOO_SMALL` |
+| Jambe minimale | 100 USDC, sinon la jambe est ignorée | `LEG_TOO_SMALL` |
 | Fréquence minimale | 7 jours entre deux rééquilibrages complets | `COOLDOWN` |
 | Écart au prix marché | rejet si limite > 2 % du mid | `PRICE_SANITY` |
 | Cohérence de solde | rejet si divergence > 1 % entre exchange et état interne | `RECONCILIATION_DRIFT` |
@@ -382,7 +395,7 @@ Ces points sont des contraintes techniques constatées, pas un conseil fiscal. �
 
 Ne pas raccourcir la phase 1. Un mois de rapports quotidiens sans exécution coûte zéro euro et révèle la quasi-totalité des bugs de logique.
 
-Point spécifique à cette stratégie : avec 4 à 8 déclenchements par an, la phase 1 pourrait ne montrer **aucun** rééquilibrage. C'est normal. La validation en phase 1 porte sur la justesse des poids affichés et sur la distance annoncée au prochain déclenchement, pas sur l'observation d'un événement.
+Point spécifique à cette stratégie : avec une dizaine de déclenchements par an (bande à ±10 %, §5.7), la phase 1 d'un mois pourrait ne montrer **aucun** rééquilibrage. C'est normal. La validation en phase 1 porte sur la justesse des poids affichés et sur la distance annoncée au prochain déclenchement, pas sur l'observation d'un événement.
 
 ---
 
@@ -408,7 +421,7 @@ Commande `jobs/liquidate.ts`, déclenchable en CLI et depuis un bouton d'action 
 
   "rebalance": {
     "targets": { "BTC": 0.40, "ETH": 0.30, "USDC": 0.30 },
-    "cashBandRelative": 0.20,        // USDC déclenche hors de 24 % – 36 %
+    "cashBandRelative": 0.10,        // USDC déclenche hors de 27 % – 33 %
     "ratioBandRelative": 0.30,       // BTC/ETH déclenche hors de 0.93 – 1.73
     "rebalanceMode": "target",       // "target" | "band_edge"
     "newCashPolicy": "delay7d"       // "immediate" | "delay7d" | "manual"
@@ -423,7 +436,7 @@ Commande `jobs/liquidate.ts`, déclenchable en CLI et depuis un bouton d'action 
     "maxExposurePerAsset": 0.50,
     "minCashPct": 0.15,
     "maxRebalanceMagnitudePct": 0.25,
-    "minLegUsdc": 200,
+    "minLegUsdc": 100,
     "cooldownDays": 7,
     "priceSanityPct": 0.02,
     "reconciliationDriftPct": 0.01,
@@ -435,4 +448,4 @@ Commande `jobs/liquidate.ts`, déclenchable en CLI et depuis un bouton d'action 
 }
 ```
 
-Coût de référence : environ 0,02 % de la valeur du portefeuille par rééquilibrage, soit de l'ordre de 0,1 % par an à 4-8 déclenchements.
+Coût de référence : environ 0,01 % de la valeur du portefeuille par rééquilibrage, soit de l'ordre de 0,1 % par an à 10-15 déclenchements.

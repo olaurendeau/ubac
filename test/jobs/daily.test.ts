@@ -1003,7 +1003,7 @@ describe('§8 etape 5 — une decision par strategie, trigger NONE compris', () 
   it('la configuration shadow arme le declencheur B, la production ne l’arme pas', async () => {
     // Ratio BTC/ETH a 2.0, au-dessus de la borne haute 1.733 : B tire, A non.
     const h = harnais({
-      balances: [solde('BTC', '0.8'), solde('ETH', '8'), solde('USDC', '30000')],
+      balances: [solde('BTC', '0.8'), solde('ETH', '8'), solde('USDC', '27000')],
       closes: { BTC: '50000', ETH: '2500' },
     });
     const result = complete(await lance(h));

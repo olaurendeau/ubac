@@ -296,7 +296,7 @@ describe('C25 : la carence de 7 jours sur les apports', () => {
       intentAt(stateAt(CASH_ABOVE, RATIO_INSIDE, [apport('2026-03-08')]), clockAt('2026-03-14'))
         .reason,
     ).toBe(
-      'poids USDC 0.450000 au-dessus de la borne haute 0.360000' +
+      'poids USDC 0.450000 au-dessus de la borne haute 0.330000' +
         ' ; apport du 2026-03-08, 6 jours ecoules sur les 7 de carence' +
         ' : aucun reequilibrage',
     );
@@ -472,7 +472,7 @@ describe('C26 : le gel de A ne gele pas B', () => {
    */
   it('journalise la carence puis le constat de ratio', () => {
     expect(intentAt(stateAt(CASH_ABOVE, RATIO_HIGH, FROZEN), DURING, SHADOW).reason).toBe(
-      'poids USDC 0.450000 au-dessus de la borne haute 0.360000' +
+      'poids USDC 0.450000 au-dessus de la borne haute 0.330000' +
         ' ; apport du 2026-03-08, 6 jours ecoules sur les 7 de carence' +
         ' ; ratio BTC/ETH 3.000000 au-dessus de la borne haute 1.733333' +
         ' : retour a la cible',

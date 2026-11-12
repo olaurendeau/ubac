@@ -19,10 +19,16 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
  * `rebalance*` passent par `validate()`, donc par le plafond reduit de la phase 3 :
  * un retour a la cible refuse laisse le jour suivant hors bande, qui recompte un
  * declenchement. Chaque geste sur le plafond (E34) refige ces deux-la.
- * A 11 % (2026-09-27), `rebalance` ne connait plus aucun refus : ses valeurs sont
- * exactement celles de la phase 0 a 25 %, et ses 12 declenchements sont ses 12
+ * Avant la decision du 2026-11-12, a 11 % (2026-09-27), `rebalance` ne connaissait plus aucun refus : ses valeurs etaient
+ * exactement celles de la phase 0 a 25 %, et ses 12 declenchements etaient ses 12
  * executions (a 8 % : 176 declenchements, 166 jours refuses). `rebalance_ab`, qui
- * arme le declencheur B en shadow, bute encore 84 jours sur 97 declenchements.
+ * arme le declencheur B en shadow, butait encore 84 jours sur 97 declenchements.
+ *
+ * Decision du 2026-11-12 : bande cash a +/-10 % (de [0.24, 0.36] a [0.27, 0.33]) et
+ * jambe minimale a 100 USDC. Les deux lignes `rebalance*` sont refigees : `rebalance`
+ * passe de 12 a 32 declenchements (valeur finale 23 368.54 -> 23 296.17, TWR 44.62 % ->
+ * 44.94 %), `rebalance_ab` de 97 a 36 (23 304.05 -> 23 296.17). Les quatre autres series
+ * ne bougent pas. Ce sont des valeurs de non-regression, pas un verdict de rentabilite.
  */
 const ORACLES: Record<
   SeriesName,
@@ -35,18 +41,18 @@ const ORACLES: Record<
   }
 > = {
   rebalance: {
-    finalValue: '23368.544266268632033',
-    twr: '0.4462025103433672621',
-    sharpe90: '2.1818200100164471748',
-    maxDrawdown: '-0.45704704034794534468',
-    triggerCount: 12,
+    finalValue: '23296.172979587367173',
+    twr: '0.4493756821886858144',
+    sharpe90: '2.1444679979252002858',
+    maxDrawdown: '-0.45195142480476058102',
+    triggerCount: 32,
   },
   rebalance_ab: {
-    finalValue: '23304.047839822982111',
-    twr: '0.4401041390023201043',
-    sharpe90: '2.1818917506752426527',
-    maxDrawdown: '-0.45697900010834647782',
-    triggerCount: 97,
+    finalValue: '23296.172979587367173',
+    twr: '0.4493756821886858144',
+    sharpe90: '2.1444679979252002858',
+    maxDrawdown: '-0.45195142480476058102',
+    triggerCount: 36,
   },
   ladder: {
     finalValue: '20984.999026077450747',

@@ -176,7 +176,7 @@ describe('QUOTE_NOT_ALLOWED (C18)', () => {
 });
 
 describe('LEG_TOO_SMALL (C19)', () => {
-  it('ignore la jambe sous 200 USDC sans rejeter le run ; les autres passent', () => {
+  it('ignore la jambe sous 100 USDC sans rejeter le run ; les autres passent', () => {
     const verdict = accepted(
       intent([
         leg({ asset: 'BTC', amount: usdc('1500') }),
@@ -196,22 +196,29 @@ describe('LEG_TOO_SMALL (C19)', () => {
   });
 
   it('ecarte une jambe strictement sous le seuil', () => {
-    const verdict = accepted(intent([leg({ amount: usdc('199.99') })]));
+    const verdict = accepted(intent([leg({ amount: usdc('99.99') })]));
 
     expect(verdict.orders).toHaveLength(0);
     expect(verdict.ignored[0]?.code).toBe('LEG_TOO_SMALL');
   });
 
   it('laisse passer une jambe exactement au seuil', () => {
-    // Le seuil est strict : 200 passe. Un `lte` a la place du `lt` se verrait ici.
+    // Le seuil est strict : 100 passe. Un `lte` a la place du `lt` se verrait ici.
     const verdict = accepted(intent([leg({ amount: MIN_LEG_USDC as UsdcAmount })]));
 
     expect(verdict.orders).toHaveLength(1);
     expect(verdict.ignored).toEqual([]);
   });
 
+  it('fixe le seuil a 100 USDC : 100 pile passe, 99.99 est ecarte', () => {
+    // Le test du dessus suit la constante ; celui-ci fige sa valeur (decision du 2026-11-12).
+    expect(MIN_LEG_USDC.toString()).toBe('100');
+    expect(accepted(intent([leg({ amount: usdc('100') })])).orders).toHaveLength(1);
+    expect(accepted(intent([leg({ amount: usdc('99.99') })])).orders).toHaveLength(0);
+  });
+
   it('juge LEG_TOO_SMALL sur la valeur absolue', () => {
-    // Sans `.abs()`, -1500 < 200 et la jambe serait ignoree en silence.
+    // Sans `.abs()`, -1500 < 100 et la jambe serait ignoree en silence.
     const kept = accepted(intent([leg({ amount: usdc('-1500'), side: 'SELL' })]));
     expect(kept.orders).toHaveLength(1);
     expect(kept.ignored).toEqual([]);

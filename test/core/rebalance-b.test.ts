@@ -183,7 +183,7 @@ describe('C13 : le drapeau ratioBandEnabled', () => {
  * l'etape 13.
  */
 describe('C10 : A et B hors bande en meme temps', () => {
-  /** Cash a 10 % et a 45 %, donc de part et d'autre de `[0.24, 0.36]`. */
+  /** Cash a 10 % et a 45 %, donc de part et d'autre de `[0.27, 0.33]`. */
   const CASH_BELOW = new Decimal('10000');
   const CASH_ABOVE = new Decimal('45000');
 
@@ -240,10 +240,10 @@ describe('C10 : A et B hors bande en meme temps', () => {
   /* Le motif part dans `decisions` : il ne doit pas parler d'une bande sautee. */
   it('ne mentionne pas la bande de ratio dans le motif', () => {
     expect(intentAt(stateAtRatio('3.0', CASH_BELOW)).reason).toBe(
-      'poids USDC 0.100000 sous la borne basse 0.240000 : retour a la cible',
+      'poids USDC 0.100000 sous la borne basse 0.270000 : retour a la cible',
     );
     expect(intentAt(stateAtRatio('0.5', CASH_ABOVE)).reason).toBe(
-      'poids USDC 0.450000 au-dessus de la borne haute 0.360000 : retour a la cible',
+      'poids USDC 0.450000 au-dessus de la borne haute 0.330000 : retour a la cible',
     );
   });
 
@@ -366,8 +366,8 @@ describe('jambes BTC contre ETH, a cash constant', () => {
   it('remet le ratio sur sa cible et laisse le cash ou il est', () => {
     const cases = [
       ['0.5', '0.30'],
-      ['0.9', '0.24'],
-      ['1.8', '0.36'],
+      ['0.9', '0.27'],
+      ['1.8', '0.33'],
       ['3.0', '0.2777'],
     ] as const;
 
@@ -433,12 +433,12 @@ describe('jambes BTC contre ETH, a cash constant', () => {
    * lieu.
    */
   it('journalise comme cible du run le cash constate, pas la cible permanente', () => {
-    const intent = intentAt(stateAt('52800', '13200', '34000'));
+    const intent = intentAt(stateAt('53600', '13400', '33000'));
 
     expect(intent.trigger).toBe('RATIO_BAND');
-    expect(intent.weightsTarget.USDC.toFixed(8)).toBe('0.34000000');
-    expect(intent.weightsBefore.USDC.toFixed(8)).toBe('0.34000000');
-    expect(intent.weightsTarget.BTC.plus(intent.weightsTarget.ETH).toFixed(8)).toBe('0.66000000');
+    expect(intent.weightsTarget.USDC.toFixed(8)).toBe('0.33000000');
+    expect(intent.weightsBefore.USDC.toFixed(8)).toBe('0.33000000');
+    expect(intent.weightsTarget.BTC.plus(intent.weightsTarget.ETH).toFixed(8)).toBe('0.67000000');
   });
 });
 
@@ -587,15 +587,15 @@ describe('parametres degeneres du declencheur B', () => {
 describe('motif journalise quand B est arme', () => {
   it('rend compte des deux bandes, a format fige', () => {
     expect(intentAt(stateAtRatio('3.0')).reason).toBe(
-      'poids USDC 0.300000 dans la bande [0.240000, 0.360000]' +
+      'poids USDC 0.300000 dans la bande [0.270000, 0.330000]' +
         ' ; ratio BTC/ETH 3.000000 au-dessus de la borne haute 1.733333 : retour a la cible',
     );
     expect(intentAt(stateAtRatio('0.5')).reason).toBe(
-      'poids USDC 0.300000 dans la bande [0.240000, 0.360000]' +
+      'poids USDC 0.300000 dans la bande [0.270000, 0.330000]' +
         ' ; ratio BTC/ETH 0.500000 sous la borne basse 0.933333 : retour a la cible',
     );
     expect(intentAt(stateAt('40000', '30000', '30000')).reason).toBe(
-      'poids USDC 0.300000 dans la bande [0.240000, 0.360000]' +
+      'poids USDC 0.300000 dans la bande [0.270000, 0.330000]' +
         ' ; ratio BTC/ETH 1.333333 dans la bande [0.933333, 1.733333] : aucun reequilibrage',
     );
   });
@@ -604,7 +604,7 @@ describe('motif journalise quand B est arme', () => {
     const params: RebalanceParams = { ...SHADOW, rebalanceMode: 'band_edge' };
 
     expect(intentAt(stateAtRatio('3.0'), params).reason).toBe(
-      'poids USDC 0.300000 dans la bande [0.240000, 0.360000]' +
+      'poids USDC 0.300000 dans la bande [0.270000, 0.330000]' +
         ' ; ratio BTC/ETH 3.000000 au-dessus de la borne haute 1.733333 : retour a cette borne',
     );
   });
@@ -612,7 +612,7 @@ describe('motif journalise quand B est arme', () => {
   /* Drapeau baisse, le motif ne parle pas d'une bande qui n'a pas ete regardee. */
   it('ne mentionne pas le ratio sur la configuration de production', () => {
     expect(intentAt(stateAtRatio('3.0'), PROD).reason).toBe(
-      'poids USDC 0.300000 dans la bande [0.240000, 0.360000] : aucun reequilibrage',
+      'poids USDC 0.300000 dans la bande [0.270000, 0.330000] : aucun reequilibrage',
     );
   });
 });

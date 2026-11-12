@@ -91,7 +91,7 @@ grandeurs en chaînes.
 - Tout ordre taker, au marché ou IOC : le post-only reste la seule forme.
 - Le prix des **ombres** : elles ne placent rien, leurs jambes restent à la
   clôture, comme le rejeu.
-- Le minimum de jambe (200 USDC), la carence sur apport, les bandes, les cibles.
+- Le minimum de jambe (100 USDC depuis le 2026-11-12), la carence sur apport, les bandes, les cibles.
 - L'heure de déclenchement du job.
 - Le déverrouillage de la sortie.
 
