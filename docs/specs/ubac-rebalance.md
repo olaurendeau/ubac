@@ -220,6 +220,12 @@ Mesure à l'appui (rejeu local, non versionné, 2024-01-01 → 2026-08-31, frais
 
 Pas de gagnant net : la fréquence est le choix assumé. Les deux valeurs vont ensemble : avec ±10 % mais un plancher resté à 200, 16 des 52 déclenchements n'exécutaient aucune jambe. Aucun autre seuil de la couche risque ne change (`COOLDOWN`, `MIN_CASH`, `REBALANCE_TOO_LARGE`…).
 
+### 5.8 Décision du 2026-11-12 : plafond d'ampleur d'un run relevé à 25 %
+
+Decision: le plafond d'ampleur d'un run `REBALANCE_TOO_LARGE_PCT` (`src/core/risk.ts`) passe de **11 %** à **25 %**, et le refus du run entier sans rabotage (O2) est conservé. — Reason: aux montants réels de l'opérateur (6 200 USDC, +110 USDC/mois), un rejeu local montre que le plafond à 11 % peut figer le portefeuille indéfiniment. Quand la bande est enfin franchie après une longue dérive BTC/ETH, le retour à la cible dépasse 11 % ; le run est refusé en bloc, et l'écart ne redescend jamais sous le plafond. À ±20 %, 205 runs étaient refusés dès 2025-04-08. Le rejeu versionné montre le même blocage sur le déclencheur B de `rebalance_ab` : 4 RATIO_BAND les 2025-08-22, 23, 24 et 26, pour environ 13 % (12,9 à 13,8 %). Décidé le 2026-11-12 par l'opérateur, qui l'a préféré au rabotage à 11 % et à une simple alerte.
+
+Effet sur le rejeu versionné : seule la ligne `rebalance_ab` bouge (valeur finale 23 296,17 → 23 510,21 USDC, TWR 44,94 % → 46,69 %, 36 → 33 déclenchements) ; `rebalance` et les quatre références sont inchangées. Valeurs de non-régression, pas un verdict de rentabilité. Aucun autre seuil ne change (`MIN_LEG_USDC`, `COOLDOWN_DAYS`, `MIN_CASH_PCT`, `MAX_EXPOSURE_PCT`…). Le garde-fou reste un garde-fou contre un bug de dimensionnement : à 25 %, 1 550 USDC par run au plus sur 6 200 USDC.
+
 ---
 
 ## 6. Couche risque
@@ -232,7 +238,7 @@ Déterministe, testée exhaustivement, appliquée à toute intention quelle que 
 | Devise de cotation | USDC exclusivement, jamais EUR | `QUOTE_NOT_ALLOWED` |
 | Exposition max par actif | 50 % de la valeur totale | `MAX_EXPOSURE` |
 | Réserve USDC minimale | 15 % après rééquilibrage | `MIN_CASH` |
-| Ampleur max d'un rééquilibrage | 25 % de la valeur totale en un run | `REBALANCE_TOO_LARGE` |
+| Ampleur max d'un rééquilibrage | 25 % de la valeur totale en un run (valeur de la phase 0, rétablie le 2026-11-12, §5.8) | `REBALANCE_TOO_LARGE` |
 | Jambe minimale | 100 USDC, sinon la jambe est ignorée | `LEG_TOO_SMALL` |
 | Fréquence minimale | 7 jours entre deux rééquilibrages complets | `COOLDOWN` |
 | Écart au prix marché | rejet si limite > 2 % du mid | `PRICE_SANITY` |

@@ -29,16 +29,19 @@ export const MAX_EXPOSURE_PCT = new Decimal('0.5');
 export const MIN_CASH_PCT = new Decimal('0.22');
 
 /**
- * Ampleur max d'un run : somme des |jambes| / valeur totale (C20). Stricte : 11 % passe.
- * Plafond d'armement de la phase 3 (B2, O1) : 25 % en phase 0, 8 % retenu le
- * 2026-09-21, releve a 11 % le 2026-09-27 par decision de l'operateur, chaque
- * valeur mesuree sur le rejeu (E29). A 11 %, il ne refuse plus aucun des douze
- * reequilibrages historiques de `rebalance` : il reste un garde-fou contre un
- * bug de dimensionnement. Il refuse le run entier, sans raboter (O2). Il se
- * releve ou se leve par un commit relu qui change cette valeur, jamais par
- * l'environnement ni automatiquement (O3 = 3, E34).
+ * Ampleur max d'un run : somme des |jambes| / valeur totale (C20). Stricte : 25 % passe.
+ * Plafond d'armement de la phase 3 (B2, O1) : 25 % en phase 0, 8 % le 2026-09-21,
+ * 11 % le 2026-09-27, 25 % le 2026-11-12, chaque valeur par decision de l'operateur.
+ * Le retour a 25 % tient au rejeu : aux montants reels (6 200 USDC, +110 USDC/mois),
+ * 11 % peut figer le portefeuille. Une fois la bande franchie apres une longue derive
+ * BTC/ETH, le retour a la cible depasse 11 %, le run est refuse en bloc et l'ecart ne
+ * redescend jamais sous le plafond (a +/-20 %, 205 runs refuses des 2025-04-08 ; 4
+ * RATIO_BAND de `rebalance_ab` refuses en aout 2025, pour environ 13 %, de 12,9 a
+ * 13,8 %). Il reste un garde-fou contre un bug de dimensionnement. Il refuse le run
+ * entier, sans raboter (O2). Il se releve ou se leve par un commit relu qui change cette valeur, jamais
+ * par l'environnement ni automatiquement (O3 = 3, E34).
  */
-export const REBALANCE_TOO_LARGE_PCT = new Decimal('0.11');
+export const REBALANCE_TOO_LARGE_PCT = new Decimal('0.25');
 
 /** Delai min entre deux reequilibrages complets (C21). */
 export const COOLDOWN_DAYS = 7;

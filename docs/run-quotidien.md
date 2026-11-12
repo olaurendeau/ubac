@@ -177,17 +177,19 @@ clé primaire **remplace** la ligne du jour au lieu de la refuser. C'est la règ
 d'antériorité de la section 4 qui la tient. Relancer le même `--run-date` reste
 sans danger.
 
-### Le plafond réduit de la phase 3
+### Le plafond d'ampleur d'un run (phase 3)
 
-`REBALANCE_TOO_LARGE_PCT` vaut **11 %** au lieu de 25 % (B2, O1 = 3) — 8 %
-retenu le 2026-09-21, relevé à 11 % le 2026-09-27 : un run dont la somme des
-|jambes| dépasse 11 % de la valeur du portefeuille est **refusé en entier**, jamais raboté (O2 = 3). Aucune règle n'est ajoutée : c'est la valeur
-d'une constante de `src/core/risk.ts`, armée dès le premier run qui exécute (E29).
+`REBALANCE_TOO_LARGE_PCT` vaut **25 %** (B2, O1 = 3) — 25 % en phase 0, 8 %
+retenu le 2026-09-21, 11 % le 2026-09-27, puis 25 % de nouveau le 2026-11-12 par
+décision de l'opérateur : un run dont la somme des |jambes| dépasse 25 % de la
+valeur du portefeuille est **refusé en entier**, jamais raboté (O2 = 3). Aucune
+règle n'est ajoutée : c'est la valeur d'une constante de `src/core/risk.ts`,
+armée dès le premier run qui exécute (E29).
 
 **Le refus n'est pas silencieux (E32).** La ligne de `decisions` porte
 `REJECTED:REBALANCE_TOO_LARGE` dans `risk_verdict`. Sa colonne `reason` garde le
 motif de la stratégie en première ligne, puis celui du refus :
-`refus REBALANCE_TOO_LARGE : somme des |jambes| … au-dela de 11 %`, l'ampleur du
+`refus REBALANCE_TOO_LARGE : somme des |jambes| … au-dela de 25 %`, l'ampleur du
 run et le plafond. L'alerte urgente `REBALANCE_TOO_LARGE` porte le même texte.
 Le portefeuille reste hors bande, et l'alerte repart chaque jour où il le reste.
 Tout refus s'écrit ainsi dans `reason`, quels que soient le code et la stratégie.
@@ -202,23 +204,35 @@ C'est ce qui s'annonçait en vrai : le portefeuille est hors bande depuis l'appo
 du 2026-09-26, la correction pèse 8,40 %, et chaque run à partir du dégel du
 3 octobre aurait été refusé avec une alerte `URGENT` quotidienne.
 
-**Ce que 11 % veut dire pour la production (depuis le 2026-09-27).** Sur le même
+**Ce que 11 % voulait dire pour la production (2026-09-27 → 2026-11-12).** Sur le même
 rejeu, 12 rééquilibrages sur 12 passent et aucun jour n'est refusé : le plafond
 ne mord plus sur la stratégie. Il reste un **garde-fou contre un bug de
 dimensionnement** — 752 USDC par run au plus sur un portefeuille de 6 834 USDC,
 contre 1 708 à 25 %. Deux leçons de la mesure : l'effet du plafond **n'est pas
 monotone** (à 9 %, 8 exécutions et 239 jours refusés, pire qu'à 8 %, parce que
 refuser ou exécuter un jour déplace tout le chemin du portefeuille), donc une
-valeur se mesure et ne s'interpole pas ; et un refus à 11 % signale désormais un
+valeur se mesure et ne s'interpole pas ; et un refus à 11 % signalait alors un
 run anormal, pas un retour à la cible ordinaire. La table et les décisions sont
 dans la [spec de la phase 3](specs/ubac-phase-3.md) (E29) et le
 [plan](plans/ubac-phase-3.md) (S3).
 
+**Pourquoi 25 % de nouveau (depuis le 2026-11-12).** Aux montants réels de
+l'opérateur (6 200 USDC, +110 USDC/mois), un rejeu local montre que 11 % peut
+figer le portefeuille : une fois la bande franchie après une longue dérive
+BTC/ETH, le retour à la cible dépasse 11 %, le run est refusé en bloc et l'écart
+ne redescend jamais sous le plafond (à ±20 %, 205 runs refusés dès 2025-04-08 ;
+sur le rejeu versionné, 4 RATIO_BAND de `rebalance_ab` refusés en août 2025, pour
+environ 13 %, de 12,9 à 13,8 %). Le plafond reste un garde-fou contre un bug de dimensionnement :
+1 550 USDC par run au plus sur 6 200 USDC. Le refus du run entier est conservé
+(O2), préféré au rabotage et à une simple alerte. La décision est consignée dans
+la [spec générale](specs/ubac-rebalance.md), §5.8.
+
 **Le bruit des ombres (E31).** `validate()` est appelée pour les quatre
-stratégies : `rebalance_ab`, `ladder` et `dca` verront aussi plus de
+stratégies : `rebalance_ab`, `ladder` et `dca` voient aussi les refus
 `REBALANCE_TOO_LARGE` dans `decisions`, dans le rapport et dans les alertes.
-Elles ne placent rien : ce n'est pas une panne, et ce bruit éprouve le chemin
-d'E32 avant qu'un ordre soit en jeu. La sortie propre n'appelle pas `validate()`
+Aux plafonds de 8 % et de 11 %, ce bruit était fréquent ; à 25 %, valeur de la
+phase 0, il redevient rare. Elles ne placent rien : ce n'est pas une panne, et ce
+bruit éprouve le chemin d'E32 avant qu'un ordre soit en jeu. La sortie propre n'appelle pas `validate()`
 ([sortie-propre.md](sortie-propre.md)) : le plafond ne la touche pas.
 
 **La levée ou le relèvement (E34, O3 = 3)** est un commit qui change la constante, en PR relue,

@@ -198,34 +198,34 @@ describe('REBALANCE_TOO_LARGE (C20)', () => {
 });
 
 /*
- * Le plafond reduit de la phase 3 (B2, O1 = 3) : la valeur elle-meme. Ces
- * sondes-ci rougissent si la constante bouge ; les cas relatifs ci-dessus,
- * non. 8 % retenu le 2026-09-21, releve a 11 % le 2026-09-27 : chaque geste
- * (O3 = 3, E34) est un commit relu qui les change.
+ * Le plafond d'ampleur d'un run (B2, O1 = 3) : la valeur elle-meme. Ces sondes-ci
+ * rougissent si la constante bouge ; les cas relatifs ci-dessus, non. 25 % en
+ * phase 0, 8 % retenu le 2026-09-21, releve a 11 % le 2026-09-27, puis a 25 % le
+ * 2026-11-12 par decision de l'operateur : chaque geste (O3 = 3, E34) est un
+ * commit relu qui les change.
  */
-describe('plafond reduit de la phase 3 (E29, E30, E32)', () => {
-  it('vaut 11 %, strictement plus contraignant que les 25 % de la phase 0 (E29)', () => {
-    expect(REBALANCE_TOO_LARGE_PCT.toString()).toBe('0.11');
-    expect(REBALANCE_TOO_LARGE_PCT.lt('0.25')).toBe(true);
+describe('plafond d\'ampleur d\'un run (E29, E30, E32)', () => {
+  it('vaut 25 %, la valeur de la phase 0 (decision du 2026-11-12)', () => {
+    expect(REBALANCE_TOO_LARGE_PCT.toString()).toBe('0.25');
   });
-  it('refuse un run a 12 % du portefeuille, que les 25 % laissaient passer', () => {
-    expect(codes(intent(arbitrage(new Decimal('6000'))))).toEqual(['REBALANCE_TOO_LARGE']);
+  /* Le cas qui a motive le relevement : un retour a la cible de 13,2 %, le premier des quatre RATIO_BAND. */
+  it('laisse passer un run a 13,2 % du portefeuille, que le plafond de 11 % refusait', () => {
+    expect(validate(intent(arbitrage(new Decimal('6600'))), context()).status).toBe('ACCEPTED');
   });
-  it('laisse passer un run a 10 % du portefeuille', () => {
-    expect(validate(intent(arbitrage(new Decimal('5000'))), context()).status).toBe('ACCEPTED');
+  it('laisse passer un run pile a 25 % du portefeuille (strict)', () => {
+    expect(validate(intent(arbitrage(new Decimal('12500'))), context()).status).toBe('ACCEPTED');
   });
-  /* Le cas qui a motive le relevement : la correction de l'apport du 2026-09-26. */
-  it('laisse passer un run a 8,40 %, que le plafond de 8 % refusait', () => {
-    expect(validate(intent(arbitrage(new Decimal('4200'))), context()).status).toBe('ACCEPTED');
+  it('refuse un run juste au-dessus de 25 % du portefeuille', () => {
+    expect(codes(intent(arbitrage(new Decimal('12501'))))).toEqual(['REBALANCE_TOO_LARGE']);
   });
   it('refuse le run entier, sans raboter ses jambes (O2 = 3)', () => {
-    const verdict = validate(intent(arbitrage(new Decimal('6000'))), context());
+    const verdict = validate(intent(arbitrage(new Decimal('15000'))), context());
     expect(verdict).toEqual({ status: 'REJECTED', rejections: [expect.anything()] });
   });
   it('le motif cite l\'ampleur du run et la valeur du plafond (E32)', () => {
-    const [rejet] = rejections(intent(arbitrage(new Decimal('6000'))));
+    const [rejet] = rejections(intent(arbitrage(new Decimal('15000'))));
     expect(rejet?.reason).toBe(
-      'somme des |jambes| 12000 USDC soit 12.0000 % de 100000, au-dela de 11 %',
+      'somme des |jambes| 30000 USDC soit 30.0000 % de 100000, au-dela de 25 %',
     );
   });
 });

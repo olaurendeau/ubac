@@ -366,6 +366,11 @@ de 6 834 USDC, contre 1 708 à 25 %. Choix assumé. Les oracles `rebalance` du
 rejeu redeviennent ceux de la phase 0 (12 déclenchements) ; l'ombre
 `rebalance_ab`, qui arme B, bute encore 84 jours à 11 %.
 
+*Note du 2026-11-12 : récit daté. Le plafond est depuis relevé à 25 % par
+décision de l'opérateur, le blocage du déclencheur B de `rebalance_ab` ayant
+montré qu'à 11 % le portefeuille pouvait se figer. Voir la
+[spec générale](../specs/ubac-rebalance.md), §5.8.*
+
 **C'est le lot le plus court et le plus facile à sous-estimer.** Les trois
 décisions se referment l'une sur l'autre : `REBALANCE_TOO_LARGE` **refuse déjà le
 run entier** — c'est une `Rejection` du verdict, pas un écrêtage de jambe —, et
