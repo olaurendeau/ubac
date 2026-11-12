@@ -701,8 +701,12 @@ ils sont cités.
   la nouvelle clé.
 - **Une phase 3 peut se terminer sans aucun rééquilibrage.** 10 à 15
   déclenchements par an, et une jambe post-only peut ne jamais s'exécuter. C'est
-  le même avertissement que le §13 donne déjà pour la phase 1, et il vaut ici :
-  ne pas resserrer les bandes pour « voir quelque chose ».
+  le même avertissement que le §13 donne déjà pour la phase 1, et il vaut ici.
+  La bande cash a été resserrée à ±10 % par décision de l'opérateur (§5.7 de
+  `docs/specs/ubac-rebalance.md`, 2026-11-12), pour des rééquilibrages plus
+  fréquents ; ce choix ne change pas l'ordre de grandeur ci-dessus. Régler une
+  bande reste une décision consignée, jamais un réglage pour faire bouger une
+  phase.
 - **La phase 3 ne démontre rien sur la valeur de la stratégie.** Le §5.6 pose
   que battre le DCA sur 12 mois est la condition de justification. Un mois de
   rééquilibrages réels n'en dit rien.
