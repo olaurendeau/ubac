@@ -584,6 +584,17 @@ const HORS_BANDE: readonly AssetBalance[] = [
   solde('USDC', '10000'),
 ];
 
+/**
+ * Cash a 2 % : le retour a la cible deplace 28 % du portefeuille, au-dela de
+ * `REBALANCE_TOO_LARGE_PCT` (25 %). `HORS_BANDE`, a 20 %, passe depuis le
+ * relevement du plafond du 2026-11-12 : les cas de refus prennent celui-ci.
+ */
+const TROP_AMPLE: readonly AssetBalance[] = [
+  solde('BTC', '1'),
+  solde('ETH', '19.2'),
+  solde('USDC', '2000'),
+];
+
 const LES_QUATRE = ['rebalance', 'rebalance_ab', 'ladder', 'dca'];
 
 // --- Enchainement -----------------------------------------------------------
@@ -949,29 +960,29 @@ describe('§8 etape 5 — une decision par strategie, trigger NONE compris', () 
 
   /*
    * Le plafond reduit de la phase 3, constate sur le run (E32) : le retour a la
-   * cible deplace 20 % du portefeuille, au-dela de `REBALANCE_TOO_LARGE_PCT`. Le
+   * cible deplace 28 % du portefeuille, au-dela de `REBALANCE_TOO_LARGE_PCT`. Le
    * run entier est refuse, sans rabotage (O2 = 3), et le refus n'est pas
    * silencieux : la ligne porte le verdict, l'alerte porte l'ampleur et le plafond.
    */
   it('persiste aussi un run qui declenche, avec ses jambes et son verdict', async () => {
-    const h = harnais({ balances: HORS_BANDE });
+    const h = harnais({ balances: TROP_AMPLE });
     const result = complete(await lance(h));
 
     const [production] = result.outcomes;
     expect(production?.strategy).toBe('rebalance');
     expect(production?.isShadow).toBe(false);
     expect(production?.intent.trigger).toBe('CASH_BAND');
-    // Retour a la cible : deux ventes de 10 000 USDC, 20 % de la valeur totale.
+    // Retour a la cible : deux ventes, 28 % de la valeur totale.
     expect(production?.intent.legs.map((l) => `${l.side} ${l.asset} ${l.amount.toString()}`)).toEqual([
       'SELL BTC 10000',
-      'SELL ETH 10000',
+      'SELL ETH 18000',
     ]);
     const refus = { status: 'REJECTED', rejections: [expect.objectContaining({ code: 'REBALANCE_TOO_LARGE' })] };
     expect(production?.verdict).toEqual(refus);
     expect(h.table.get(`${RUN_DATE}|rebalance|false`)?.verdict).toEqual(refus);
     expect(h.table.size).toBe(4);
     const alerte = h.pushes.find((p) => p.payload.title.endsWith('reequilibrage trop gros, rebalance'));
-    expect(alerte?.payload.message).toMatch(/20\.0000 % de 100000, au-dela de \d+(\.\d+)? %/);
+    expect(alerte?.payload.message).toMatch(/28\.0000 % de 100000, au-dela de \d+(\.\d+)? %/);
   });
 
   it('le ladder journalise NONE : sans ancre persistee, rien ne se franchit', async () => {
@@ -1093,6 +1104,11 @@ describe('§4 — deux runs le meme jour, une seule decision par strategie', () 
 /** Une photo de la veille, chainable : positions accordees et indice a 1. */
 function veille(total: string): SnapshotRecord {
   return cache({ BTC: qty('1'), ETH: qty('16'), USDC: qty('10000') }, total);
+}
+
+/** Meme photo, aux positions de `TROP_AMPLE` : sans cela le run resynchronise sur divergence. */
+function veilleAmple(total: string): SnapshotRecord {
+  return cache({ BTC: qty('1'), ETH: qty('19.2'), USDC: qty('2000') }, total);
 }
 
 describe('§6, §8 etape 7 — la photo du jour et la suspension au drawdown', () => {
@@ -1590,7 +1606,7 @@ describe('§9 — les alertes push', () => {
    * `REBALANCE_EXECUTED` ne part que quand un ordre part (E27, sonde plus bas).
    */
   it('ne pousse pas REBALANCE_EXECUTED sur un reequilibrage declenche mais rejete', async () => {
-    const h = harnais({ balances: HORS_BANDE });
+    const h = harnais({ balances: TROP_AMPLE });
     const result = complete(await lance(h));
 
     expect(result.outcomes.some((o) => o.intent.legs.length > 0)).toBe(true);
@@ -1638,7 +1654,7 @@ describe('§9 — les alertes push', () => {
   });
 
   it('pousse DRAWDOWN quand la suspension du §6 est active', async () => {
-    const h = harnais({ balances: HORS_BANDE, snapshot: veille('200000') });
+    const h = harnais({ balances: TROP_AMPLE, snapshot: veilleAmple('200000') });
     const result = complete(await lance(h));
 
     expect(result.suspension.status).toBe('ACTIVE');
@@ -1691,8 +1707,8 @@ describe('§9 — les alertes push', () => {
    */
   it('une alerte en echec ne defait rien du run, et ne passe pas en silence', async () => {
     const h = harnais({
-      balances: HORS_BANDE,
-      snapshot: veille('200000'),
+      balances: TROP_AMPLE,
+      snapshot: veilleAmple('200000'),
       transport: () =>
         Promise.resolve<HttpOutcome>({ status: 'FAILED', failure: { kind: 'REFUS', httpStatus: 401 } }),
     });
@@ -1764,8 +1780,8 @@ describe('§9 — les alertes push', () => {
    */
   it('un transport qui leve ne fait pas tomber le run', async () => {
     const h = harnais({
-      balances: HORS_BANDE,
-      snapshot: veille('200000'),
+      balances: TROP_AMPLE,
+      snapshot: veilleAmple('200000'),
       transport: () => {
         throw new TypeError('socket fermee');
       },
@@ -2260,7 +2276,7 @@ describe('§8 etape 6 — seule la production transmet ses ordres (E18)', () => 
   });
 
   it('un verdict REJECTED de la production ne transmet rien', async () => {
-    const h = harnais({ balances: HORS_BANDE });
+    const h = harnais({ balances: TROP_AMPLE });
     await lance(h);
 
     expect(h.appels).not.toContain('placeOrder');

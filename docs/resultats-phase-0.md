@@ -14,7 +14,8 @@ par `validate()`, n'étaient plus celles-ci sur `main`. Relevé à 11 % le
 ligne était alors identique à celle-ci. Celle de `rebalance_ab`, qui butait
 encore 84 jours, restait différente (23 304,05 USDC, 97 déclenchements). Depuis
 le 2026-11-12 (bande à ±10 %, jambe minimale à 100 USDC), ces deux lignes ont
-encore changé sur `main` : voir la spec, §5.7. Voir aussi
+encore changé sur `main` : voir la spec, §5.7. Le plafond a ensuite été relevé
+à 25 % le même jour (§5.8), ce qui ne change que la ligne `rebalance_ab`. Voir aussi
 [run-quotidien.md](run-quotidien.md#le-plafond-réduit-de-la-phase-3).
 
 ## Ce que ce document est, et ce qu'il n'est pas

@@ -151,7 +151,7 @@ précédents, avec l'échéance « avant la phase 3 ».
 
 | # | Question | Réponse retenue |
 |---|---|---|
-| **O1** | Forme du plafond réduit (B2) | **3 — fraction de la valeur du portefeuille par run**, c'est-à-dire `REBALANCE_TOO_LARGE_PCT` abaissé. **Valeur retenue le 2026-09-21 : 8 %** au lieu de 25 %, mesurée sur le rejeu et non estimée ; **relevée à 11 % le 2026-09-27** par décision de l'opérateur, mesurée de même — voir E29 et E34 |
+| **O1** | Forme du plafond réduit (B2) | **3 — fraction de la valeur du portefeuille par run**, c'est-à-dire `REBALANCE_TOO_LARGE_PCT` abaissé. **Valeur retenue le 2026-09-21 : 8 %** au lieu de 25 %, mesurée sur le rejeu et non estimée ; **relevée à 11 % le 2026-09-27** par décision de l'opérateur, mesurée de même — voir E29 et E34 ; **relevée à 25 % le 2026-11-12**, voir la note d'E29 et la [spec générale](ubac-rebalance.md), §5.8 |
 | **O2** | Que fait le système quand une jambe dépasse le plafond ? | **3 — pas de rabotage.** Le run entier est refusé ; le portefeuille reste hors bande jusqu'à la levée du plafond |
 | **O3** | Par quel geste le plafond est-il levé ? | **3 — un geste explicite** : changement de constante dans le code, PR relue, déploiement. Jamais automatiquement, jamais par variable d'environnement |
 | **O4** | Qu'est-ce qui clôt la phase 3 ? | **1 — un mois calendaire de runs armés sans incident**, même si aucun rééquilibrage n'a eu lieu |
@@ -550,6 +550,11 @@ dans `decisions.reason`.
     reste armé, à une valeur qui ne refuse plus aucun rééquilibrage du rejeu ;
     la date et le motif sont écrits en E29 et dans le commentaire de la
     constante.
+    **Note du 2026-11-12 : le plafond repasse à 25 %.** Les valeurs de ce critère
+    (8 %, puis 11 %) sont des récits datés. L'opérateur a relevé le plafond à
+    25 % le 2026-11-12, en conservant le refus du run entier (O2) : à 11 %, aux
+    montants réels, le portefeuille pouvait se figer indéfiniment. La décision et
+    son motif sont dans la [spec générale](ubac-rebalance.md), §5.8.
 
 **Réconciliation : les écritures que la phase 3 ouvre**
 

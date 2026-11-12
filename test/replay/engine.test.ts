@@ -16,23 +16,32 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 /**
  * Valeurs figees pour cette fixture ; ce ne sont pas des jugements de performance (C31).
- * `rebalance*` passent par `validate()`, donc par le plafond reduit de la phase 3 :
+ * `rebalance*` passent par `validate()`, donc par le plafond d'ampleur de la phase 3 :
  * un retour a la cible refuse laisse le jour suivant hors bande, qui recompte un
  * declenchement. Chaque geste sur le plafond (E34) refige ces deux-la.
- * Avant la decision du 2026-11-12, a 11 % (2026-09-27), `rebalance` ne connaissait plus aucun refus : ses valeurs etaient
- * exactement celles de la phase 0 a 25 %, et ses 12 declenchements etaient ses 12
- * executions (a 8 % : 176 declenchements, 166 jours refuses). `rebalance_ab`, qui
- * arme le declencheur B en shadow, butait encore 84 jours sur 97 declenchements.
+ * Historique du plafond : a 11 % (2026-09-27), `rebalance` ne connaissait plus aucun
+ * refus (ses valeurs etaient exactement celles de la phase 0 a 25 %, ses 12
+ * declenchements etaient ses 12 executions ; a 8 % : 176 declenchements, 166 jours
+ * refuses) et `rebalance_ab`, qui arme le declencheur B en shadow, butait encore 84
+ * jours sur 97 declenchements.
  *
- * Decision du 2026-11-12 : bande cash a +/-10 % (de [0.24, 0.36] a [0.27, 0.33]) et
+ * Decision du 2026-11-12 (1) : bande cash a +/-10 % (de [0.24, 0.36] a [0.27, 0.33]) et
  * jambe minimale a 100 USDC. Les deux lignes `rebalance*` sont refigees : `rebalance`
  * passe de 12 a 32 declenchements (valeur finale 23 368.54 -> 23 296.17, TWR 44.62 % ->
- * 44.94 %), `rebalance_ab` de 97 a 36 (23 304.05 -> 23 296.17). Les quatre autres series
- * ne bougent pas. Ce sont des valeurs de non-regression, pas un verdict de rentabilite.
- * `rebalance` et `rebalance_ab` ont desormais les memes valeurs, ce qui n'est pas un
- * copier-coller : les 4 declenchements de plus de `rebalance_ab` sont des RATIO_BAND
- * (2025-08-22, 23, 24 et 26), tous refuses en REBALANCE_TOO_LARGE (environ 16 % du
- * portefeuille), donc sans effet sur la valeur. Le rejeu versionne ne compte aucun frais.
+ * 44.94 %), `rebalance_ab` de 97 a 36 (23 304.05 -> 23 296.17). Apres cette decision,
+ * `rebalance` et `rebalance_ab` avaient les memes valeurs : les 4 declenchements de
+ * plus de `rebalance_ab` etaient des RATIO_BAND (2025-08-22, 23, 24 et 26), tous
+ * refuses en REBALANCE_TOO_LARGE (environ 16 % du portefeuille), donc sans effet.
+ *
+ * Decision du 2026-11-12 (2) : le plafond d'ampleur repasse de 11 % a 25 %. Ces quatre
+ * RATIO_BAND ne sont plus refuses : le declencheur B de `rebalance_ab` execute enfin
+ * son retour a la cible, et sa ligne se distingue de nouveau de celle de `rebalance`
+ * (valeur finale 23 296.17 -> 23 510.21, TWR 44.94 % -> 46.69 %, Sharpe 90 j 2.144468
+ * -> 2.144464, drawdown max -45.20 % -> -44.69 %, declenchements 36 -> 33 : un
+ * retour execute ne laisse plus le portefeuille hors bande le jour suivant). La ligne
+ * `rebalance` ne bouge pas : aucun de ses runs n'etait refuse a 11 %, ni ne l'est a
+ * 25 %. Les quatre series de reference ne bougent pas non plus. Ce sont des valeurs
+ * de non-regression, pas un verdict de rentabilite. Le rejeu versionne ne compte aucun frais.
  */
 const ORACLES: Record<
   SeriesName,
@@ -52,11 +61,11 @@ const ORACLES: Record<
     triggerCount: 32,
   },
   rebalance_ab: {
-    finalValue: '23296.172979587367173',
-    twr: '0.4493756821886858144',
-    sharpe90: '2.1444679979252002858',
-    maxDrawdown: '-0.45195142480476058102',
-    triggerCount: 36,
+    finalValue: '23510.210138638851212',
+    twr: '0.466945088992882808',
+    sharpe90: '2.1444636155884668294',
+    maxDrawdown: '-0.44688900132385495798',
+    triggerCount: 33,
   },
   ladder: {
     finalValue: '20984.999026077450747',
