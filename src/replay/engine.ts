@@ -259,6 +259,7 @@ function runRebalance(name: StrategyName, params: RebalanceParams, input: Replay
       const verdict = validate(decision.intent, {
         makeClientOrderId: clientOrderId,
         mids: day.prices,
+        closes: day.prices,
         lastCompleteRebalanceOn: lastComplete,
         balances: [],
         holdings,

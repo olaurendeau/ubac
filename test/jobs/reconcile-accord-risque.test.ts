@@ -99,6 +99,7 @@ function noyauRejetteLaDivergence(cas: Cas): boolean {
   const context: RiskContext = {
     makeClientOrderId: () => 'inutilise-sans-jambe',
     mids: PRIX,
+    closes: PRIX,
     lastCompleteRebalanceOn: null,
     balances: balances(cas),
     holdings: holdings(cas.exchange),

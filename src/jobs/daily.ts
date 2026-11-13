@@ -980,6 +980,7 @@ async function executeRun(run: DailyRun, parti: ExecutionDeStrategie[]): Promise
     const verdict = validate(intent, {
       makeClientOrderId: clientOrderId,
       mids,
+      closes: prices,
       /*
        * Aucun reequilibrage complet n'a jamais abouti : rien n'est place en
        * phase 1, donc le cooldown de A n'a pas d'ancre. Meme motif que celui de B.

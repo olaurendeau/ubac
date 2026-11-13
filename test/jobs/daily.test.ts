@@ -2409,7 +2409,7 @@ describe('§8 etape 5 — le prix de la production est lu au carnet, et valide t
 
     expect(verdicts.slice(0, 2)).toEqual(['PRICE_SANITY', 'ACCEPTED']);
     expect(h.appels).not.toContain('placeOrder');
-    expect(h.lignes.some((l) => /^rebalance : PRICE_SANITY — mid en direct 51010.005 a 2.0200 % de la cloture 50000/.test(l))).toBe(true);
+    expect(h.lignes.some((l) => /^rebalance : PRICE_SANITY — decision dimensionnee sur un prix 50000 dont le mid 51010.005 s'ecarte de 2.0200 %/.test(l))).toBe(true);
   });
 
   it.each([

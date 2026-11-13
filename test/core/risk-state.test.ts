@@ -56,6 +56,7 @@ function context(overrides: Partial<RiskContext> = {}): RiskContext {
     makeClientOrderId: ({ runDate, asset, side, legIndex }) =>
       `${runDate}|${asset}|${side}|${legIndex}`,
     mids: { BTC, ETH },
+    closes: PRICES,
     lastCompleteRebalanceOn: null,
     balances: [],
     holdings: BASE_HOLDINGS,
@@ -227,6 +228,62 @@ describe('plafond d\'ampleur d\'un run (E29, E30, E32)', () => {
     expect(rejet?.reason).toBe(
       'somme des |jambes| 30000 USDC soit 30.0000 % de 100000, au-dela de 25 %',
     );
+  });
+});
+
+/*
+ * D7 : quand la decision est recalculee sur le mid, `prices` vaut le mid et les
+ * regles d'etat (ampleur, MIN_CASH, MAX_EXPOSURE) valorisent le portefeuille au
+ * mid, pas a la cloture. Chaque cas morde au mid et passe a la cloture, avec des
+ * mids a 10-15 % de la cloture (donc dans la borne de 20 %).
+ */
+describe('regles d\'etat reappliquees au prix de decision (D7)', () => {
+  const auMid = (btc: string, eth: string): Pick<RiskContext, 'mids' | 'prices'> => {
+    const mids = { BTC: price(btc), ETH: price(eth) };
+    return { mids, prices: mids };
+  };
+  const jambe = (asset: 'BTC' | 'ETH', side: Side, amount: string, limit: string): IntentLeg =>
+    leg({ asset, side, amount: usdc(amount), limitPrice: price(limit) });
+
+  it('REBALANCE_TOO_LARGE : 24 % de la cloture, 26,8 % de la valeur au mid', () => {
+    const jambes = (btc: string, eth: string): readonly IntentLeg[] => [
+      jambe('BTC', 'SELL', '12000', btc),
+      jambe('ETH', 'BUY', '12000', eth),
+    ];
+    expect(validate(intent(jambes('60000', '3000')), context()).status).toBe('ACCEPTED');
+    const ctx = context(auMid('51000', '2550'));
+    const [rejet] = rejections(intent(jambes('51000', '2550')), ctx);
+    expect(rejet?.code).toBe('REBALANCE_TOO_LARGE');
+    expect(rejet?.reason).toMatch(/^somme des \|jambes\| 24000 USDC soit 26\.8156 % de 89500/);
+  });
+  it('MIN_CASH : 22 % de la cloture, 19,7 % de la valeur au mid', () => {
+    const ctxCloture = context({ holdings: PRES_DU_MIN_CASH });
+    expect(
+      validate(intent([jambe('BTC', 'BUY', '1200', '60000')]), ctxCloture).status,
+    ).toBe('ACCEPTED');
+    const ctx = context({ holdings: PRES_DU_MIN_CASH, ...auMid('69000', '3450') });
+    const [rejet] = rejections(intent([jambe('BTC', 'BUY', '1200', '69000')]), ctx);
+    expect(rejet?.code).toBe('MIN_CASH');
+    expect(rejet?.reason).toMatch(/^cash projete a 19\.7\d* %/);
+  });
+  it('MAX_EXPOSURE : BTC a 49,5 % a la cloture, 50,8 % au mid', () => {
+    const holdings: Holdings = { BTC: qty('0.8'), ETH: qty('6.666666666666667'), USDC: qty('32000') };
+    expect(
+      validate(intent([jambe('BTC', 'BUY', '1500', '60000')]), context({ holdings })).status,
+    ).toBe('ACCEPTED');
+    const ctx = context({ holdings, ...auMid('66000', '3300') });
+    const [rejet] = rejections(intent([jambe('BTC', 'BUY', '1500', '66000')]), ctx);
+    expect(rejet?.code).toBe('MAX_EXPOSURE');
+    expect(rejet?.reason).toMatch(/^exposition projetee BTC a 50\.8\d* %/);
+  });
+  it('une cloture lointaine ne change pas la valorisation : seul prices compte', () => {
+    // Memes mids et prices, closes a 15 % en dessous : le verdict est celui du mid.
+    const ctx = context({
+      holdings: PRES_DU_MIN_CASH,
+      ...auMid('69000', '3450'),
+      closes: { BTC: price('60000'), ETH: price('3000') },
+    });
+    expect(codes(intent([jambe('BTC', 'BUY', '1200', '69000')]), ctx)).toEqual(['MIN_CASH']);
   });
 });
 

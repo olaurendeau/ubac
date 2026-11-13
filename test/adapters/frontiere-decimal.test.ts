@@ -144,6 +144,7 @@ describe('le motif d’un refus atteint la colonne reason (E32)', () => {
     const verdict = validate(intent, {
       makeClientOrderId: ({ asset, legIndex }) => `${asset}|${String(legIndex)}`,
       mids: { BTC, ETH },
+      closes: { BTC, ETH },
       lastCompleteRebalanceOn: null,
       balances: [],
       holdings: {

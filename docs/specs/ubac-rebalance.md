@@ -226,6 +226,12 @@ Decision: le plafond d'ampleur d'un run `REBALANCE_TOO_LARGE_PCT` (`src/core/ris
 
 Effet sur le rejeu versionné : seule la ligne `rebalance_ab` bouge (valeur finale 23 296,17 → 23 510,21 USDC, TWR 44,94 % → 46,69 %, 36 → 33 déclenchements) ; `rebalance` et les quatre références sont inchangées. Valeurs de non-régression, pas un verdict de rentabilité. Aucun autre seuil ne change (`MIN_LEG_USDC`, `COOLDOWN_DAYS`, `MIN_CASH_PCT`, `MAX_EXPOSURE_PCT`…). Le garde-fou reste un garde-fou contre un bug de dimensionnement : à 25 %, 1 550 USDC par run au plus sur 6 200 USDC.
 
+### 5.9 Décision du 2026-11-13 : au-delà de 2 % d'écart à la clôture, la décision se recalcule sur le mid ; au-delà de 20 %, elle est refusée
+
+Decision: quand le mid en direct s'écarte de plus de 2 % de la clôture sur un actif, la décision de production est recalculée sur les deux mids ; au-delà de 20 % (`LIVE_DRIFT_MAX_PCT`, inclusif), ou si un mid manque, ou si la clôture est invalide, elle est refusée en `PRICE_SANITY` comme avant. Les seuils d'exposition, de cash et d'ampleur se rappliquent sur la valeur au mid. — Reason: le 2026-11-13, `CASH_BAND` (USDC à 35,76 % > 33 %) a proposé deux achats, rejetés tous deux en `PRICE_SANITY` : la clôture du 2026-11-12 (BTC 71 369,9 ; ETH 2 017,36) était à −4,6 % et −5,3 % du mid vers 06:00 UTC (BTC ≈ 68 066 ; ETH ≈ 1 909,8). Un mouvement de marché ordinaire faisait perdre la journée. Décidé le 2026-11-13 par l'opérateur. Détail et critères : `docs/specs/ubac-prix-au-carnet.md` (K6, D7, critères 24 à 29).
+
+Livré en deux lots. Le premier met la borne à 20 % et le prix de décision dans la couche risque, sans changer le comportement du job quotidien ; le second recalcule la décision dans `daily.ts`. Les ombres et le rejeu ne recalculent jamais : leurs verdicts ne bougent pas. Le second essai post-only (D4 de la spec prix-au-carnet, pas encore sur `main`) devra revalider avec les mêmes `prices` et `closes`.
+
 ---
 
 ## 6. Couche risque
@@ -242,6 +248,7 @@ Déterministe, testée exhaustivement, appliquée à toute intention quelle que 
 | Jambe minimale | 100 USDC, sinon la jambe est ignorée | `LEG_TOO_SMALL` |
 | Fréquence minimale | 7 jours entre deux rééquilibrages complets | `COOLDOWN` |
 | Écart au prix marché | rejet si limite > 2 % du mid | `PRICE_SANITY` |
+| Écart mid / clôture | recalcul de la décision au-delà de 2 %, rejet au-delà de 20 % (§5.9) | `PRICE_SANITY` |
 | Cohérence de solde | rejet si divergence > 1 % entre exchange et état interne | `RECONCILIATION_DRIFT` |
 
 ### Les deux règles qui comptent vraiment
@@ -445,6 +452,7 @@ Commande `jobs/liquidate.ts`, déclenchable en CLI et depuis un bouton d'action 
     "minLegUsdc": 100,
     "cooldownDays": 7,
     "priceSanityPct": 0.02,
+    "maxLiveDriftPct": 0.20,
     "reconciliationDriftPct": 0.01,
     "drawdownAlertPct": 0.25
   },
