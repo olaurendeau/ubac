@@ -190,7 +190,8 @@ const REJETS: Readonly<Record<RejectionCode, string>> = {
     "Le reequilibrage deplacerait une part du portefeuille superieure au plafond fixe pour un seul reequilibrage.",
   LEG_TOO_SMALL: 'Une jambe porte un montant trop petit pour valoir ses frais.',
   COOLDOWN: "Un reequilibrage trop recent interdit d'en declencher un autre tout de suite.",
-  PRICE_SANITY: "Le prix limite d'une jambe s'ecarte trop du cours constate pour etre credible.",
+  PRICE_SANITY:
+    "Un prix s'ecarte trop du cours constate pour etre credible : prix limite a plus de 2 % du mid en direct, ou mid en direct a plus de 20 % de la cloture.",
   RECONCILIATION_DRIFT:
     "Les soldes lus sur l'exchange ne concordent pas avec la derniere photo : rien n'est decide tant que l'ecart n'est pas explique.",
 };

@@ -68,6 +68,16 @@ export type ReportResync =
   | { readonly status: 'NOT_NEEDED' }
   | { readonly status: 'RESYNCHRONIZED'; readonly explainedByFlows: boolean; readonly reason: string };
 
+/**
+ * La decision de production a-t-elle ete recalculee sur le mid en direct (D7).
+ * Recopie de `LiveRecompute` (`src/jobs/daily.ts`), reduite a ce que le rendu
+ * lit ; `contrat-run.test-d.ts` ferme la compatibilite. Seul `RECOMPUTED` s'affiche.
+ */
+export type ReportLiveRecompute =
+  | { readonly status: 'NOT_NEEDED' }
+  | { readonly status: 'RECOMPUTED'; readonly reason: string }
+  | { readonly status: 'REFUSED'; readonly reason: string };
+
 /** Une strategie du §8 : ce qu'elle a decide, et ce que la couche risque en a dit. */
 export interface ReportOutcome {
   readonly strategy: StrategyName;
@@ -116,6 +126,8 @@ export interface CompletedRun {
   readonly suspension: ReportSuspension;
   /** Lu un jour d'apport seulement : voir `resyncExplique`. */
   readonly resync: ReportResync;
+  /** Lu pour l'encadre du recalcul au mid : voir `recalculEncadre`. */
+  readonly liveRecompute: ReportLiveRecompute;
   readonly outcomes: readonly ReportOutcome[];
   readonly executions: readonly ReportExecution[];
 }
@@ -1043,6 +1055,28 @@ const production = (run: CompletedRun): ReportOutcome | undefined =>
   run.outcomes.find((outcome) => !outcome.isShadow);
 
 /**
+ * Le jour ou la decision de production a ete recalculee sur le mid (D7), le
+ * rapport le dit en tete : le reste du courrier — ombres, allocation, distances,
+ * valeur — est a la cloture, et le lire sans cette note ferait croire que les
+ * poids de la production sont ceux du tableau. Seul `RECOMPUTED` s'affiche : un
+ * recalcul refuse se lit deja dans le rejet `PRICE_SANITY` de la decision. Le
+ * texte est celui du run, qui ouvre aussi `decisions.reason` : une seule source,
+ * ecarts des deux actifs compris.
+ */
+function recalculEncadre(run: CompletedRun): string {
+  const { liveRecompute } = run;
+  if (liveRecompute.status !== 'RECOMPUTED') return '';
+  const prod = production(run);
+  const poids =
+    prod === undefined ? '' : ` Poids USDC de la production au mid : ${pct(prod.intent.weightsBefore.USDC)}.`;
+  return (
+    `<div style="${INFO}"><strong>Decision de production recalculee sur le mid en direct.</strong>` +
+    `${escape(poids)} Les ombres, l'allocation et les distances au declencheur restent a la cloture.<br>` +
+    `${escape(liveRecompute.reason)}</div>`
+  );
+}
+
+/**
  * L'objet tient sur un ecran verrouille. Une suspension passe devant le trigger : c'est la seule ligne qui demande une decision humaine.
  * Les deux P&L sont les metriques **memes** que la case d'en-tete, mises en forme par le meme `signedPct` : l'objet ne peut pas dire
  * autre chose que le corps. Absents, ils disent « n/d », jamais une variation de valeur brute (C27).
@@ -1084,6 +1118,7 @@ export function renderDailyReport(input: DailyReportInput): DailyReportMail {
     `<p style="${NOTE}">Prix de cloture du ${escape(run.pricedOn)}. Les ordres de la production partent en limit post-only ; les ombres n'en placent aucun.</p>` +
     alerte +
     resyncEncadre(run) +
+    recalculEncadre(run) +
     entete +
     noteJour +
     distanceSection(input) +

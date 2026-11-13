@@ -360,8 +360,24 @@ dans le rapport. Les exécutions partielles suivent déjà le §7.
 28. `RISK_LIMITS.maxLiveDriftPct` expose la borne en lecture seule ; les ombres
     et le rejeu passent la clôture pour `mids`, `closes` et `prices`, et leurs
     verdicts, y compris ceux de `test/replay/`, ne bougent pas.
-29. Le job quotidien garde, dans ce lot, son comportement : il passe
-    `closes: prices` et ne recalcule rien ; le recalcul est le lot suivant.
+29. Le job quotidien gardait, dans le premier lot, son comportement : il passait
+    `closes: prices` et ne recalculait rien. Le lot suivant le remplace (30 à 33).
+30. Au-delà de 2 % et jusqu'à 20 % (inclus) d'écart du mid à la clôture, la
+    production seule est recalculée sur les deux mids : l'incident du
+    2026-11-13 (USDC à 35,76 %, BTC -4,6 %, ETH -5,3 %) rend `CASH_BAND`,
+    `ACCEPTED`, deux ordres au meilleur acheteur, montants égaux à ceux de
+    `decide` au mid, poids au mid, ombre à la clôture. À 2 % pile rien n'est
+    recalculé.
+31. Le déclencheur est réévalué : un USDC revenu dans la bande au mid rend
+    `NONE`, aucune jambe, aucun ordre. Le motif porte `RECALCUL_AU_MID` en tête,
+    avec les deux écarts signés et ce que la clôture proposait.
+32. Au-delà de 20 % (20,01 %), ou avec un mid inexploitable et un autre actif à
+    plus de 2 % : la décision de la clôture est écrite, `PRICE_SANITY`, aucun
+    ordre. Un jour `NONE` à la clôture ne lit pas le carnet.
+33. `DailyOutcome.liveRecompute` (`NOT_NEEDED`, `RECOMPUTED`, `REFUSED`) nourrit
+    le journal, `decisions.reason` et le rapport, dont l'encadré n'existe que
+    pour `RECOMPUTED`. Un second run du jour rend `ALREADY_RECORDED` sans ordre ;
+    un jour d'ordres en vol, la décision est recalculée et écrite, rien n'est placé.
 
 ## Volume estimé
 

@@ -113,6 +113,7 @@ const RUN: CompletedRun = {
   drawdown: { status: 'COMPUTED', drawdown: dec('-0.0385') },
   suspension: { status: 'INACTIVE' },
   resync: { status: 'NOT_NEEDED' },
+  liveRecompute: { status: 'NOT_NEEDED' },
   outcomes: OUTCOMES,
   executions: [],
 };
@@ -425,6 +426,43 @@ describe('CV15 — un jour d’apport, le rapport dit ce que l’alerte ne dit p
     const glose = rendu.filter((ligne) => ligne.startsWith('etat interne resynchronise |'));
     expect(glose).toHaveLength(1);
     expect(rendu.some((ligne) => ligne.toLowerCase().startsWith('etat interne resynchronise, ecart'))).toBe(true);
+  });
+});
+
+describe('D7 — le jour ou la decision de production est recalculee sur le mid, le rapport le dit en tete', () => {
+  /* Le texte est celui du run : marqueur, les deux ecarts signes, ce que la cloture proposait. Le litteral en tient lieu. */
+  const MOTIF =
+    'RECALCUL_AU_MID : decision de production recalculee sur le mid en direct (BTC -4.6000 %, ETH -5.3000 % depuis la cloture) ; a la cloture elle proposait CASH_BAND, 2 jambe(s)';
+  const RECALCULE = { status: 'RECOMPUTED', reason: MOTIF } as const;
+  const AU_MID: readonly ReportOutcome[] = OUTCOMES.map((o) =>
+    o.isShadow ? o : { ...o, intent: { ...o.intent, weightsBefore: { ...WEIGHTS, USDC: poids('0.3576') } } },
+  );
+  const encadre = (html: string): readonly string[] =>
+    lignes(html).filter((ligne) => ligne.startsWith('Decision de production recalculee sur le mid en direct.'));
+
+  it('l’encadre porte les deux ecarts, le poids USDC de la production au mid, et ce qui reste a la cloture', () => {
+    const mail = renderDailyReport(avecRun({ liveRecompute: RECALCULE, outcomes: AU_MID }));
+
+    expect(encadre(mail.html)).toEqual([
+      `Decision de production recalculee sur le mid en direct. Poids USDC de la production au mid : 35.76 %. Les ombres, l'allocation et les distances au declencheur restent a la cloture.${MOTIF}`,
+    ]);
+    const [, tete = ''] = mail.html.split('<h1');
+    expect(tete.indexOf('Decision de production recalculee')).toBeLessThan(tete.indexOf('Valeur totale'));
+    expect(mail.subject).toBe(renderDailyReport(avecRun({ outcomes: AU_MID })).subject);
+  });
+
+  it('le texte du run est echappe', () => {
+    const mail = renderDailyReport(avecRun({ liveRecompute: { status: 'RECOMPUTED', reason: 'RECALCUL <b>&</b>' } }));
+
+    expect(mail.html).toContain('RECALCUL &lt;b&gt;&amp;&lt;/b&gt;');
+    expect(mail.html).not.toContain('<b>&</b>');
+  });
+
+  it('se tait quand rien n’a ete recalcule, et quand le recalcul a ete refuse', () => {
+    for (const liveRecompute of [{ status: 'NOT_NEEDED' }, { status: 'REFUSED', reason: MOTIF }] as const) {
+      const mail = renderDailyReport(avecRun({ liveRecompute }));
+      expect(mail.html).not.toContain('Decision de production recalculee');
+    }
   });
 });
 

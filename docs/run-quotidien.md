@@ -136,7 +136,9 @@ Aucune variable `UBAC_RISK_*` n'est acceptée : les seuils de risque vivent dans
    stratégie et par run, `trigger NONE` comprise : un run sans action laisse une
    trace. Si la production rend au moins une jambe, le **carnet** des deux
    paires est lu entre la décision et la validation, et ses jambes y sont
-   posées : section 4, point 1.
+   posées : section 4, point 1. Si le mid lu s'écarte de plus de 2 % de la
+   clôture (et d'au plus 20 %), la décision de **production** est refaite sur
+   les mids avant la validation : section 4, point 1 bis.
 6. **L'exécution.** Les ordres d'un verdict `ACCEPTED` de la **seule
    production** passent par `src/jobs/execute.ts` ; une ombre n'y passe jamais
    (E18). Section 4.
@@ -345,8 +347,10 @@ Pour chaque jambe, dans l'ordre :
    bid=… ask=… ; ETH-USDC …`. Achat au meilleur acheteur, vente au meilleur
    vendeur, sans marge — le post-only garantit déjà que l'ordre ne croise pas —,
    arrondi au pas de 0,01 USDC en s'éloignant du mid. `PRICE_SANITY` compare
-   alors ce prix au mid en direct, `(bid + ask) / 2`, et ce mid à la clôture,
-   2 % chacun : **le prix validé est le prix placé**. Un carnet inexploitable —
+   alors ce prix au mid en direct, `(bid + ask) / 2`, à 2 % près ; ce mid à la
+   clôture, à 20 % près (garde contre un carnet aberrant) ; et ce mid au prix
+   sur lequel la décision a été dimensionnée, à 2 % près (point 1 bis) :
+   **le prix validé est le prix placé**. Un carnet inexploitable —
    appel en échec, paire absente, côté vide, `bid >= ask` — ne fait pas échouer
    le run : la jambe est rejetée en `PRICE_SANITY`, et le motif du carnet
    précède celui de la stratégie dans `decisions` et le rapport. Les ombres
@@ -355,6 +359,29 @@ Pour chaque jambe, dans l'ordre :
    quantité est arrondie, à 1e-8 vers le bas (`auCarnet`) : **ce sens n'est pas
    un biais à corriger**, l'arrondir vers le haut engagerait plus que ce que la
    couche risque a validé.
+
+   **1 bis. Recalcul de la production au mid** ([ubac-prix-au-carnet.md](specs/ubac-prix-au-carnet.md),
+   D7, décidé le 2026-11-13 après l'incident où `CASH_BAND` avait perdu deux
+   achats parce que le marché avait bougé de 4,6 % et 5,3 % depuis la clôture).
+   Une fois le carnet lu — sans second appel —, `decisionPricing` compare chaque
+   mid à la clôture : jusqu'à 2 % (inclus), la décision de la clôture reste ;
+   au-delà de 2 % et jusqu'à 20 % (inclus), `decide` est rappelé **pour la
+   production seule**, sur les **deux** mids, avec les mêmes avoirs, flux,
+   horloge et paramètres. Le déclencheur est réévalué : un USDC revenu dans la
+   bande au mid ne propose rien, et rien n'est placé. La couche risque valide
+   alors la décision avec `prices` = mids, donc ampleur, `MIN_CASH` et
+   `MAX_EXPOSURE` valorisent au mid. Le motif, précédé du marqueur
+   `RECALCUL_AU_MID` — les deux écarts signés et ce que la clôture proposait —,
+   ouvre `decisions.reason`, le journal et un encadré du rapport. Au-delà de
+   20 %, avec un mid manquant ou une clôture invalide, le recalcul est refusé :
+   la décision reste à la clôture, `PRICE_SANITY` la rejette, et le motif du
+   refus précède celui de la stratégie. Les ombres, la photo, le TWR,
+   l'allocation et les distances au déclencheur restent à la clôture. Un jour
+   `NONE` à la clôture ne lit toujours pas le carnet. L'idempotence ne bouge
+   pas : le `client_order_id` ne dépend jamais du prix, et un second run du
+   jour rend `ALREADY_RECORDED` sans rien placer. Un jour d'ordres en vol ou de
+   resynchronisation, la décision est recalculée et écrite, mais rien n'est
+   placé.
 2. **Écriture `PENDING`** dans `orders`, `decision_id` posé : c'est le seul lien
    de l'ordre à son `run_date` (E23).
 3. **Placement** en limit post-only. Accepté, la ligne reçoit son

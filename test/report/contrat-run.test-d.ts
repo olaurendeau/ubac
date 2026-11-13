@@ -10,6 +10,7 @@ import type {
   ReportDrawdown,
   ReportExecution,
   ReportGap,
+  ReportLiveRecompute,
   ReportMarketDay,
   ReportOutcome,
   ReportResync,
@@ -65,7 +66,9 @@ const outcomes: readonly ReportOutcome[] = acheve.outcomes;
 const executions: readonly ReportExecution[] = acheve.executions;
 /** CV15 (Y8) : un jour d'apport, la resynchronisation et le refus d'executer passent par le rapport. */
 const resync: ReportResync = acheve.resync;
-void [runDate, pricedOn, totalValue, weights, holdings, history, benchmarks, gaps, drawdown, suspension, outcomes, executions, resync];
+/** D7 : la decision de production recalculee sur le mid en direct s'annonce en tete du rapport. */
+const liveRecompute: ReportLiveRecompute = acheve.liveRecompute;
+void [runDate, pricedOn, totalValue, weights, holdings, history, benchmarks, gaps, drawdown, suspension, outcomes, executions, resync, liveRecompute];
 
 /**
  * V4 — les deux branches de chaque union. L'assignation du type entier ne dirait
@@ -78,14 +81,20 @@ declare const suspendu: Extract<Completed['suspension'], { status: 'ACTIVE' }>;
 declare const libre: Extract<Completed['suspension'], { status: 'INACTIVE' }>;
 declare const resynchronise: Extract<Completed['resync'], { status: 'RESYNCHRONIZED' }>;
 declare const concordant: Extract<Completed['resync'], { status: 'NOT_NEEDED' }>;
-const branches: readonly [ReportDrawdown, ReportDrawdown, ReportSuspension, ReportSuspension, ReportResync, ReportResync] = [
-  dessine,
-  sansDrawdown,
-  suspendu,
-  libre,
-  resynchronise,
-  concordant,
-];
+declare const auMid: Extract<Completed['liveRecompute'], { status: 'RECOMPUTED' }>;
+declare const refuse2: Extract<Completed['liveRecompute'], { status: 'REFUSED' }>;
+declare const alaCloture: Extract<Completed['liveRecompute'], { status: 'NOT_NEEDED' }>;
+const branches: readonly [
+  ReportDrawdown,
+  ReportDrawdown,
+  ReportSuspension,
+  ReportSuspension,
+  ReportResync,
+  ReportResync,
+  ReportLiveRecompute,
+  ReportLiveRecompute,
+  ReportLiveRecompute,
+] = [dessine, sansDrawdown, suspendu, libre, resynchronise, concordant, auMid, refuse2, alaCloture];
 void branches;
 
 /** V5 — une bougie du run est un jour de marche du rapport : seule sa date est lue. */
@@ -119,6 +128,7 @@ rendre({
   drawdown: acheve.drawdown,
   suspension: acheve.suspension,
   resync: acheve.resync,
+  liveRecompute: acheve.liveRecompute,
   outcomes: acheve.outcomes,
   executions: acheve.executions,
 });
