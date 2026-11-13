@@ -33,9 +33,11 @@ import type { UbacConfig } from '../../src/config/env.js';
 import { loadConfig, NTFY_CANAL_OUVERT } from '../../src/config/env.js';
 import { expectedCalendar } from '../../src/fixture/normalise.js';
 import { clientOrderId } from '../../src/core/order-id.js';
+import { decide as decideRebalance } from '../../src/core/strategy/rebalance.js';
+import type { Holdings } from '../../src/core/portfolio.js';
 import type { Order, Price, Quantity, UsdcAmount } from '../../src/core/types.js';
 import type { DailyPorts, DailyRunResult, RunClock } from '../../src/jobs/daily.js';
-import { DailyRunError, NTFY_CANAL_OUVERT_LIGNE, ORDRES_EN_VOL_MARKER, REFUS_RESYNC, reported, runDaily } from '../../src/jobs/daily.js';
+import { DailyRunError, NTFY_CANAL_OUVERT_LIGNE, ORDRES_EN_VOL_MARKER, RECALCUL_AU_MID, REFUS_RESYNC, reported, runDaily } from '../../src/jobs/daily.js';
 import { RESYNC_MARKER } from '../../src/jobs/reconcile.js';
 import { REPORT_TAG } from '../../src/report/daily-report.js';
 import { ordreOuvert, photo, PORTFOLIO, qty, solde } from './doubles.js';
@@ -2398,18 +2400,32 @@ describe('§8 etape 5 — le prix de la production est lu au carnet, et valide t
     expect(ordresDe(result, 'rebalance_ab')[0]?.limitPrice.toFixed()).toBe(BTC_CLOSE);
   });
 
-  it('critere 7 : un mid en direct a plus de 2 % de la cloture rejette la production, pas l’ombre', async () => {
-    const h = harnais({
+  it('critere 7 : a 2,02 % de la cloture la production est recalculee au mid au lieu d’etre rejetee, a 2 % pile elle ne l’est pas', async () => {
+    const recalcule = harnais({
       balances: JUSTE_HORS_BANDE,
       runDate: '2026-10-01',
       carnet: { BTC: cote('51010', '51010.01'), ETH: CARNET_ETH },
     });
-    const result = complete(await lance(h));
-    const verdicts = result.outcomes.map((o) => (o.verdict.status === 'ACCEPTED' ? 'ACCEPTED' : o.verdict.rejections.map((r) => r.code).join()));
+    const result = complete(await lance(recalcule));
 
-    expect(verdicts.slice(0, 2)).toEqual(['PRICE_SANITY', 'ACCEPTED']);
-    expect(h.appels).not.toContain('placeOrder');
-    expect(h.lignes.some((l) => /^rebalance : PRICE_SANITY — decision dimensionnee sur un prix 50000 dont le mid 51010.005 s'ecarte de 2.0200 %/.test(l))).toBe(true);
+    expect(result.liveRecompute.status).toBe('RECOMPUTED');
+    expect(result.outcomes.map((o) => o.verdict.status).slice(0, 2)).toEqual(['ACCEPTED', 'ACCEPTED']);
+    // Au mid, la decision est refaite : ce qui part est ce que la couche risque a accepte, ni plus ni moins.
+    expect(ordresDe(result, 'rebalance')).not.toHaveLength(0);
+    expect(recalcule.corps.map((c) => c.client_order_id)).toEqual(ordresDe(result, 'rebalance').map((o) => o.clientOrderId));
+    expect(recalcule.lignes.some((l) => l.startsWith(`${RECALCUL_AU_MID} : decision de production recalculee sur le mid en direct (BTC +2.0200 %`))).toBe(true);
+
+    const pile = harnais({
+      balances: JUSTE_HORS_BANDE,
+      runDate: '2026-10-01',
+      carnet: { BTC: cote('50999.99', '51000.01'), ETH: CARNET_ETH },
+    });
+    const sansRecalcul = complete(await lance(pile));
+
+    expect(sansRecalcul.liveRecompute).toEqual({ status: 'NOT_NEEDED' });
+    expect(sansRecalcul.outcomes[0]?.verdict.status).toBe('ACCEPTED');
+    expect(pile.table.get('2026-10-01|rebalance|false')?.intent.reason).not.toContain(RECALCUL_AU_MID);
+    expect(pile.appels.filter((a) => a === 'placeOrder')).toHaveLength(1);
   });
 
   it.each([
@@ -2433,6 +2449,175 @@ describe('§8 etape 5 — le prix de la production est lu au carnet, et valide t
     expect(courrier(h).htmlContent).toMatch(motif);
     expect(h.appels).not.toContain('placeOrder');
     expect(corpsDuPing(h)).toContain(RUN_MARKER);
+  });
+});
+
+// --- D7 : au-dela de 2 % de la cloture, la production se recalcule sur le mid -----
+
+describe('§8 etape 5 — la decision de production se recalcule sur le mid en direct (D7, 2026-11-13)', () => {
+  /*
+   * L'incident du 2026-11-13 : USDC au-dessus de la bande a la cloture, le marche
+   * a perdu 4,6 % (BTC) et 5,3 % (ETH) avant le run.
+   */
+  const CLOTURES = { BTC: '71369.9', ETH: '2017.36' } as const;
+  const INCIDENT: readonly AssetBalance[] = [solde('BTC', '0.5'), solde('ETH', '14'), solde('USDC', '36000')];
+  const MIDS_INCIDENT = { BTC: price('68066'), ETH: price('1909.8') };
+  const CARNET_INCIDENT = { BTC: cote('68065.99', '68066.01'), ETH: cote('1909.79', '1909.81') };
+  const scenarioIncident = (extra: Partial<Scenario> = {}): Scenario => ({
+    balances: INCIDENT,
+    closes: CLOTURES,
+    carnet: CARNET_INCIDENT,
+    ...extra,
+  });
+  const cle = (strategy: string, shadow: boolean, jour = RUN_DATE): string => `${jour}|${strategy}|${String(shadow)}`;
+  /** Ce que `decide` rend, appele a la main sur les prix donnes : la reference des montants. */
+  const referencePour = (h: Harnais, holdings: Holdings, prices: { BTC: Price; ETH: Price }) => {
+    const decision = decideRebalance(
+      { holdings, prices, cashFlows: [], lastRatioRebalanceOn: null },
+      h.clock,
+      { ...h.config.rebalance, strategy: 'rebalance', ratioBandEnabled: false },
+    );
+    if (decision.status !== 'DECIDED') throw new Error('reference indecidable');
+    return decision.intent;
+  };
+  const AVOIRS_INCIDENT: Holdings = { BTC: qty('0.5'), ETH: qty('14'), USDC: qty('36000') };
+
+  it('l’incident : CASH_BAND recalcule au mid, ACCEPTED, deux ordres au meilleur acheteur, ombre a la cloture', async () => {
+    const h = harnais(scenarioIncident());
+    const result = complete(await lance(h));
+    const prod = h.table.get(cle('rebalance', false));
+    const attendu = referencePour(h, AVOIRS_INCIDENT, MIDS_INCIDENT);
+    const ombre = h.table.get(cle('rebalance_ab', true));
+
+    expect(result.liveRecompute.status).toBe('RECOMPUTED');
+    expect(result.outcomes[0]?.verdict.status).toBe('ACCEPTED');
+    expect(prod?.intent.trigger).toBe('CASH_BAND');
+    expect(prod?.intent.legs.map((l) => `${l.side} ${l.asset}`)).toEqual(['BUY BTC', 'BUY ETH']);
+    // Les montants sont ceux de `decide` au mid ; les prix limites, ceux du carnet.
+    expect(prod?.intent.legs.map((l) => l.amount.toFixed())).toEqual(attendu.legs.map((l) => l.amount.toFixed()));
+    expect(prod?.intent.legs.map((l) => l.limitPrice.toFixed())).toEqual(['68065.99', '1909.79']);
+    expect(h.corps.map((c) => `${c.side} ${c.product_id} ${c.order_configuration.limit_limit_gtc.limit_price}`)).toEqual([
+      'BUY BTC-USDC 68065.99',
+      'BUY ETH-USDC 1909.79',
+    ]);
+    // Les poids de la production sont ceux du mid, ceux de l'ombre et du run restent a la cloture.
+    expect(prod?.intent.weightsBefore.USDC.toFixed()).toBe(attendu.weightsBefore.USDC.toFixed());
+    expect(ombre?.intent.weightsBefore.USDC.toFixed()).toBe(result.weights.USDC.toFixed());
+    expect(prod?.intent.weightsBefore.USDC.gt(result.weights.USDC)).toBe(true);
+    expect(ombre?.intent.legs.map((l) => l.limitPrice.toFixed())).toEqual(['71369.9', '2017.36']);
+    expect(ombre?.intent.reason).not.toContain(RECALCUL_AU_MID);
+    // Le marqueur ouvre la ligne de `decisions`, avec les deux ecarts signes et ce que la cloture proposait.
+    expect(prod?.intent.reason.startsWith(`${RECALCUL_AU_MID} : decision de production recalculee sur le mid en direct`)).toBe(true);
+    expect(prod?.intent.reason).toMatch(/BTC -4\.62\d+ %, ETH -5\.33\d+ % depuis la cloture\) ; a la cloture elle proposait CASH_BAND, 2 jambe\(s\)/);
+    // Une seule lecture du carnet, et le meme texte au journal et dans le rapport.
+    expect(h.appels.filter((a) => a === 'bestBidAsk')).toHaveLength(1);
+    const texte = result.liveRecompute.status === 'RECOMPUTED' ? result.liveRecompute.reason : '';
+    expect(h.lignes).toContain(texte);
+    expect(prod?.intent.reason.split('\n')[0]).toBe(texte);
+    expect(courrier(h).htmlContent).toContain('Decision de production recalculee sur le mid en direct.');
+    expect(courrier(h).htmlContent).toContain(texte);
+  });
+
+  it('le declencheur est reevalue : USDC revenu dans la bande au mid, la production ne propose rien', async () => {
+    const h = harnais({
+      balances: [solde('BTC', '0.7'), solde('ETH', '12'), solde('USDC', '35000')],
+      carnet: { BTC: cote('54999.99', '55000.01'), ETH: cote('2749.99', '2750.01') },
+    });
+    const result = complete(await lance(h));
+    const prod = h.table.get(cle('rebalance', false));
+    const ombre = h.table.get(cle('rebalance_ab', true));
+
+    expect(ombre?.intent.trigger).toBe('CASH_BAND');
+    expect(result.liveRecompute.status).toBe('RECOMPUTED');
+    expect(prod?.intent.trigger).toBe('NONE');
+    expect(prod?.intent.legs).toEqual([]);
+    expect(prod?.intent.reason.startsWith(RECALCUL_AU_MID)).toBe(true);
+    expect(prod?.intent.reason).toContain('a la cloture elle proposait CASH_BAND, 2 jambe(s)');
+    expect(prod?.verdict.status).toBe('ACCEPTED');
+    expect(h.appels).not.toContain('recordOrder');
+    expect(h.appels).not.toContain('placeOrder');
+  });
+
+  it('la borne de 20 % est inclusive : a 20 % pile la production est recalculee, a 20,01 % elle est refusee', async () => {
+    const pile = harnais({ balances: JUSTE_HORS_BANDE, runDate: '2026-10-01', carnet: { BTC: cote('59999.99', '60000.01'), ETH: CARNET_ETH } });
+    const recalcule = complete(await lance(pile));
+
+    expect(recalcule.liveRecompute.status).toBe('RECOMPUTED');
+    expect(recalcule.outcomes[0]?.verdict.status).toBe('ACCEPTED');
+    expect(pile.corps.map((c) => c.client_order_id)).toEqual(ordresDe(recalcule, 'rebalance').map((o) => o.clientOrderId));
+    expect(pile.corps).not.toHaveLength(0);
+
+    const audela = harnais({ balances: JUSTE_HORS_BANDE, runDate: '2026-10-01', carnet: { BTC: cote('60004.99', '60005.01'), ETH: CARNET_ETH } });
+    const refuse = complete(await lance(audela));
+    const verdict = refuse.outcomes[0]?.verdict;
+    const prod = audela.table.get('2026-10-01|rebalance|false');
+
+    expect(refuse.liveRecompute.status).toBe('REFUSED');
+    expect(verdict?.status === 'REJECTED' ? verdict.rejections.map((r) => r.code) : []).toContain('PRICE_SANITY');
+    // La decision de la cloture est celle qui s'ecrit, avec le motif du refus devant.
+    expect(prod?.intent.trigger).toBe('CASH_BAND');
+    expect(prod?.intent.weightsBefore.USDC.toFixed()).toBe(refuse.weights.USDC.toFixed());
+    expect(prod?.intent.reason.startsWith(RECALCUL_AU_MID)).toBe(true);
+    expect(prod?.intent.reason).toContain('plus de 20 % de la cloture sur BTC');
+    expect(audela.appels).not.toContain('placeOrder');
+    expect(audela.lignes.some((l) => l.startsWith(`${RECALCUL_AU_MID} : recalcul refuse`))).toBe(true);
+    // Un recalcul refuse n'ouvre pas d'encadre : le rejet `PRICE_SANITY` le dit deja.
+    expect(courrier(audela).htmlContent).not.toContain('Decision de production recalculee');
+  });
+
+  it('un mid inexploitable avec un autre actif a plus de 2 % : refus, PRICE_SANITY, aucun ordre', async () => {
+    const h = harnais({
+      balances: JUSTE_HORS_BANDE,
+      runDate: '2026-10-01',
+      carnet: { BTC: cote('52499.99', '52500.01'), ETH: { kind: 'INEXPLOITABLE', reason: 'best_bid_ask[ETH-USDC] : paire absente' } },
+    });
+    const result = complete(await lance(h));
+    const verdict = result.outcomes[0]?.verdict;
+
+    expect(result.liveRecompute.status).toBe('REFUSED');
+    expect(result.liveRecompute.status === 'REFUSED' ? result.liveRecompute.reason : '').toContain('mid ETH absent ou invalide');
+    expect(verdict?.status === 'REJECTED' ? verdict.rejections.map((r) => r.code) : []).toContain('PRICE_SANITY');
+    expect(h.appels).not.toContain('placeOrder');
+  });
+
+  it('un jour NONE a la cloture ne lit pas le carnet, meme si le marche a bouge', async () => {
+    const h = harnais({
+      balances: [solde('BTC', '0.56044'), solde('ETH', '14.8708'), solde('USDC', '30000')],
+      carnet: CARNET_INCIDENT,
+      closes: CLOTURES,
+    });
+    const result = complete(await lance(h));
+
+    expect(h.appels).not.toContain('bestBidAsk');
+    expect(result.liveRecompute).toEqual({ status: 'NOT_NEEDED' });
+  });
+
+  it('le second run du jour : decision deja ecrite, aucun ordre de plus', async () => {
+    const h = harnais(scenarioIncident());
+    await lance(h);
+    const second = complete(await lance(h));
+
+    expect(second.outcomes[0]?.recorded.status).toBe('ALREADY_RECORDED');
+    expect(second.liveRecompute.status).toBe('RECOMPUTED');
+    expect(h.appels.filter((a) => a === 'placeOrder')).toHaveLength(2);
+    expect(second.placements).toEqual([]);
+  });
+
+  it('un jour d’ordres en vol : la decision est recalculee et ecrite, rien n’est place', async () => {
+    const h = harnais(
+      scenarioIncident({
+        enAttente: [ligneDeLaVeille({ runDate: RUN_DATE, createdAt: new Date(`${RUN_DATE}T06:00:00.000Z`) })],
+        ouverts: [AU_CARNET],
+      }),
+    );
+    const result = complete(await lance(h));
+    const prod = h.table.get(cle('rebalance', false));
+
+    expect(result.liveRecompute.status).toBe('RECOMPUTED');
+    expect(prod?.intent.reason).toContain(ORDRES_EN_VOL_MARKER);
+    expect(prod?.intent.reason).toContain(RECALCUL_AU_MID);
+    expect(prod?.intent.legs).toHaveLength(2);
+    expect(h.appels).not.toContain('placeOrder');
   });
 });
 

@@ -276,14 +276,12 @@ describe('regles d\'etat reappliquees au prix de decision (D7)', () => {
     expect(rejet?.code).toBe('MAX_EXPOSURE');
     expect(rejet?.reason).toMatch(/^exposition projetee BTC a 50\.8\d* %/);
   });
-  it('une cloture lointaine ne change pas la valorisation : seul prices compte', () => {
-    // Memes mids et prices, closes a 15 % en dessous : le verdict est celui du mid.
-    const ctx = context({
-      holdings: PRES_DU_MIN_CASH,
-      ...auMid('69000', '3450'),
-      closes: { BTC: price('60000'), ETH: price('3000') },
-    });
-    expect(codes(intent([jambe('BTC', 'BUY', '1200', '69000')]), ctx)).toEqual(['MIN_CASH']);
+  it('closes ne sert qu\'au garde du carnet : la valorisation suit prices, quelle que soit la cloture', () => {
+    // Un mid a 18,97 % d'une cloture a 58000 (borne de 20 % tenue) : valorise a cette cloture, le cash resterait a 22,6 % et le run passerait (second constat).
+    const closes = { BTC: price('58000'), ETH: price('2900') };
+    const jambes = [jambe('BTC', 'BUY', '1200', '69000')];
+    expect(codes(intent(jambes), context({ holdings: PRES_DU_MIN_CASH, ...auMid('69000', '3450'), closes }))).toEqual(['MIN_CASH']);
+    expect(validate(intent([jambe('BTC', 'BUY', '1200', '58000')]), context({ holdings: PRES_DU_MIN_CASH, mids: closes, prices: closes, closes })).status).toBe('ACCEPTED');
   });
 });
 

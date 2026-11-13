@@ -42,8 +42,9 @@ s'arrête au 201 ; la réception est affaire de DNS.
 
 ## 2. Ce que le rapport contient
 
-Les six points du §9, dans l'ordre où ils apparaissent. L'alerte de suspension
-et l'encadré de resynchronisation, quand ils existent, passent avant l'en-tête :
+Les six points du §9, dans l'ordre où ils apparaissent. L'alerte de suspension,
+l'encadré de resynchronisation et l'encadré du recalcul au mid, quand ils
+existent, passent avant l'en-tête :
 
 | Section | Contenu | Source |
 |---|---|---|
@@ -57,6 +58,18 @@ et l'encadré de resynchronisation, quand ils existent, passent avant l'en-tête
 | Métriques indisponibles | ce que le noyau n'a pas pu rendre, et pourquoi | `benchmarkGaps` |
 | **Derniers mouvements** | les huit derniers mouvements, apports, retraits et ordres exécutés, en un seul tableau du plus récent au plus ancien : date, mouvement, montant signé vu du cash et détail ; tous les jours, liste vide ou lecture en échec compris (section 11) | `movements`, lus par `latestCashFlows()` et `latestExecutedOrders()` |
 | **Lexique** | une définition d'une phrase par terme de jargon que le corps imprime (section 9) | `src/report/lexique.ts` |
+
+**L'encadré du recalcul au mid** (D7, `docs/specs/ubac-prix-au-carnet.md`) est un
+encadré d'information, sur le modèle de celui de la resynchronisation. Il n'existe
+que le jour où la décision de production a été refaite sur le mid en direct
+(`liveRecompute.status === 'RECOMPUTED'`) : « Decision de production recalculee
+sur le mid en direct », le poids USDC de la production au mid
+(`intent.weightsBefore.USDC`), la précision que les ombres, l'allocation et les
+distances au déclencheur restent à la clôture, puis le texte du run, qui porte
+les écarts signés des deux actifs et ce que la clôture proposait. Un recalcul
+refusé n'ouvre pas d'encadré : le rejet `PRICE_SANITY` et son motif, dans la
+section « Décision du jour », le disent déjà. L'objet du courrier et les alertes
+ne changent pas.
 
 HTML en ligne, une colonne, largeur maximale de 520 px : ni feuille de style, ni
 image, ni police distante. Un client mobile qui bloque les ressources externes —

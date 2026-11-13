@@ -19,8 +19,8 @@ import type { RebalanceStrategyName } from '../core/config.js';
 import { clientOrderId } from '../core/order-id.js';
 import type { Holdings, PricedAsset, Prices, ValuationIssue } from '../core/portfolio.js';
 import { valuate } from '../core/portfolio.js';
-import { validate } from '../core/risk.js';
-import type { MidPrices } from '../core/risk.js';
+import { decisionPricing, validate } from '../core/risk.js';
+import type { DecisionPricing, MidPrices } from '../core/risk.js';
 import { DCA_DEFAULTS, decide as decideDca } from '../core/strategy/dca.js';
 import type { LadderDecision } from '../core/strategy/ladder.js';
 import { NO_ANCHORS, decide as decideLadder } from '../core/strategy/ladder.js';
@@ -350,6 +350,11 @@ type DailyOutcome =
       readonly observations: ReconcileObservations;
       /** §7 : l'etat interne a-t-il du se rendre a l'exchange ce jour-la. */
       readonly resync: Resynchronization;
+      /**
+       * D7 : la decision de production a-t-elle ete recalculee sur le mid en
+       * direct. Un seul texte nourrit le journal, `decisions.reason` et le rapport.
+       */
+      readonly liveRecompute: LiveRecompute;
       readonly outcomes: readonly StrategyOutcome[];
       /** Etape 6 : l'issue de chaque jambe transmise, dans l'ordre de placement. */
       readonly placements: readonly IssueDeJambe[];
@@ -673,12 +678,11 @@ async function lireCarnet(exchange: Pick<CoinbaseReader, 'bestBidAsk'>, log: Run
  * La cloture reste la reference de tout le reste — valorisation, poids, bandes.
  */
 function poserAuCarnet(intent: Intent, carnet: Carnet): { readonly intent: Intent; readonly mids: MidPrices } {
-  const mids: Partial<Record<PricedAsset, Price>> = {};
+  const mids = midsDuCarnet(carnet);
   const motifs = new Set<string>();
   for (const asset of PRICED) {
     const cote = carnet[asset];
-    if (cote.kind === 'COTE') mids[asset] = cote.bid.add(cote.ask).div(2) as Price;
-    else if (intent.legs.some((leg) => leg.asset === asset)) motifs.add(`carnet inexploitable : ${cote.reason}`);
+    if (cote.kind !== 'COTE' && intent.legs.some((leg) => leg.asset === asset)) motifs.add(`carnet inexploitable : ${cote.reason}`);
   }
   const legs = intent.legs.map((leg) => {
     // Un actif hors des deux paires garde son prix : `screenLeg` le rejettera.
@@ -688,6 +692,46 @@ function poserAuCarnet(intent: Intent, carnet: Carnet): { readonly intent: Inten
   });
   const reason = [...motifs, intent.reason].join('\n');
   return { intent: { ...intent, legs, reason }, mids };
+}
+
+/**
+ * Le marqueur du recalcul au mid, en tete de `decisions.reason` de la production
+ * (`docs/specs/ubac-prix-au-carnet.md`, D7). Meme role que `ORDRES_EN_VOL_MARKER` :
+ * la ligne de `decisions` doit dire, six mois plus tard, que ce jour-la la
+ * decision n'est pas celle de la cloture. Exporte pour que la sonde et le code
+ * lisent le meme litteral.
+ */
+export const RECALCUL_AU_MID = 'RECALCUL_AU_MID';
+
+/**
+ * Le sort du prix de decision de la production ce jour-la (D7), sur le modele de
+ * `Resynchronization`. `RECOMPUTED` : un ecart de plus de 2 % a la cloture, la
+ * decision est refaite sur les mids. `REFUSED` : l'ecart depasse la borne, ou un
+ * prix manque ; la decision reste a la cloture et la couche risque la rejette.
+ */
+export type LiveRecompute =
+  | { readonly status: 'NOT_NEEDED' }
+  | { readonly status: 'RECOMPUTED'; readonly reason: string }
+  | { readonly status: 'REFUSED'; readonly reason: string };
+
+/** Le mid de chaque paire lisible au carnet ; une paire inexploitable n'en a pas. */
+function midsDuCarnet(carnet: Carnet): MidPrices {
+  const mids: Partial<Record<PricedAsset, Price>> = {};
+  for (const asset of PRICED) {
+    const cote = carnet[asset];
+    if (cote.kind === 'COTE') mids[asset] = cote.bid.add(cote.ask).div(2) as Price;
+  }
+  return mids;
+}
+
+/** Un ecart signe en pourcentage : `+2.1000` ou `-4.5927`. */
+const ecartSigne = (ecart: Decimal): string => `${ecart.isNegative() ? '' : '+'}${ecart.times(100).toFixed(4)}`;
+
+interface ProductionRetenue {
+  readonly liveRecompute: LiveRecompute;
+  readonly intent: Intent;
+  /** Le prix sur lequel la production a ete dimensionnee : les mids si recalculee, la cloture sinon. */
+  readonly prices: Prices;
 }
 
 interface Decided {
@@ -769,6 +813,69 @@ function decideAll(
   decided.push({ strategy: 'dca', isShadow: shadow('dca'), intent: dca.intent });
 
   return { ok: true, decided };
+}
+
+/**
+ * La decision de production, **au prix du moment** (D7). Les quatre strategies
+ * ont decide sur la cloture ; si le mid s'en est ecarte de plus de 2 %, seule la
+ * production est refaite — memes avoirs, memes flux, meme horloge, memes
+ * parametres — sur les mids. Le declencheur est reevalue : un USDC revenu dans la
+ * bande au mid ne propose rien. Les ombres, la photo et le rejeu restent a la
+ * cloture.
+ *
+ * Un recalcul n'echappe pas a la couche risque : il repasse par `validate`, au
+ * prix du moment. Un ecart hors bornes ou un mid manquant laisse la decision a la
+ * cloture, et `PRICE_SANITY` la rejette.
+ */
+function recalculerAuMid(
+  run: DailyRun,
+  production: Decided,
+  holdings: Holdings,
+  cashFlows: readonly CashFlow[],
+  closes: Prices,
+  pricing: DecisionPricing,
+): ProductionRetenue {
+  const { intent } = production;
+  const laisse = (reason: string): ProductionRetenue => ({
+    liveRecompute: { status: 'REFUSED', reason },
+    intent: { ...intent, reason: `${reason}\n${intent.reason}` },
+    prices: closes,
+  });
+  if (pricing.status === 'CLOSE') return { liveRecompute: { status: 'NOT_NEEDED' }, intent, prices: closes };
+  if (pricing.status === 'NOT_RECOMPUTED') {
+    return laisse(`${RECALCUL_AU_MID} : recalcul refuse, decision laissee a la cloture — ${pricing.reason}`);
+  }
+  /*
+   * La production est la configuration `UBAC_STRATEGY` — celle que `shadow()` de
+   * `decideAll` compare —, et `env.ts` la borne a `rebalance` | `rebalance_ab`.
+   * `RebalanceParams.strategy` est typee plus large (`StrategyName`) : le cast
+   * dit ce que l'enum de l'environnement garantit deja.
+   */
+  const name = run.config.rebalance.strategy as RebalanceStrategyName;
+  const decision = decideRebalance(
+    { holdings, prices: pricing.prices, cashFlows, lastRatioRebalanceOn: null },
+    run.clock,
+    rebalanceParams(name, run.config),
+  );
+  if (decision.status === 'UNDECIDABLE') {
+    /*
+     * Inatteignable par construction : les mids sont finis et strictement positifs
+     * (`decisionPricing`), les avoirs ont deja ete valorises a la cloture et les
+     * parametres ont deja decide une fois. Si cela arrivait, la decision reste a
+     * la cloture et la regle 5 de `PRICE_SANITY` la rejette (l'ecart depasse 2 %).
+     */
+    return laisse(`${RECALCUL_AU_MID} : recalcul impossible, decision laissee a la cloture — ${decision.reason}`);
+  }
+  const { BTC, ETH } = pricing.drifts;
+  const reason =
+    `${RECALCUL_AU_MID} : decision de production recalculee sur le mid en direct ` +
+    `(BTC ${ecartSigne(BTC)} %, ETH ${ecartSigne(ETH)} % depuis la cloture) ; ` +
+    `a la cloture elle proposait ${intent.trigger}, ${String(intent.legs.length)} jambe(s)`;
+  return {
+    liveRecompute: { status: 'RECOMPUTED', reason },
+    intent: { ...decision.intent, reason: `${reason}\n${decision.intent.reason}` },
+    prices: pricing.prices,
+  };
 }
 
 // --- Le run -----------------------------------------------------------------
@@ -966,17 +1073,32 @@ async function executeRun(run: DailyRun, parti: ExecutionDeStrategie[]): Promise
    * `NONE` n'ajoute ni appel ni mode de panne (D1). Les ombres ne placent rien :
    * leurs jambes restent a la cloture, comme le rejeu.
    */
-  const aPoser = decided.decided.some(({ isShadow, intent }) => !isShadow && intent.legs.length > 0);
+  const production = decided.decided.find(({ isShadow }) => !isShadow);
+  const aPoser = production !== undefined && production.intent.legs.length > 0;
   const carnet = aPoser ? await lireCarnet(ports.exchange, log) : undefined;
 
+  /*
+   * D7 : le mid lu, la decision de production se refait au prix du moment si la
+   * cloture est trop loin. Les mids ne sont calcules qu'une fois, ici ; le meme
+   * carnet sert ensuite `poserAuCarnet`, sans seconde lecture.
+   */
+  let enDirect: ProductionRetenue | undefined;
+  if (production !== undefined && carnet !== undefined) {
+    enDirect = recalculerAuMid(run, production, holdings, cashFlows, prices, decisionPricing(prices, midsDuCarnet(carnet)));
+  }
+  const liveRecompute: LiveRecompute = enDirect?.liveRecompute ?? { status: 'NOT_NEEDED' };
+  if (liveRecompute.status !== 'NOT_NEEDED') log(liveRecompute.reason);
+
   const outcomes: StrategyOutcome[] = [];
-  for (const { strategy, isShadow, intent: decide } of decided.decided) {
+  for (const { strategy, isShadow, intent: decideALaCloture } of decided.decided) {
+    const decide = !isShadow && enDirect !== undefined ? enDirect.intent : decideALaCloture;
     // La suspension de l'etape 6 ne concerne que la production, seule a placer.
     const retenue = isShadow || suspendue === undefined ? decide : { ...decide, reason: `${suspendue}\n${decide.reason}` };
     const { intent, mids } =
       isShadow || carnet === undefined
         ? { intent: marquer(retenue, resync), mids: prices }
         : poserAuCarnet(marquer(retenue, resync), carnet);
+    const dimensionnee = !isShadow && enDirect !== undefined ? enDirect.prices : prices;
     const verdict = validate(intent, {
       makeClientOrderId: clientOrderId,
       mids,
@@ -996,7 +1118,7 @@ async function executeRun(run: DailyRun, parti: ExecutionDeStrategie[]): Promise
        */
       balances: [],
       holdings,
-      prices,
+      prices: dimensionnee,
     });
     /*
      * Ecrite a chaque run, trigger `NONE` compris : un run sans action laisse
@@ -1098,6 +1220,7 @@ async function executeRun(run: DailyRun, parti: ExecutionDeStrategie[]): Promise
     latestMovements: mouvements,
     observations: reconciled.observations,
     resync,
+    liveRecompute,
     outcomes,
     placements,
     executions: parti,
