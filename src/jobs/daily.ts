@@ -845,11 +845,13 @@ function recalculerAuMid(
   if (pricing.status === 'NOT_RECOMPUTED') {
     return laisse(`${RECALCUL_AU_MID} : recalcul refuse, decision laissee a la cloture — ${pricing.reason}`);
   }
-  const name = production.strategy;
-  if (name !== 'rebalance' && name !== 'rebalance_ab') {
-    // `UBAC_STRATEGY` ne nomme que des configurations de rebalance : branche inatteignable par construction.
-    return laisse(`${RECALCUL_AU_MID} : recalcul impossible, la strategie ${name} ne se recalcule pas`);
-  }
+  /*
+   * La production est la configuration `UBAC_STRATEGY` — celle que `shadow()` de
+   * `decideAll` compare —, et `env.ts` la borne a `rebalance` | `rebalance_ab`.
+   * `RebalanceParams.strategy` est typee plus large (`StrategyName`) : le cast
+   * dit ce que l'enum de l'environnement garantit deja.
+   */
+  const name = run.config.rebalance.strategy as RebalanceStrategyName;
   const decision = decideRebalance(
     { holdings, prices: pricing.prices, cashFlows, lastRatioRebalanceOn: null },
     run.clock,

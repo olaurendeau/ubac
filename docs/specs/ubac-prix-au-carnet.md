@@ -229,7 +229,7 @@ croit pas.
 
 Mise en œuvre, en deux lots :
 
-- **Couche risque (ce lot, comportement constant pour le job quotidien)** :
+- **Couche risque (premier lot, #109 ; comportement constant pour le job quotidien)** :
   `RiskContext.closes`, `LIVE_DRIFT_MAX_PCT` à 20 % (inclusif) et le contrôle de
   `prices` à 2 % du mid (D3, points 3 et 5), la fonction pure
   `decisionPricing(closes, mids)` qui rend `CLOSE` (chaque mid valide à 2 % au
@@ -237,7 +237,7 @@ Mise en œuvre, en deux lots :
   (les deux mids, avec les écarts signés) ou `NOT_RECOMPUTED` (avec le motif).
   Les règles `REBALANCE_TOO_LARGE`, `MIN_CASH` et `MAX_EXPOSURE` se rappliquent
   sur `prices` sans code nouveau : `runStateRules` valorise déjà sur `prices`.
-- **`daily.ts` (lot suivant)** : relire `decisionPricing` après la lecture du
+- **`daily.ts` (second lot, livré)** : relire `decisionPricing` après la lecture du
   carnet et, en `LIVE`, refaire la décision de production sur les mids avant
   `validate`, avec `prices` = mids. Aucune décision recalculée ne contourne
   la couche risque : elle repasse par les mêmes règles, au prix du moment.
