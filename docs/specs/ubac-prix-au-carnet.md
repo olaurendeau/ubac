@@ -6,6 +6,12 @@ ordre limit non exécuté datant de plus de 24 h ») et les critères 20, 26 (po
 le seul rejet post-only) et 35 de `docs/specs/ubac-phase-3.md`. Ne touche ni aux
 stratégies, ni aux bandes, ni aux seuils de la couche risque.
 
+**Révision du 2026-11-13** : le constat K6 (incident du 2026-11-13) amène la
+décision D7. Le point 3 de D3 est réécrit (borne de 20 % du mid à la clôture,
+2 % du mid au prix de décision), `RiskContext` gagne `closes`, et les critères
+24 à 29 s'ajoutent. L'incertitude sur la fréquence du blocage à 2 % est
+close.
+
 ## Besoin
 
 Depuis le 2026-09-28, le déclencheur A propose chaque jour deux achats (BTC et
@@ -47,6 +53,21 @@ renouvelés chaque jour tant que l'écart persiste.
 - **K5. La sortie partage le défaut.** `src/jobs/liquidate.ts` calcule ses
   ventes par `prixLimite(side, mid)` (marge `MARGE_LIMITE_PCT` = 0,1 %) sur un
   `mids` fourni par l'appelant. Elle reste verrouillée (`VERROUILLE`).
+- **K6. Le blocage à 2 % a mordu en production (2026-11-13).** Le déclencheur
+  `CASH_BAND` du `rebalance` (USDC à 35,76 %, au-dessus de la bande de 33 %) a
+  proposé deux achats. Les deux ont été rejetés en `PRICE_SANITY` : le mid lu
+  au carnet vers 06:00 UTC avait quitté la clôture de plus de 2 %.
+
+  | Actif | Clôture 2026-11-12 23:00 UTC | Mid vers 06:00 UTC | Écart |
+  |---|---|---|---|
+  | BTC | 71 369,9 | ≈ 68 066 | −4,6 % |
+  | ETH | 2 017,36 | ≈ 1 909,8 | −5,3 % |
+
+  Deux jambes perdues pour un mouvement ordinaire de marché, alors que le
+  carnet n'avait rien d'aberrant. Le contrôle du point 3 de D3 faisait deux
+  métiers avec une seule borne : garde contre un carnet faux, et garde contre
+  une décision dimensionnée sur un prix périmé. Le premier veut une borne
+  large, le second se règle en recalculant la décision, pas en la refusant.
 
 ## Ce que dit la documentation Coinbase (vérifiée le 2026-10-01)
 
@@ -127,14 +148,26 @@ quantité reste calculée par `toOrder` (`amount / limitPrice`) puis arrondie à
 1e-8 vers le bas par `auCarnet`, qui ne touche plus au prix. Le montant validé
 est donc le montant engagé, à l'arrondi près.
 
-`RiskContext` porte deux références par actif : le mid en direct et la clôture.
-`PRICE_SANITY` rejette si :
+`RiskContext` porte trois références par actif (révision du 2026-11-13, D7) :
+`mids`, le mid en direct ; `closes`, la clôture, référence du garde contre un
+carnet aberrant ; `prices`, le prix sur lequel la décision a été valorisée et
+dimensionnée. `PRICE_SANITY` rejette, par jambe et dans cet ordre, si :
 
 1. la référence en direct manque ou n'est pas strictement positive ;
-2. `|limite − mid| / mid > 2 %` ;
-3. `|mid − clôture| / clôture > 2 %` — garde contre un carnet aberrant.
+2. la clôture n'est pas strictement positive ;
+3. `|mid − clôture| / clôture > 20 %` (`LIVE_DRIFT_MAX_PCT`, inclusif : 20 %
+   pile passe) — garde contre un carnet aberrant ou un mouvement hors bornes ;
+4. `|limite − mid| / mid > 2 %` ;
+5. `|mid − prices| / prices > 2 %` — la décision a été dimensionnée sur un prix
+   trop loin du mid et doit être recalculée.
 
-Les ombres et le rejeu passent la clôture pour les deux références : leur
+Le point 3 d'origine (`|mid − clôture| / clôture > 2 %`) est donc scindé : sa
+fonction de garde contre un carnet aberrant passe au point 3 avec une borne à
+20 %, sa fonction de fraîcheur du dimensionnement devient le point 5. Avec
+`prices` = clôture, le point 5 est la formule et la borne de l'ancien point 3 ;
+avec `prices` = mid, il vaut 0.
+
+Les ombres et le rejeu passent la clôture pour les trois références : leur
 verdict ne change pas. `risk.ts` reste couvert à 100 % lignes et branches.
 
 ### D4 — Un second essai, un seul, sur le seul rejet post-only
@@ -157,6 +190,13 @@ du rejeu exactement comme le premier.
 Les jambes sont rejouées après la dernière jambe du lot, dans l'ordre reçu :
 une interruption laisse toujours un préfixe connu.
 
+Depuis D7, la jambe rejouée repasse par `validate` avec les mêmes `prices` et
+`closes` que le lot d'origine, et le carnet relu comme `mids` : une décision
+recalculée sur le mid reste validée sur ce mid, et la borne de 20 % à la
+clôture s'applique au carnet relu. Le second essai ne recalcule rien. (Le second
+essai n'est pas encore sur `main` : cette contrainte s'impose à son
+implémentation.)
+
 ### D5 — Le run du jour annule les ordres des runs précédents
 
 La réconciliation rend à annuler tout ordre ouvert dont le `run_date` (par
@@ -173,6 +213,39 @@ et l'étape 6 ne place toujours rien par-dessus : ce garde ne change pas.
 `SortieInput.mids` devient le carnet des deux paires. Chaque cession vend au
 meilleur vendeur. Le verrou `VERROUILLE` et le domaine `ubac.exit-order-id.v1`
 ne changent pas.
+
+### D7 — Au-delà de 2 % de la clôture, la décision se recalcule sur le mid ; au-delà de 20 %, elle est refusée
+
+Décision : si le mid en direct s'écarte de plus de 2 % de la clôture sur au
+moins un actif, la décision de production est recalculée sur les **deux** mids
+(même un seul actif a dérivé) ; si un écart dépasse 20 %, ou si un mid manque
+ou est invalide, ou si la clôture est invalide, elle est refusée comme avant
+(`PRICE_SANITY`). — Raison : K6. Un mouvement de marché ordinaire de 5 % en
+sept heures faisait perdre la journée, alors que le portefeuille était toujours
+hors bande : la bande se tient sur ce que valent les positions maintenant, pas
+à la clôture. Un écart de plus de 20 % reste plus probablement un carnet
+aberrant qu'un marché, et la production ne place rien sur un prix qu'elle ne
+croit pas.
+
+Mise en œuvre, en deux lots :
+
+- **Couche risque (ce lot, comportement constant pour le job quotidien)** :
+  `RiskContext.closes`, `LIVE_DRIFT_MAX_PCT` à 20 % (inclusif) et le contrôle de
+  `prices` à 2 % du mid (D3, points 3 et 5), la fonction pure
+  `decisionPricing(closes, mids)` qui rend `CLOSE` (chaque mid valide à 2 % au
+  plus de la clôture ; un mid manquant reste l'affaire de `validate`), `LIVE`
+  (les deux mids, avec les écarts signés) ou `NOT_RECOMPUTED` (avec le motif).
+  Les règles `REBALANCE_TOO_LARGE`, `MIN_CASH` et `MAX_EXPOSURE` se rappliquent
+  sur `prices` sans code nouveau : `runStateRules` valorise déjà sur `prices`.
+- **`daily.ts` (lot suivant)** : relire `decisionPricing` après la lecture du
+  carnet et, en `LIVE`, refaire la décision de production sur les mids avant
+  `validate`, avec `prices` = mids. Aucune décision recalculée ne contourne
+  la couche risque : elle repasse par les mêmes règles, au prix du moment.
+
+`PRICE_SANITY_PCT` reste à 2 %. Les ombres et le rejeu ne recalculent jamais :
+ils passent la clôture pour `mids`, `closes` et `prices`. `LIVE_DRIFT_MAX_PCT`
+se lève par un commit relu, jamais par l'environnement ; `RISK_LIMITS` l'expose
+en lecture seule (`maxLiveDriftPct`).
 
 ## Hypothèses challengées
 
@@ -262,12 +335,33 @@ dans le rapport. Les exécutions partielles suivent déjà le §7.
 21. `liquidate.ts` vend au meilleur vendeur du carnet fourni ;
     `MARGE_LIMITE_PCT` n'existe plus ; la sortie reste `VERROUILLE`.
 
-### Documentation et vérification
+### Documentation et vérification (critères d'origine)
 
 22. `docs/run-quotidien.md`, `docs/reconciliation.md`, `docs/sortie-propre.md`
     et les deux lignes du §7 de `ubac-rebalance.md` décrivent le nouveau
     comportement et renvoient à cette spec.
 23. `make typecheck` et `make test` passent.
+
+### Révision du 2026-11-13 (D7)
+
+24. `PRICE_SANITY` rejette un mid à plus de 20 % de la clôture lue dans
+    `closes`, des deux côtés, avec le motif ; à 20 % pile (inclusif), il passe.
+    Ce contrôle précède celui de la limite.
+25. Avec `prices` = clôture, un mid à 2 % pile passe et un mid à 2,01 % est
+    rejeté (comportement de l'ancien point 3). Avec `prices` = mid, un mid à
+    15 % de la clôture est accepté. Une clôture invalide est lue dans `closes`.
+26. `decisionPricing` rend `CLOSE` (2 % pile compris), `LIVE` (les deux mids,
+    écarts signés, 20 % pile compris) et `NOT_RECOMPUTED` pour chacune de ses
+    causes : écart au-delà de 20 %, mid manquant ou invalide avec un écart
+    au-delà de 2 %, clôture invalide.
+27. `REBALANCE_TOO_LARGE`, `MIN_CASH` et `MAX_EXPOSURE` s'appliquent à la valeur
+    du portefeuille au prix de décision : un cas par règle qui mord au mid et
+    passe à la clôture.
+28. `RISK_LIMITS.maxLiveDriftPct` expose la borne en lecture seule ; les ombres
+    et le rejeu passent la clôture pour `mids`, `closes` et `prices`, et leurs
+    verdicts, y compris ceux de `test/replay/`, ne bougent pas.
+29. Le job quotidien garde, dans ce lot, son comportement : il passe
+    `closes: prices` et ne recalcule rien ; le recalcul est le lot suivant.
 
 ## Volume estimé
 
@@ -287,9 +381,10 @@ ensuite.
 - **Carnet BTC-USDC.** Coinbase a unifié les carnets USD et USDC ;
   `best_bid_ask` sur `BTC-USDC` doit être vérifié sur une capture réelle avant
   d'écrire le parseur (critère 2).
-- **Fréquence du blocage à 2 % de la clôture.** Un mouvement de plus de 2 % entre
-  00:00 et 05:00 UTC bloque la production ce jour-là. Fréquence inconnue :
-  se lit dans `decisions`.
+- ~~**Fréquence du blocage à 2 % de la clôture.**~~ Close le 2026-11-13 : le
+  blocage a mordu (K6) et la réponse est D7 — recalcul au-delà de 2 %, refus
+  au-delà de 20 %. Reste à observer, dans `decisions`, combien de runs
+  dépassent 20 %.
 - **Second essai immédiat.** Le carnet relu une seconde plus tard peut encore
   croiser : le second essai réduit le rejet, il ne le supprime pas.
 - **Exécution dans la journée.** Rien ne garantit qu'un ordre au meilleur

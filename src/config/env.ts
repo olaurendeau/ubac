@@ -8,6 +8,7 @@ import {
   MAX_EXPOSURE_PCT,
   MIN_CASH_PCT,
   MIN_LEG_USDC,
+  LIVE_DRIFT_MAX_PCT,
   PRICE_SANITY_PCT,
   REBALANCE_TOO_LARGE_PCT,
   RECONCILIATION_DRIFT_PCT,
@@ -161,6 +162,7 @@ export interface RiskLimits {
   readonly minLegUsdc: Decimal;
   readonly cooldownDays: number;
   readonly priceSanityPct: Decimal;
+  readonly maxLiveDriftPct: Decimal;
   readonly reconciliationDriftPct: Decimal;
 }
 
@@ -180,6 +182,7 @@ const RISK_LIMITS: RiskLimits = {
   minLegUsdc: MIN_LEG_USDC,
   cooldownDays: COOLDOWN_DAYS,
   priceSanityPct: PRICE_SANITY_PCT,
+  maxLiveDriftPct: LIVE_DRIFT_MAX_PCT,
   reconciliationDriftPct: RECONCILIATION_DRIFT_PCT,
 };
 

@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { Holdings, Prices } from '../../src/core/portfolio.js';
 import {
   COOLDOWN_DAYS,
+  LIVE_DRIFT_MAX_PCT,
   PRICE_SANITY_PCT,
   RECONCILIATION_DRIFT_PCT,
   armsCooldown,
@@ -42,6 +43,7 @@ function context(overrides: Partial<RiskContext> = {}): RiskContext {
     makeClientOrderId: ({ runDate, asset, side, legIndex }) =>
       `${runDate}|${asset}|${side}|${legIndex}`,
     mids: { BTC: MID_BTC, ETH: MID_ETH },
+    closes: PRICES,
     lastCompleteRebalanceOn: null,
     balances: [],
     holdings: HOLDINGS,
@@ -199,15 +201,23 @@ describe('PRICE_SANITY', () => {
       intent([leg({ limitPrice: price('63000') })]),
       context({ mids: { BTC: price('63000'), ETH: MID_ETH } }),
     );
-    expect(rejet?.reason).toMatch(/mid en direct 63000 a 5.0000 % de la cloture 60000/);
+    expect(rejet?.reason).toMatch(
+      /decision dimensionnee sur un prix 60000 dont le mid 63000 s'ecarte de 5.0000 %, au-dela de 2 % : a recalculer/,
+    );
   });
-  it('rejette un mid non fini, et une cloture nulle ou non finie', () => {
+  it('rejette un mid non fini, et une cloture nulle ou non finie lue dans closes', () => {
     for (const mid of ['NaN', 'Infinity']) {
       expect(codes(intent([leg()]), context({ mids: { BTC: price(mid) } }))).toEqual(['PRICE_SANITY']);
     }
     for (const cloture of ['0', 'NaN']) {
-      const [rejet] = rejections(intent([leg()]), context({ prices: { BTC: price(cloture), ETH: MID_ETH } }));
+      const [rejet] = rejections(intent([leg()]), context({ closes: { BTC: price(cloture), ETH: MID_ETH } }));
       expect(rejet?.reason).toMatch(/^cloture BTC a .* n'est comparable a rien$/);
+    }
+  });
+  it('rejette un prix de decision nul ou non fini', () => {
+    for (const decision of ['0', 'NaN']) {
+      const [rejet] = rejections(intent([leg()]), context({ prices: { BTC: price(decision), ETH: MID_ETH } }));
+      expect(rejet?.reason).toMatch(/^prix de decision BTC a .* n'est comparable a rien$/);
     }
   });
   it('prime sur LEG_TOO_SMALL et ne se cumule pas a ASSET/QUOTE', () => {
@@ -215,6 +225,86 @@ describe('PRICE_SANITY', () => {
       codes(intent([leg({ amount: usdc('12'), limitPrice: price('90000') })]), context()),
     ).toEqual(['PRICE_SANITY']);
     expect(codes(intent([leg({ asset: 'SOL' })]), context())).toEqual(['ASSET_NOT_ALLOWED']);
+  });
+});
+
+/*
+ * D7 (2026-11-13) : le mid se compare a la cloture (`closes`) avec une borne de
+ * 20 %, et au prix de decision (`prices`) avec la borne de 2 %. Mid, limite et
+ * prix de decision valent ici le meme nombre quand rien ne les distingue.
+ */
+describe('PRICE_SANITY — mid a la cloture, borne a 20 %', () => {
+  const surLeMid = (mid: string, prices: Prices = PRICES): readonly Rejection[] => {
+    const verdict = validate(
+      intent([leg({ limitPrice: price(mid) })]),
+      context({ mids: { BTC: price(mid), ETH: MID_ETH }, prices }),
+    );
+    return verdict.status === 'REJECTED' ? verdict.rejections : [];
+  };
+  const prixAuMid = (mid: string): Prices => ({ BTC: price(mid), ETH: MID_ETH });
+
+  it('la borne vaut 20 %', () => {
+    expect(LIVE_DRIFT_MAX_PCT.toString()).toBe('0.2');
+  });
+  it('20 % pile passe, des deux cotes, quand la decision est dimensionnee sur le mid', () => {
+    for (const mid of ['72000', '48000']) {
+      expect(
+        codes(
+          intent([leg({ limitPrice: price(mid) })]),
+          context({ mids: { BTC: price(mid), ETH: MID_ETH }, prices: prixAuMid(mid) }),
+        ),
+      ).toEqual([]);
+    }
+  });
+  it('20,01 % rejette, des deux cotes, avec la raison, meme dimensionne sur le mid', () => {
+    for (const mid of ['72006', '47994']) {
+      const rejetees = surLeMid(mid, prixAuMid(mid));
+      expect(rejetees).toHaveLength(1);
+      expect(rejetees[0]?.code).toBe('PRICE_SANITY');
+      expect(rejetees[0]?.legIndex).toBe(0);
+      expect(rejetees[0]?.reason).toMatch(
+        new RegExp(`mid en direct ${mid} a 20.0100 % de la cloture 60000, au-dela de 20 % : carnet aberrant`),
+      );
+    }
+  });
+  it('lit la cloture dans closes, pas dans prices', () => {
+    // prices = mid : seule closes distingue un mid a 15 % (accepte) d'un mid a 25 % (rejete).
+    const ctx = (closeBtc: string): RiskContext =>
+      context({
+        mids: { BTC: price('69000'), ETH: MID_ETH },
+        prices: prixAuMid('69000'),
+        closes: { BTC: price(closeBtc), ETH: MID_ETH },
+      });
+    const i = intent([leg({ limitPrice: price('69000') })]);
+    expect(codes(i, ctx('60000'))).toEqual([]);
+    expect(codes(i, ctx('55000'))).toEqual(['PRICE_SANITY']);
+  });
+  it('mid a 15 % de la cloture, decision dimensionnee sur le mid : accepte', () => {
+    expect(surLeMid('69000', prixAuMid('69000'))).toEqual([]);
+  });
+  it('mid a 15 % de la cloture, decision restee sur la cloture : rejete, a recalculer', () => {
+    const [rejet] = surLeMid('69000');
+    expect(rejet?.reason).toMatch(/dont le mid 69000 s'ecarte de 15.0000 %.*a recalculer sur le mid/);
+  });
+  it('decision sur la cloture : 2 % pile accepte, 2,01 % rejette', () => {
+    expect(surLeMid('61200')).toEqual([]);
+    expect(surLeMid('61200.01')).toHaveLength(1);
+    expect(surLeMid('58800')).toEqual([]);
+    expect(surLeMid('58799.99')).toHaveLength(1);
+  });
+  it('le controle de la limite precede celui du prix de decision', () => {
+    const [rejet] = rejections(
+      intent([leg({ limitPrice: price('65000') })]),
+      context({ mids: { BTC: price('69000'), ETH: MID_ETH } }),
+    );
+    expect(rejet?.reason).toMatch(/^prix limite 65000 a /);
+  });
+  it('le controle de la cloture precede celui de la limite', () => {
+    const [rejet] = rejections(
+      intent([leg({ limitPrice: price('1') })]),
+      context({ mids: { BTC: price('80000'), ETH: MID_ETH }, prices: prixAuMid('80000') }),
+    );
+    expect(rejet?.reason).toMatch(/^mid en direct 80000 a 33.3333 % de la cloture 60000/);
   });
 });
 

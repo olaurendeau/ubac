@@ -47,6 +47,7 @@ function context(overrides: Partial<RiskContext> = {}): RiskContext {
     makeClientOrderId: ({ runDate, asset, side, legIndex }) =>
       `${runDate}|${asset}|${side}|${legIndex}`,
     mids: { BTC, ETH },
+    closes: PRICES,
     lastCompleteRebalanceOn: null,
     balances: [],
     holdings: HOLDINGS,

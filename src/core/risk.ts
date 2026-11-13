@@ -46,8 +46,20 @@ export const REBALANCE_TOO_LARGE_PCT = new Decimal('0.25');
 /** Delai min entre deux reequilibrages complets (C21). */
 export const COOLDOWN_DAYS = 7;
 
-/** Ecart max entre prix limite et mid, puis entre mid et cloture. Strict : 2 % passe. */
+/**
+ * Ecart max entre prix limite et mid, puis entre mid et prix de decision.
+ * Strict : 2 % passe. Au-dela, la decision se recalcule sur le mid
+ * (`decisionPricing`) au lieu d'etre rejetee tant que `LIVE_DRIFT_MAX_PCT` tient.
+ */
 export const PRICE_SANITY_PCT = new Decimal('0.02');
+
+/**
+ * Ecart max entre le mid en direct et la cloture (D7, 2026-11-13) : garde contre
+ * un carnet aberrant, et borne du recalcul sur le mid. Inclusif : 20 % passe.
+ * Se releve ou se leve par un commit relu qui change cette valeur, jamais par
+ * l'environnement.
+ */
+export const LIVE_DRIFT_MAX_PCT = new Decimal('0.2');
 
 /** Divergence max exchange / interne. Stricte : 1 % passe. */
 export const RECONCILIATION_DRIFT_PCT = new Decimal('0.01');
@@ -92,14 +104,18 @@ export interface RebalanceExecution {
 /**
  * Contexte requis en entier : aucun champ optionnel.
  *
- * Deux references de prix par actif (`docs/specs/ubac-prix-au-carnet.md`, D3) :
- * `mids`, le mid **en direct** lu au carnet, et `prices`, la **cloture**, qui
- * valorise aussi le portefeuille. Les ombres et le rejeu passent la cloture
- * pour les deux.
+ * Trois references de prix par actif (`docs/specs/ubac-prix-au-carnet.md`, D3, D7) :
+ * `mids`, le mid **en direct** lu au carnet ; `closes`, la **cloture**, reference
+ * du garde contre un carnet aberrant ; `prices`, le prix **sur lequel la decision
+ * a ete valorisee et dimensionnee**, qui valorise aussi l'etat projete. C'est la
+ * cloture tant que le mid en est proche, le mid quand la decision a ete
+ * recalculee (`decisionPricing`). Les ombres et le rejeu passent la cloture
+ * pour les trois.
  */
 export interface RiskContext {
   readonly makeClientOrderId: MakeClientOrderId;
   readonly mids: MidPrices;
+  readonly closes: Prices;
   readonly lastCompleteRebalanceOn: IsoDate | null;
   readonly balances: readonly Balance[];
   readonly holdings: Holdings;
@@ -290,10 +306,19 @@ function tooSmall(leg: IntentLeg, legIndex: number): Rejection {
   };
 }
 
+function isUsablePrice(price: Decimal): boolean {
+  return price.isFinite() && price.gt(0);
+}
+
+const pct = (ratio: Decimal): string => ratio.times(100).toFixed(4);
+
 /**
- * Les trois controles de D3 : un mid en direct present et strictement positif,
- * le prix limite a 2 % au plus de ce mid, et ce mid a 2 % au plus de la cloture
- * — garde contre un carnet aberrant. Absence de mid = rejet.
+ * Les controles de D3 et D7, dans cet ordre, par jambe : un mid en direct
+ * present et strictement positif ; une cloture valide ; ce mid a 20 % au plus de
+ * la cloture (carnet aberrant) ; le prix limite a 2 % au plus du mid ; ce mid a
+ * 2 % au plus du prix sur lequel la decision a ete dimensionnee. Avec
+ * `prices` = cloture, le dernier controle est celui de D3 ; avec `prices` = mid,
+ * il est nul. Absence de mid = rejet.
  */
 function priceSanity(
   leg: IntentLeg,
@@ -306,26 +331,99 @@ function priceSanity(
   if (mid === undefined) {
     return rejet(`aucun prix de reference pour ${asset} : le prix limite n'est comparable a rien`);
   }
-  if (!mid.isFinite() || mid.lte(0)) {
+  if (!isUsablePrice(mid)) {
     return rejet(`prix de reference ${asset} a ${mid.toString()} : un mid nul, negatif ou non fini n'a pas de sens`);
+  }
+  const close = context.closes[asset];
+  if (!isUsablePrice(close)) {
+    return rejet(`cloture ${asset} a ${close.toString()} : le mid en direct n'est comparable a rien`);
+  }
+  const liveDrift = mid.sub(close).abs().div(close);
+  if (liveDrift.gt(LIVE_DRIFT_MAX_PCT)) {
+    return rejet(
+      `mid en direct ${mid.toString()} a ${pct(liveDrift)} % de la cloture ${close.toString()}, au-dela de ${LIVE_DRIFT_MAX_PCT.times(100).toString()} % : carnet aberrant ou mouvement hors bornes`,
+    );
   }
   const deviation = leg.limitPrice.sub(mid).abs().div(mid);
   if (deviation.gt(PRICE_SANITY_PCT)) {
     return rejet(
-      `prix limite ${leg.limitPrice.toString()} a ${deviation.times(100).toFixed(4)} % du mid ${mid.toString()}, au-dela de ${PRICE_SANITY_PCT.times(100).toString()} %`,
+      `prix limite ${leg.limitPrice.toString()} a ${pct(deviation)} % du mid ${mid.toString()}, au-dela de ${PRICE_SANITY_PCT.times(100).toString()} %`,
     );
   }
-  const close = context.prices[asset];
-  if (!close.isFinite() || close.lte(0)) {
-    return rejet(`cloture ${asset} a ${close.toString()} : le mid en direct n'est comparable a rien`);
+  const sized = context.prices[asset];
+  if (!isUsablePrice(sized)) {
+    return rejet(`prix de decision ${asset} a ${sized.toString()} : le mid en direct n'est comparable a rien`);
   }
-  const drift = mid.sub(close).abs().div(close);
-  if (drift.gt(PRICE_SANITY_PCT)) {
+  const sizedDrift = mid.sub(sized).abs().div(sized);
+  if (sizedDrift.gt(PRICE_SANITY_PCT)) {
     return rejet(
-      `mid en direct ${mid.toString()} a ${drift.times(100).toFixed(4)} % de la cloture ${close.toString()}, au-dela de ${PRICE_SANITY_PCT.times(100).toString()} %`,
+      `decision dimensionnee sur un prix ${sized.toString()} dont le mid ${mid.toString()} s'ecarte de ${pct(sizedDrift)} %, au-dela de ${PRICE_SANITY_PCT.times(100).toString()} % : a recalculer sur le mid`,
     );
   }
   return null;
+}
+
+/** Ce que `decisionPricing` conclut : sur quel prix dimensionner la decision. */
+export type DecisionPricing =
+  | { readonly status: 'CLOSE' }
+  | {
+      readonly status: 'LIVE';
+      /** Les deux mids, meme si un seul actif a derive. */
+      readonly prices: Prices;
+      /** (mid - cloture) / cloture, signe. */
+      readonly drifts: Readonly<Record<TradableAsset, Decimal>>;
+    }
+  | { readonly status: 'NOT_RECOMPUTED'; readonly reason: string };
+
+/**
+ * Sur quel prix dimensionner la decision de production (D7). Pure : meme regle
+ * que `priceSanity`, lue avant la decision pour savoir s'il faut la recalculer.
+ * Un mid absent ou invalide reste l'affaire de `validate` tant qu'aucun ecart
+ * ne demande de recalcul.
+ */
+export function decisionPricing(closes: Prices, mids: MidPrices): DecisionPricing {
+  const drifts: Partial<Record<TradableAsset, Decimal>> = {};
+  const unusable: TradableAsset[] = [];
+  for (const asset of TRADABLE_ASSETS) {
+    const close = closes[asset];
+    if (!isUsablePrice(close)) {
+      return {
+        status: 'NOT_RECOMPUTED',
+        reason: `cloture ${asset} a ${close.toString()} : le mid en direct n'est comparable a rien`,
+      };
+    }
+    const mid = mids[asset];
+    if (mid === undefined || !isUsablePrice(mid)) {
+      unusable.push(asset);
+    } else {
+      drifts[asset] = mid.sub(close).div(close);
+    }
+  }
+  const measured = TRADABLE_ASSETS.filter((asset) => drifts[asset] !== undefined);
+  const moved = measured.filter((asset) => (drifts[asset] as Decimal).abs().gt(PRICE_SANITY_PCT));
+  if (moved.length === 0) {
+    return { status: 'CLOSE' };
+  }
+  if (unusable.length > 0) {
+    return {
+      status: 'NOT_RECOMPUTED',
+      reason: `ecart au-dela de ${PRICE_SANITY_PCT.times(100).toString()} % sur ${moved.join(', ')} mais mid ${unusable.join(', ')} absent ou invalide : recalcul impossible`,
+    };
+  }
+  const beyond = measured.filter((asset) =>
+    (drifts[asset] as Decimal).abs().gt(LIVE_DRIFT_MAX_PCT),
+  );
+  if (beyond.length > 0) {
+    return {
+      status: 'NOT_RECOMPUTED',
+      reason: `mid a plus de ${LIVE_DRIFT_MAX_PCT.times(100).toString()} % de la cloture sur ${beyond.join(', ')} : carnet aberrant ou mouvement hors bornes`,
+    };
+  }
+  return {
+    status: 'LIVE',
+    prices: { BTC: mids.BTC as Price, ETH: mids.ETH as Price },
+    drifts: { BTC: drifts.BTC as Decimal, ETH: drifts.ETH as Decimal },
+  };
 }
 
 function toOrder(

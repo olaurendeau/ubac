@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { ConfigError, loadConfig, NTFY_CANAL_OUVERT } from '../../src/config/env.js';
 import type { Env } from '../../src/config/env.js';
-import { MIN_CASH_PCT } from '../../src/core/risk.js';
+import { LIVE_DRIFT_MAX_PCT, MIN_CASH_PCT } from '../../src/core/risk.js';
 import { DEFAULT_REBALANCE_PARAMS } from '../../src/core/strategy/rebalance.js';
 
 /**
@@ -328,6 +328,13 @@ describe('les seuils de risque ne se configurent pas', () => {
     const config = loadConfig(env());
     expect(config.risk.minCashPct.toString()).toBe('0.22');
     expect(config.risk.minCashPct.eq(MIN_CASH_PCT)).toBe(true);
+  });
+
+  /* D7 (2026-11-13) : la borne du mid a la cloture est ecrite en toutes lettres, lue seule. */
+  it('expose la borne de 20 % entre le mid et la cloture que risk.ts applique', () => {
+    const config = loadConfig(env());
+    expect(config.risk.maxLiveDriftPct.toString()).toBe('0.2');
+    expect(config.risk.maxLiveDriftPct.eq(LIVE_DRIFT_MAX_PCT)).toBe(true);
   });
 
   /* Le plafond de la phase 3 se leve par un commit, jamais par l'environnement (E30, O3 = 3). */
