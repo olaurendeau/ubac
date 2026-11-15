@@ -771,13 +771,18 @@ l'est. Le seuil est strict : moins de 2 points, moins de 0.10 de ratio, deux
 constantes du rendu. Exactement sur la borne, la case est ambre sans suffixe : le
 texte dit déjà « sur la borne ».
 
+La marge imprimée est l'écart exact arrondi, pas la différence des deux poids
+imprimés : un poids USDC de 0,31005 s'imprime `31.01 %` et sa marge `2.00 pt`,
+alors que 33,00 − 31,01 donnerait 1,99.
+
 **Les ordres.** La couleur d'un compte ou d'un état se pose sur le `<td>` et
 jamais dans un `<span>`, et la case du libellé reste nue : le texte d'une cellule
 est son premier contenu, ce que `test/jobs/daily.test.ts` lit. L'encadré
 ATTENTION suit le détail des ordres et précède la note ; il n'existe que si un
 ordre est `Rejete (autre motif)` ou `Statut non lu` — jamais pour un
-`Non execute` ou un refus post-only seuls, ni sans ordre, ni quand les mouvements sont
-illisibles.
+`Non execute` ou un refus post-only seuls, ni sans ordre. Il ne lit pas les
+mouvements : des mouvements illisibles, à eux seuls, ne le font pas paraître, et
+un statut non lu le même jour le fait paraître quand même.
 
 ### Trois preuves, sur le HTML rendu et non sur les constantes
 
