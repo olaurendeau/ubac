@@ -715,7 +715,44 @@ Elle n'ajoute que **quatre expressions** au texte (décision C) : « ALERTE — 
 devant le texte de la suspension, « — proche » au bout de la distance à une borne
 de moins de 2 points (de 0,10 pour le ratio), « ! » après un écart d'allocation
 d'au moins 5 points, et la phrase de l'encadré ATTENTION. Le lexique n'en glose
-aucune : aucune n'est un terme du rapport.
+aucune : aucune n'est un terme du rapport. Après le deuxième temps (signe,
+verdict, début de section) seul « ! » est imprimé ; les trois autres arrivent
+avec le troisième.
+
+### Ce qui est coloré après le deuxième temps
+
+Tout est en ligne, `style="…"`, en `#rrggbb` ; ni `<style>`, ni classe. Une
+couleur de case de tableau est posée sur le `<td>`, jamais dans un `<span>` : le
+`<span>` ne sert qu'au texte au fil d'une cellule ou d'une phrase (un nombre
+signé, la pastille d'un verdict, la note « Recul actuel »).
+
+| Quoi | Fond | Texte | Redoublé par |
+| --- | --- | --- | --- |
+| Nombre signé positif (P&L jour et cumulé, TWR et max drawdown des holds, recul actuel) | — | `#1e7a46` gras | le signe `+` |
+| Nombre signé négatif | — | `#b3261e` gras | le signe `-` |
+| Nul, « indisponible », ombre sans courbe | — | `#5a6472` | le chiffre `0.00`, le mot |
+| ACCEPTED | `#e3f3e9` | `#14532d` gras | le mot |
+| REJECTED:codes | `#fdecec` | `#8a1c12` gras | le mot et les codes |
+| Trigger `NONE`, ligne d'ombre, jambes et motif d'une production sans décision | — | `#5a6472` | le mot `NONE`, « (ombre) » |
+| Écart d'allocation d'au moins 5 points (décision A) | `#fff4db` | `#4d3500` gras | la marque « ! » |
+| Titre de section | `#eef1f5`, barre `#2c6aa0` | `#16191d` | le titre |
+| En-tête de tableau | `#f3f5f8` | `#5a6472` | — |
+| En-tête de « Métriques indisponibles » | `#fff4db` | `#4d3500` | le titre de la section |
+| Ligne Portefeuille de la comparaison | `#f3f5f8` | `#16191d` gras | le libellé |
+| Barre du graphe, hausse / baisse (décision E) | `#1e7a46` / `#b3261e` | — | rien (voir plus bas) |
+
+Le Sharpe n'est pas coloré : ce n'est ni un gain ni une perte. Les trois chiffres
+de l'en-tête sont en 20 px, leurs libellés en 13 px ; le sujet du courrier est
+inchangé.
+
+**La couleur se juge sur le chiffre imprimé.** Un nombre qui s'imprime
+`+0.00 %` est gris, qu'il vaille 0 ou 0,0000499 : la valeur est arrondie à
+l'échelle d'affichage, dans le même mode que `toFixed`, avant d'en lire le signe.
+De même l'écart d'allocation, lu sur les poids à 4 décimales : 4,9949 s'imprime
+`4.99` et reste neutre, 4,995 s'imprime `5.00` et passe à l'ambre. Le seuil de
+5 points est une constante du rendu, pas un paramètre de la stratégie. Aucun
+fond n'est posé sur le corps (décision D) ; la case vide qui ouvre l'en-tête de
+la comparaison n'en pose pas non plus.
 
 ### Trois preuves, sur le HTML rendu et non sur les constantes
 
@@ -726,7 +763,10 @@ exactement sur la borne, bande franchie avec un écart d'allocation à 4,99, 5,0
 au-delà, les six états d'ordre, suspension, resynchronisation, recalcul au mid,
 verdict refusé, états dégradés, distance indéfinie.
 
-1. **Structure.** Ni `<style`, ni `class=`, ni `<script`, ni `<img` ; toute
+1. **Structure.** Ni `<style`, ni `class=`, ni `<script`, ni `<img`, ni
+   `background-…` (`background-color`, `background-image`), ni `bgcolor=` — un
+   fond ne se pose que par `background:` — ; le `style` est lu entre guillemets
+   doubles ou simples, et refusé sans guillemets ; toute
    valeur de `color` et de `background` est un `#rrggbb` en minuscules ; un
    élément qui pose un fond et contient du texte pose aussi sa couleur ; un fond
    sans texte n'existe que sur une barre du graphe. Les balises sont suivies avec

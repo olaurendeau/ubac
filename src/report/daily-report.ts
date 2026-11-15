@@ -463,6 +463,13 @@ const pct = (value: Decimal): string => `${value.times(100).toFixed(SCALE)} %`;
 const signedPct = (value: Decimal): string =>
   `${value.isNegative() ? '' : '+'}${value.times(100).toFixed(SCALE)} %`;
 
+/**
+ * Le chiffre imprime est celui qu'on juge : `+0.00 %` est nul, que la valeur
+ * soit 0 ou 0.0000499, et un ecart qui s'imprime `5.00 pt` est de 5 points
+ * meme s'il en vaut 4.995. Meme mode d'arrondi que `toFixed`, donc que le texte.
+ */
+const arrondi = (value: Decimal): Decimal => value.times(100).toDecimalPlaces(SCALE);
+
 /** Une marge de bande de poids, en points de pourcentage : 0.048 se lit « 4.80 pt ». */
 const points = (value: Decimal): string => `${value.times(100).toFixed(SCALE)} pt`;
 
@@ -489,14 +496,51 @@ const escape = (text: string): string => text.replace(/[&<>"']/g, (char) => ESCA
 const metricText = (metric: Metric, show: (value: Decimal) => string, absent = 'indisponible'): string =>
   metric.status === 'VALUE' ? show(metric.value) : absent;
 
+// --- La couleur d'un signe --------------------------------------------------
+
+const VERT = 'color:#1e7a46;font-weight:700';
+const ROUGE = 'color:#b3261e;font-weight:700';
+const GRIS = 'color:#5a6472';
+/** La ligne Portefeuille de la comparaison : posee sur chaque case, elle l'emporte sur CELL. */
+const PORTEFEUILLE = 'background:#f3f5f8;color:#16191d;font-weight:700';
+const AMBRE = 'background:#fff4db;color:#4d3500;font-weight:700';
+const PASTILLE = 'font-weight:700;padding:1px 6px;border-radius:3px';
+const PASTILLE_ACCEPTEE = `background:#e3f3e9;color:#14532d;${PASTILLE}`;
+const PASTILLE_REFUSEE = `background:#fdecec;color:#8a1c12;${PASTILLE}`;
+
+/** Un ecart d'allocation d'au moins 5 points, lu sur les poids a 4 decimales : le seuil du renderer, pas un parametre de la strategie. */
+const ECART_ALLOCATION_ALERTE = new Decimal('0.05');
+const POIDS_SCALE = 4;
+
+const indisponible = (): string => `<span style="${GRIS}">indisponible</span>`;
+
+/**
+ * Un nombre signe et sa couleur : vert gras au-dessus de zero, rouge gras en
+ * dessous, gris quand le chiffre imprime est nul. Le signe reste imprime : la
+ * couleur le redouble. Absent, le nombre se dit « indisponible », en gris, et
+ * jamais en vert ni en rouge.
+ */
+function signed(metric: Metric): string {
+  if (metric.status !== 'VALUE') return indisponible();
+  const imprime = arrondi(metric.value);
+  const style = imprime.isZero() ? GRIS : imprime.isNegative() ? ROUGE : VERT;
+  return `<span style="${style}">${signedPct(metric.value)}</span>`;
+}
+
 // --- Le corps HTML ----------------------------------------------------------
 
 /* En ligne, une colonne, rien d'externe : un client qui bloque les ressources distantes rend le meme rapport. */
 const BODY = 'font-family:-apple-system,Segoe UI,Roboto,sans-serif;font-size:15px;line-height:1.45;color:#16191d;max-width:520px;margin:0 auto;padding:12px';
-const H2 = 'font-size:15px;margin:18px 0 6px;padding-bottom:4px;border-bottom:1px solid #d8dce1';
+const H1 = 'font-size:17px;margin:0 0 4px;color:#16191d';
+const H2 = 'font-size:15px;margin:18px 0 6px;padding:4px 8px;border-left:4px solid #2c6aa0;background:#eef1f5;color:#16191d';
 const TABLE = 'width:100%;border-collapse:collapse;font-size:14px';
-const CELL = 'padding:4px 6px;border-bottom:1px solid #eceef1;text-align:left;vertical-align:top';
-const HEAD = `${CELL};font-weight:600;color:#5a6472`;
+const CELL_BASE = 'padding:4px 6px;border-bottom:1px solid #eceef1;text-align:left;vertical-align:top';
+const CELL = `${CELL_BASE};color:#16191d`;
+const HEAD = `${CELL_BASE};font-weight:600;color:#5a6472;background:#f3f5f8`;
+/** L'en-tete du tableau des metriques indisponibles : la section porte son titre comme mot, et l'ambre le redouble. */
+const HEAD_AMBRE = `${CELL_BASE};font-weight:600;color:#4d3500;background:#fff4db`;
+/** Une case d'en-tete sans texte ne pose aucun fond : un fond sans texte n'est admis que sur une barre du graphe. */
+const HEAD_VIDE = `${CELL_BASE};font-weight:600;color:#5a6472`;
 const NOTE = 'font-size:13px;color:#5a6472;margin:6px 0';
 const ALERT = 'background:#fdecec;color:#5c1410;border-left:3px solid #c0392b;padding:8px;margin:10px 0';
 const INFO = 'background:#eef4fb;color:#12324f;border-left:3px solid #2c6aa0;padding:8px;margin:10px 0';
@@ -506,20 +550,26 @@ const INFO = 'background:#eef4fb;color:#12324f;border-left:3px solid #2c6aa0;pad
  * chiffres. Le cas n'existe que pour une ligne sans metrique : recopier la meme
  * phrase dans trois cellules, ou en laisser deux vides derriere elle, se lirait
  * comme un rendu casse.
+ *
+ * `style` s'ajoute apres celui de la ligne (CELL ou HEAD) : la derniere
+ * declaration gagne. La couleur d'une case de compte ou d'etat se pose ici, sur
+ * le `<td>`, jamais dans un `<span>` interieur : le texte reste le premier
+ * contenu de sa cellule.
  */
-type Cell = string | { readonly text: string; readonly span: number };
+type Cell = string | { readonly text: string; readonly span?: number; readonly style?: string };
 
-const cells = (values: readonly Cell[], style: string): string =>
+const cells = (values: readonly Cell[], style: string, vide: string = style): string =>
   values
-    .map((value) =>
-      typeof value === 'string'
-        ? `<td style="${style}">${value}</td>`
-        : `<td style="${style}" colspan="${String(value.span)}">${value.text}</td>`,
-    )
+    .map((value) => {
+      const { text, span, style: ajoute } = typeof value === 'string' ? { text: value, span: undefined, style: undefined } : value;
+      const base = text === '' ? vide : style;
+      const colspan = span === undefined ? '' : ` colspan="${String(span)}"`;
+      return `<td style="${ajoute === undefined ? base : `${base};${ajoute}`}"${colspan}>${text}</td>`;
+    })
     .join('');
 
-const table = (header: readonly Cell[], rows: readonly (readonly Cell[])[]): string =>
-  `<table style="${TABLE}"><tr>${cells(header, HEAD)}</tr>` +
+const table = (header: readonly Cell[], rows: readonly (readonly Cell[])[], head: string = HEAD): string =>
+  `<table style="${TABLE}"><tr>${cells(header, head, HEAD_VIDE)}</tr>` +
   rows.map((row) => `<tr>${cells(row, CELL)}</tr>`).join('') +
   '</table>';
 
@@ -581,27 +631,41 @@ function distanceSection(input: DailyReportInput): string {
 
 /** Poids constates contre cibles, ligne par ligne. */
 function allocationSection(run: CompletedRun, targets: Weights): string {
-  const rows = ASSETS.map((asset: AllowedAsset) => [
-    asset,
-    run.holdings[asset].toFixed(8),
-    pct(run.weights[asset]),
-    pct(targets[asset]),
-    signedPct(run.weights[asset].minus(targets[asset])),
-  ]);
+  const rows = ASSETS.map((asset: AllowedAsset): readonly Cell[] => {
+    const ecart = run.weights[asset].minus(targets[asset]);
+    return [
+      asset,
+      run.holdings[asset].toFixed(8),
+      pct(run.weights[asset]),
+      pct(targets[asset]),
+      /* La marque redouble l'ambre (decision A) ; le seuil se juge sur le chiffre imprime. */
+      ecart.toDecimalPlaces(POIDS_SCALE).abs().gte(ECART_ALLOCATION_ALERTE)
+        ? { text: `${signedPct(ecart)} !`, style: AMBRE }
+        : signedPct(ecart),
+    ];
+  });
   return section('Allocation', table(['Ligne', 'Quantite', 'Poids', 'Cible', 'Ecart'], rows));
 }
 
 /** La decision de chaque strategie, `trigger NONE` compris — le §9 l'exige nommement. */
 function decisionSection(run: CompletedRun): string {
-  const rows = run.outcomes.map((outcome) => [
-    `${outcome.strategy}${outcome.isShadow ? ' (ombre)' : ''}`,
-    outcome.intent.trigger,
-    `${String(outcome.intent.legs.length)} jambe(s)`,
-    outcome.verdict.status === 'ACCEPTED'
-      ? 'ACCEPTED'
-      : `REJECTED:${outcome.verdict.rejections.map((rejet) => rejet.code).join(',')}`,
-    escape(outcome.intent.reason),
-  ]);
+  const rows = run.outcomes.map((outcome): readonly Cell[] => {
+    /* Une ombre est grise de bout en bout ; une production qui ne decide rien l'est sauf son nom. Le verdict garde sa pastille. */
+    const ombre = outcome.isShadow;
+    const calme = ombre || outcome.intent.trigger === 'NONE';
+    const gris = (quand: boolean): string | undefined => (quand ? GRIS : undefined);
+    const verdict =
+      outcome.verdict.status === 'ACCEPTED'
+        ? `<span style="${PASTILLE_ACCEPTEE}">ACCEPTED</span>`
+        : `<span style="${PASTILLE_REFUSEE}">REJECTED:${outcome.verdict.rejections.map((rejet) => rejet.code).join(',')}</span>`;
+    return [
+      { text: `${outcome.strategy}${ombre ? ' (ombre)' : ''}`, style: gris(ombre) },
+      { text: outcome.intent.trigger, style: calme ? GRIS : 'font-weight:700' },
+      { text: `${String(outcome.intent.legs.length)} jambe(s)`, style: gris(calme) },
+      verdict,
+      { text: escape(outcome.intent.reason), style: gris(calme) },
+    ];
+  });
   return section('Decision du jour', table(['Strategie', 'Trigger', 'Jambes', 'Risque', 'Motif'], rows));
 }
 
@@ -792,8 +856,9 @@ const GRAPHE_HAUTEUR = 90;
 const GRAPHE_PLANCHER = 1;
 const GRAPHE_TABLE = `border-collapse:collapse;table-layout:fixed;height:${String(GRAPHE_HAUTEUR)}px;margin:8px 0 2px`;
 const GRAPHE_CELL = 'width:4px;padding:0 1px 0 0;vertical-align:bottom';
-const GRAPHE_HAUSSE = '#2f6f4f';
-const GRAPHE_BAISSE = '#c0392b';
+/* Le signe d'une barre n'est porte que par sa teinte (decision E) : il est imprime dans la case « P&L cumule » et dans l'echelle de la note. */
+const GRAPHE_HAUSSE = '#1e7a46';
+const GRAPHE_BAISSE = '#b3261e';
 
 const GRAPHE_AMPLITUDE = new Decimal(GRAPHE_HAUTEUR - GRAPHE_PLANCHER);
 const GRAPHE_BASE = new Decimal(GRAPHE_PLANCHER);
@@ -886,7 +951,7 @@ const SANS_COURBE =
 /** La raison couvre toutes les colonnes de metriques, derivees de l'en-tete : en ajouter une ne peut pas laisser la ligne courte. */
 const ombreRow = (label: string): readonly Cell[] => [
   label,
-  { text: SANS_COURBE, span: COMPARISON_HEADER.length - 1 },
+  { text: SANS_COURBE, span: COMPARISON_HEADER.length - 1, style: GRIS },
 ];
 
 /**
@@ -900,28 +965,31 @@ function comparisonSection(input: DailyReportInput): string {
   const first = window[0]?.date ?? '?';
   const last = window[window.length - 1]?.date ?? '?';
 
-  const holdRow = (label: string, keys: HoldKeys): string[] => [
-    label,
-    metricText(metricOf(keys.twr, run), signedPct),
-    metricText(metricOf(keys.maxDrawdown, run), signedPct),
-    metricText(metricOf(keys.sharpe, run), (value) => value.toFixed(SCALE)),
-  ];
+  /* Le Sharpe n'est ni un gain ni une perte : pas de signe a colorer, seulement son absence a griser. */
+  const holdRow = (label: string, keys: HoldKeys): readonly Cell[] => {
+    const sharpe = metricOf(keys.sharpe, run);
+    return [
+      label,
+      signed(metricOf(keys.twr, run)),
+      signed(metricOf(keys.maxDrawdown, run)),
+      sharpe.status === 'VALUE' ? sharpe.value.toFixed(SCALE) : indisponible(),
+    ];
+  };
 
   /* La photo porte l'indice et son sommet, pas la serie : ni pire recul passe ni Sharpe ne s'en lisent. */
-  const sansSerie = metricText(missing('la photo ne porte pas la serie'), signedPct);
+  const sansSerie = signed(missing('la photo ne porte pas la serie'));
   const rows: (readonly Cell[])[] = [
-    ['Portefeuille', metricText(cumulativeReturn(run), signedPct), sansSerie, sansSerie],
+    ['Portefeuille', signed(cumulativeReturn(run)), sansSerie, sansSerie].map((text) => ({ text, style: PORTEFEUILLE })),
     holdRow('Hold BTC', HOLD_BTC_KEYS),
     holdRow('Hold 50/50', HOLD_5050_KEYS),
     ombreRow('Ladder (ombre)'),
     ombreRow('DCA (ombre)'),
   ];
 
-  const recul = metricText(
+  const recul = signed(
     run.drawdown.status === 'COMPUTED'
       ? { status: 'VALUE', value: run.drawdown.drawdown }
       : missing(run.drawdown.reason),
-    signedPct,
   );
 
   return section(
@@ -991,7 +1059,7 @@ function gapSection(run: CompletedRun): string {
     escape(gap.code),
     escape(gap.reason),
   ]);
-  return section('Metriques indisponibles', table(['Cle', 'Code', 'Motif'], rows));
+  return section('Metriques indisponibles', table(['Cle', 'Code', 'Motif'], rows, HEAD_AMBRE));
 }
 
 /**
@@ -1105,16 +1173,23 @@ export function renderDailyReport(input: DailyReportInput): DailyReportMail {
 
   const jour = dayReturn(run, input.previous);
   const cumul = cumulativeReturn(run);
+  const chiffre = 'font-size:20px';
   const entete = table(
-    ['Valeur totale', 'P&L jour (TWR)', 'P&L cumule (TWR)'],
-    [[usdc(run.totalValue), metricText(jour, signedPct), metricText(cumul, signedPct)]],
+    ['Valeur totale', 'P&L jour (TWR)', 'P&L cumule (TWR)'].map((text) => ({ text, style: 'font-size:13px' })),
+    [
+      [
+        { text: usdc(run.totalValue), style: `${chiffre};font-weight:700` },
+        { text: signed(jour), style: chiffre },
+        { text: signed(cumul), style: chiffre },
+      ],
+    ],
   );
   const noteJour =
     jour.status === 'MISSING' ? `<p style="${NOTE}">P&L du jour : ${escape(jour.reason)}</p>` : '';
 
   const html =
     `<div style="${BODY}">` +
-    `<h1 style="font-size:17px;margin:0 0 4px">Ubac — rapport du ${escape(run.runDate)}</h1>` +
+    `<h1 style="${H1}">Ubac — rapport du ${escape(run.runDate)}</h1>` +
     `<p style="${NOTE}">Prix de cloture du ${escape(run.pricedOn)}. Les ordres de la production partent en limit post-only ; les ombres n'en placent aucun.</p>` +
     alerte +
     resyncEncadre(run) +
