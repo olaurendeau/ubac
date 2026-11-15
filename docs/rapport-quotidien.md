@@ -696,3 +696,61 @@ Le terme « mouvement » est une entrée fixe du lexique (section 9) : un apport
 un retrait d'USDC, ou un ordre exécuté en tout ou en partie, montant vu du cash.
 La glose du refus `REBALANCE_TOO_LARGE` parle désormais d'« un seul
 rééquilibrage » et non d'« un seul mouvement », pour ne pas croiser ce sens.
+
+## 12. Les couleurs : elles redoublent, elles n'apprennent rien
+
+Demande de l'opérateur : « plus de couleurs dans le mail pour que ce soit plus
+lisible ». Le design est dans [design/rapport-couleurs/](design/rapport-couleurs/)
+(la page, et son README qui porte les décisions A à E et prévaut sur le bloc
+« Décisions (en attente) » de la page). Le lot s'écrit en trois temps : ce
+harnais d'abord, puis les couleurs de l'en-tête, des tableaux et du graphe.
+
+**La règle : la couleur redouble un signe, un mot ou un chiffre déjà imprimés.
+Jamais seule.** Un lecteur qui ne distingue pas les teintes, un client qui les
+écrase ou un affichage en niveaux de gris lit le même rapport. Vert et rouge sont
+réservés à la performance et au verdict de risque ; l'ambre dit « à surveiller »,
+le rouge « anormal », le bleu « information ».
+
+Elle n'ajoute que **quatre expressions** au texte (décision C) : « ALERTE — »
+devant le texte de la suspension, « — proche » au bout de la distance à une borne
+de moins de 2 points (de 0,10 pour le ratio), « ! » après un écart d'allocation
+d'au moins 5 points, et la phrase de l'encadré ATTENTION. Le lexique n'en glose
+aucune : aucune n'est un terme du rapport.
+
+### Trois preuves, sur le HTML rendu et non sur les constantes
+
+`test/report/rendu-html.ts` lit le courrier tel qu'il part, balise par balise, et
+`test/report/daily-report.test.ts` (bloc S6) le fait sur chaque cas d'une
+matrice de rendus — le jour nominal à 2,00 points de la borne, « proche »,
+exactement sur la borne, bande franchie avec un écart d'allocation à 4,99, 5,00 et
+au-delà, les six états d'ordre, suspension, resynchronisation, recalcul au mid,
+verdict refusé, états dégradés, distance indéfinie.
+
+1. **Structure.** Ni `<style`, ni `class=`, ni `<script`, ni `<img` ; toute
+   valeur de `color` et de `background` est un `#rrggbb` en minuscules ; un
+   élément qui pose un fond et contient du texte pose aussi sa couleur ; un fond
+   sans texte n'existe que sur une barre du graphe. Les balises sont suivies avec
+   une pile : une fermeture qui ne correspond pas fait échouer le parcours.
+2. **Contraste.** Chaque texte non vide est mesuré avec sa couleur et son fond
+   effectifs — ceux de l'ancêtre le plus proche qui les déclare, sinon `#16191d`
+   sur `#ffffff` — et doit tenir 4,5:1 (WCAG AA). `#777777` sur blanc, à 4,48:1,
+   est refusé par une sonde. Une barre du graphe doit tenir 3:1 sur blanc
+   (élément non textuel).
+3. **Texte inchangé.** Pour chaque cas de la matrice, le texte du rapport
+   (`lignes()`) est enregistré dans `test/report/__snapshots__/texte/<cas>.txt`
+   **avant** toute couleur ; après, il doit s'y retrouver, une fois retirées les
+   quatre expressions ci-dessus (`sansMotsAjoutes()`, une liste fermée). Ces
+   fichiers sont générés, et ne se relisent pas : ils se régénèrent à
+   l'identique tant que le texte ne bouge pas.
+
+### Ce que la preuve ne couvre pas
+
+- **Le mode sombre automatique des clients** (Gmail, Apple Mail). Décision D :
+  aucun fond n'est posé sur le corps — la recommandation de la maquette,
+  `background:#ffffff`, est refusée, le courrier garde le fond que le client lui
+  donne. Le contraste est donc prouvé sur la paire par défaut `#16191d` sur
+  `#ffffff`, et **la lisibilité en mode sombre est un risque non vérifié**, à
+  contrôler sur un vrai téléphone avant de la tenir pour acquise.
+- **Le signe d'une barre du graphe** n'est porté que par sa couleur
+  (`#1e7a46` / `#b3261e`). Exception assumée (décision E) : le signe est imprimé
+  ailleurs, dans la case « P&L cumulé » et dans l'échelle de la note.

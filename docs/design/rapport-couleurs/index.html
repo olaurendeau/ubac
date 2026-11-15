@@ -1,0 +1,197 @@
+<title>Rapport quotidien en couleurs</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+:root{--bg:#f4f5f7;--fg:#16191d;--muted:#5a6472;--card:#fff;--line:#d8dce1;--accent:#2c6aa0}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#14171b;--fg:#e6e8eb;--muted:#9aa4b2;--card:#1d2127;--line:#343b44;--accent:#6aa7dd;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#14171b;--fg:#e6e8eb;--muted:#9aa4b2;--card:#1d2127;--line:#343b44;--accent:#6aa7dd;color-scheme:dark}
+body{background:var(--bg);color:var(--fg);padding-block:16px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));font-family:-apple-system,Segoe UI,Roboto,sans-serif}
+.wrap{max-width:1100px;margin:0 auto}
+h1{font-size:22px}h2.p{font-size:18px;margin-top:32px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px}
+.grid>*{min-width:0}
+.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px}
+.scroll{overflow-x:auto}
+table.pal{border-collapse:collapse;font-size:13px;width:100%}
+table.pal td,table.pal th{border-bottom:1px solid var(--line);padding:5px 6px;text-align:left;vertical-align:top}
+.frame{background:#fff;border:1px solid var(--line);border-radius:8px;padding:6px 0;overflow-x:auto}
+.frame.dark{filter:invert(1) hue-rotate(180deg)}
+.cap{font-size:13px;color:var(--muted);margin:4px 0 8px}
+.tabs button{margin:2px;padding:6px 10px;border:1px solid var(--line);background:var(--card);color:var(--fg);border-radius:6px;cursor:pointer}
+.tabs button[aria-pressed=true]{background:var(--accent);color:#fff}
+ul.ac li{margin:4px 0}
+code{font-size:12px}
+</style>
+<div class="wrap">
+<h1>Rapport quotidien : la couleur au service de la lecture</h1>
+<p>Maquette du courrier « Ubac — rapport du AAAA-MM-JJ » colorise : toutes les sections du vrai rapport (<code>src/report/daily-report.ts</code> sur origin/main), dans leur ordre, sans changement de structure. Les chiffres sont illustratifs. Tout texte que le run fournit (motifs, texte de suspension, de resynchronisation, de recalcul, raisons de metrique) est ecrit <i>[entre crochets]</i> : il n'est pas invente ici. Dans le vrai mail : aucune feuille de style, aucun script.</p>
+
+<div class="tabs" id="tabs"></div>
+<div class="grid" style="margin-top:12px">
+ <div><div class="cap">Clair (Gmail web, Apple Mail)</div><div class="frame" id="clair"></div></div>
+ <div><div class="cap">Sombre SIMULE par un filtre d'inversion CSS : ce n'est pas le rendu de Gmail. Risque ouvert : a verifier sur un vrai telephone (Gmail Android/iOS, Apple Mail sombre) avant de declarer la lisibilite acquise.</div><div class="frame dark" id="sombre"></div></div>
+</div>
+
+<h2 class="p">Palette et sens</h2>
+<div class="card scroll"><table class="pal" id="pal"></table></div>
+<p class="cap">Regle de fond : la couleur redouble toujours un signe, un mot, un chiffre ou une marque deja imprimes. Jamais seule. Vert et rouge : performance et verdict de risque. Ambre : attention. Rouge sur les ordres/ecarts : anormal. Bleu : information. Distinction ambre/rouge des comptes d'ordres : portee aussi par le libelle de la ligne (post-only / non execute contre autre motif / statut non lu).</p>
+
+<h2 class="p">Decisions (en attente de l'operateur : recommandations conservees)</h2>
+<ul class="ac">
+<li><b>Choix 1.</b> Vert/rouge uniquement pour le signe d'un P&L / TWR / drawdown et pour ACCEPTED / REJECTED. Un ecart d'allocation de 5 points ou plus est ambre ET porte la marque " !" ; en dessous, neutre. Si l'operateur refuse la marque : pas de couleur sur l'allocation.</li>
+<li><b>Choix 2.</b> Seuil "proche" : moins de 2 points de la borne de cash, moins de 0.10 de la borne du ratio BTC/ETH (illustre dans l'onglet "Jour normal").</li>
+<li><b>Choix 3.</b> Mots ajoutes : "ALERTE — ", " — proche", " !", et l'encadre ATTENTION des ordres. Sans eux, la couleur serait seule.</li>
+<li>Fond du corps : le vrai corps n'en pose aucun. Recommandation : ajouter <code>background:#ffffff</code> au corps (BODY), pour que la paire texte/fond soit connue et testable.</li>
+<li>Graphe : 90 colonnes au plus (GRAPHE_HAUTEUR 90 px, inchange). Le signe d'une barre n'est porte que par sa couleur ; c'est assume, car le signe est imprime ailleurs (la case P&L cumule, l'echelle de la note « Echelle de X a Y »). Seules les deux teintes changent.</li>
+<li>Mouvements, lexique, notes : non colores (hors perimetre). Les lignes du detail des ordres suivent la meme regle que les comptes.</li>
+<li>Pas de version texte brut (le courrier n'en a pas). Hors perimetre.</li>
+</ul>
+
+<h2 class="p">Probleme, stories et criteres</h2>
+<div class="card">
+<p><b>Probleme.</b> L'operateur lit le rapport sur telephone, en quelques secondes. Tout est gris sur blanc : -6.92 % ou REJECTED:PRICE_SANITY pese autant qu'un zero. Il lit chaque ligne pour savoir si quelque chose demande son attention.</p>
+<p><b>S1 — Je vois si la journee est bonne ou mauvaise.</b></p>
+<ul class="ac">
+<li>Tout nombre signe de P&L jour, P&L cumule, TWR cumule, max drawdown et recul actuel (en-tete, comparaison, note « Recul actuel ») est dans un span : vert <code>#1e7a46</code> gras si &gt; 0, rouge <code>#b3261e</code> gras si &lt; 0, gris <code>#5a6472</code> si nul. Le signe reste imprime. « indisponible » et « n/d » sont gris, jamais verts ni rouges.</li>
+<li>Les trois chiffres de l'en-tete font 20 px gras ; leurs libelles restent gris 13 px. Le sujet est inchange.</li>
+</ul>
+<p><b>S2 — Je reperais ce qui demande mon attention.</b></p>
+<ul class="ac">
+<li>Trois encadres, fond ET texte poses : ALERTE (<code>#fdecec</code> / <code>#5c1410</code>, barre <code>#c0392b</code>), ATTENTION (<code>#fff4db</code> / <code>#4d3500</code>, barre <code>#c98a00</code>), INFO (<code>#eef4fb</code> / <code>#12324f</code>, barre <code>#2c6aa0</code>).</li>
+<li>La suspension : « ALERTE — » en gras, puis <code>run.suspension.reason</code> tel quel. Resynchronisation et recalcul au mid : INFO, texte inchange (voir les onglets : phrases reelles, plus le texte du run).</li>
+<li>Comptes d'ordres : un zero est gris <code>#6b7482</code> ; « Non execute » et « Rejete (post-only) » non nuls : ambre gras ; « Rejete (autre motif) » et « Statut non lu » non nuls : rouge gras.</li>
+<li>Detail des ordres (Jambe, Limite, Etat, Frais ou motif) : la cellule Etat suit la meme regle (Etat « Non execute » / « Rejete (post-only) » ambre gras ; « Rejete (autre motif) » / « Statut non lu » rouge gras ; « Execute » et « Partiel » normaux).</li>
+<li>Si au moins un ordre est « Rejete (autre motif) » ou « Statut non lu », un encadre ATTENTION suit le detail (et non les comptes) : « Attention : au moins un ordre n'a pas abouti normalement. Voir les lignes colorees ci-dessus. » Sinon, absent.</li>
+</ul>
+<p><b>S3 — Je lis le verdict de risque sans le motif.</b></p>
+<ul class="ac">
+<li>Tableau a 5 colonnes inchange (Strategie, Trigger, Jambes, Risque, Motif). Risque : pastille ACCEPTED (<code>#e3f3e9</code> / <code>#14532d</code>) ou REJECTED:codes (<code>#fdecec</code> / <code>#8a1c12</code>), gras, texte inchange. Trigger NONE gris, autre trigger gras. Ligne (ombre) grise sauf la pastille. Motif : texte inchange.</li>
+</ul>
+<p><b>S4 — Je sais a quelle distance je suis d'un declenchement.</b></p>
+<ul class="ac">
+<li>Cellule Distance, bande A ou B : « franchie — … » fond <code>#fdecec</code> / <code>#8a1c12</code> gras ; moins de 2 pt (ratio : 0.10) d'une borne ou « sur la borne » : fond <code>#fff4db</code> / <code>#4d3500</code> gras, texte suivi de « — proche » (sauf « sur la borne ») ; plus loin ou « indisponible — … » : sans couleur.</li>
+</ul>
+<p><b>S5 — Je retrouve le debut de chaque section.</b></p>
+<ul class="ac">
+<li>Titre de section : barre gauche 4 px <code>#2c6aa0</code>, fond <code>#eef1f5</code>, texte <code>#16191d</code>. En-tetes de tableau : fond <code>#f3f5f8</code>, texte <code>#5a6472</code>, <b>sauf</b> le tableau « Metriques indisponibles » : en-tete ambre (<code>#fff4db</code> / <code>#4d3500</code>), la section portant son titre comme mot.</li>
+<li>Comparaison : la ligne Portefeuille est en gras sur <code>#f3f5f8</code> ; Hold BTC, Hold 50/50 et les deux lignes ombre (cellule unique « sans courbe en phase 1 : ... », grise) ne le sont pas.</li>
+<li>Allocation (colonnes Ligne, Quantite, Poids, Cible, Ecart) : un ecart d'au moins 5 points en valeur absolue est ambre gras ET suivi de « !  » (ex. « +5.76 % ! ») ; en dessous, rien.</li>
+<li>Derniers mouvements, Lexique et toutes les notes : sans couleur ajoutee, contenu inchange.</li>
+</ul>
+<p><b>S6 — Rien ne casse, rien ne se perd, tout se prouve.</b></p>
+<ul class="ac">
+<li>Le HTML ne contient ni <code>&lt;style</code>, ni <code>class=</code>, ni <code>&lt;script</code>, ni URL distante, ni image. Toute couleur est un litteral <code>#rrggbb</code> dans un <code>style=</code>.</li>
+<li><b>Contraste prouve sur le HTML rendu, pas sur les constantes :</b> le test parcourt chaque element portant <code>style=</code> du rapport rendu, releve sa couleur de texte et son fond (a defaut : ceux de l'ancetre le plus proche, puis <code>#16191d</code> sur <code>#ffffff</code>), calcule le ratio WCAG et exige au moins 4.5:1. Tout element avec fond pose aussi sa couleur de texte (sinon le test echoue). Une couleur ajoutee ailleurs est donc attrapee.</li>
+<li>Pour chaque rendu de la matrice de fixtures de <code>daily-report.test.ts</code>, retirer balises et styles redonne le texte d'aujourd'hui, aux mots ajoutes pres : « ALERTE — », « — proche », « ! », l'encadre ATTENTION, et son titre. Les nouveaux termes passent le test de lexique (<code>test/report/lexique</code> : sans accent ; aucun d'eux n'est un terme de lexique, donc aucune entree a creer).</li>
+<li>Non testable par le HTML : la lisibilite en mode sombre automatique de Gmail. C'est un risque a verifier sur appareil, pas un critere.</li>
+<li>Le graphe garde ses 90 colonnes ; seules ses deux teintes passent a <code>#1e7a46</code> / <code>#b3261e</code>.</li>
+</ul>
+<p><b>Hors perimetre.</b> Texte brut ; refonte de la mise en page ou de l'ordre ; couleur du sujet, des mouvements, du lexique, des notes ; mode sombre natif ; nouvelles alertes ou seuils hors « proche », ecart d'allocation et ordre anormal.</p>
+<p><b>Etats vides et degrades</b> (onglets « Degrade » et « Suspension ») : aucun ordre : comptes gris + note grise « Aucun ordre n'est parti aujourd'hui. » ; P&L du jour absent : « indisponible » gris + note grise ; graphe indisponible : note grise (« Graphe indisponible : ... ») ; mouvements illisibles : note grise, sans encadre ATTENTION ; metriques indisponibles : section a en-tete ambre ; distance indefinie : « indisponible — raison » gris ; suspension : encadre ALERTE, aucun ordre place.</p>
+</div>
+</div>
+<script>
+const C={pos:'#1e7a46',neg:'#b3261e',mut:'#5a6472'};
+const S={
+ body:'font-family:-apple-system,Segoe UI,Roboto,sans-serif;font-size:15px;line-height:1.45;color:#16191d;background:#ffffff;max-width:520px;margin:0 auto;padding:12px',
+ h2:'font-size:15px;margin:18px 0 6px;padding:4px 8px;border-left:4px solid #2c6aa0;background:#eef1f5;color:#16191d',
+ tab:'width:100%;border-collapse:collapse;font-size:14px',
+ td:'padding:4px 6px;border-bottom:1px solid #eceef1;text-align:left;vertical-align:top;color:#16191d',
+ th:'padding:4px 6px;border-bottom:1px solid #eceef1;text-align:left;vertical-align:top;font-weight:600;color:#5a6472;background:#f3f5f8',
+ thw:'padding:4px 6px;border-bottom:1px solid #eceef1;text-align:left;vertical-align:top;font-weight:600;color:#4d3500;background:#fff4db',
+ note:'font-size:13px;color:#5a6472;margin:6px 0'};
+const box={alert:'background:#fdecec;color:#5c1410;border-left:3px solid #c0392b;padding:8px;margin:10px 0',
+ warn:'background:#fff4db;color:#4d3500;border-left:3px solid #c98a00;padding:8px;margin:10px 0',
+ info:'background:#eef4fb;color:#12324f;border-left:3px solid #2c6aa0;padding:8px;margin:10px 0'};
+const pill={ok:'background:#e3f3e9;color:#14532d;font-weight:700;padding:1px 6px;border-radius:3px',ko:'background:#fdecec;color:#8a1c12;font-weight:700;padding:1px 6px;border-radius:3px'};
+const WARN='background:#fff4db;color:#4d3500;font-weight:700',BAD='background:#fdecec;color:#8a1c12;font-weight:700',G='color:#5a6472',PR='background:#f3f5f8;font-weight:700';
+const sg=(t)=>{if(!/^[+-]/.test(t))return `<span style="color:#5a6472">${t}</span>`;const v=parseFloat(t);const c=v===0?C.mut:v>0?C.pos:C.neg;return `<span style="color:${c};font-weight:700">${t}</span>`};
+const cell=(t,x='')=>`<td style="${S.td};${x}">${t}</td>`;
+const hd=(h,w)=>`<tr>${h.map(x=>`<td style="${w?S.thw:S.th}">${x}</td>`).join('')}</tr>`;
+const tbl=(h,rows,w)=>`<table style="${S.tab}">${hd(h,w)}${rows.map(r=>`<tr>${r.map(x=>typeof x==='string'?cell(x):cell(x.t,x.s||'')).map((c,i)=>{const x=r[i];return x&&x.span?c.replace('<td','<td colspan="'+x.span+'"'):c}).join('')}</tr>`).join('')}</table>`;
+const sec=(t,b)=>`<h2 style="${S.h2}">${t}</h2>${b}`;
+const note=(t)=>`<p style="${S.note}">${t}</p>`;
+const V=(t)=>`<i>[${t}]</i>`;
+function graph(o){
+ if(o.graphNone)return note('Graphe indisponible : 1 photo(s) dans l\'historique, et une courbe en demande deux. Il apparaitra des le run suivant.');
+ const bars=[];for(let i=0;i<90;i++){const v=o.neg?(i<30?0.3+i*0.02:0.9-(i-30)*0.014):0.2+i*0.008;const h=Math.max(2,Math.round(Math.abs(v)*80));const col=(o.neg&&i>60)?'#b3261e':'#1e7a46';bars.push(`<td style="width:4px;padding:0 1px 0 0;vertical-align:bottom"><div style="height:${h}px;background:${col}"></div></td>`)}
+ return `<table style="border-collapse:collapse;table-layout:fixed;height:90px;margin:8px 0 2px"><tr>${bars.join('')}</tr></table>`+note('P&L cumule (TWR) depuis la premiere photo, lu sur l\'indice de croissance : 90 photo(s), du 2026-08-15 au 2026-11-13, 1 colonne = 1 photo. Echelle de -1.00 % a +9.00 %, et non depuis zero : une variation faible occupe toute la hauteur.')}
+function mail(o){
+ let h=`<div style="${S.body}"><h1 style="font-size:17px;margin:0 0 4px;color:#16191d">Ubac — rapport du ${o.date}</h1>${note('Prix de cloture du '+o.date+'. Les ordres de la production partent en limit post-only ; les ombres n\'en placent aucun.')}`;
+ if(o.alert)h+=`<div style="${box.alert}"><strong>ALERTE — </strong>${V('run.suspension.reason, ex. « SUSPENSION_DRAWDOWN : recul a -26.12 % »')}</div>`;
+ if(o.resync)h+=`<div style="${box.info}"><strong>Etat interne resynchronise, ecart explique par les flux enregistres.</strong> Aucune alerte n'est partie pour cet ecart : c'est ce rapport qui le dit. Aucun ordre n'est place aujourd'hui.<br>${V('run.resync.reason')}</div>`;
+ if(o.mid)h+=`<div style="${box.info}"><strong>Decision de production recalculee sur le mid en direct.</strong> Poids USDC de la production au mid : 32.40 %. Les ombres, l'allocation et les distances au declencheur restent a la cloture.<br>${V('run.liveRecompute.reason : ecarts signes des deux actifs, ce que la cloture proposait')}</div>`;
+ h+=`<table style="${S.tab}">${['Valeur totale','P&L jour (TWR)','P&L cumule (TWR)'].map(x=>`<td style="${S.th};font-size:13px">${x}</td>`).join('')}<tr><td style="${S.td};font-size:20px;font-weight:700">${o.val}</td><td style="${S.td};font-size:20px">${sg(o.day)}</td><td style="${S.td};font-size:20px">${sg(o.cum)}</td></tr></table>`;
+ if(o.day==='indisponible')h+=note('P&L du jour : '+V('raison de dayReturn, ex. pas de photo de la veille'));
+ const rows=[['Bande de cash (A)',`USDC ${o.usdc}`,'[27.00 %, 33.00 %]',{t:o.dist.t,s:o.dist.s}]];
+ if(o.ratio)rows.push(['Bande de ratio (B)','BTC/ETH 1.50','[1.20, 1.60]',{t:'0.10 de la borne haute — proche',s:WARN}]);
+ h+=sec('Distance au prochain declenchement',tbl(['Bande','Constate','Bornes','Distance'],rows)+(o.ratio?'':note('Declencheur B desarme : le ratio BTC/ETH n\'est pas surveille en production (§5.2).')));
+ h+=sec('Evolution du portefeuille (TWR cumule)',graph(o));
+ const mo=V('motif');
+ const dec=o.rej?[['rebalance',{t:'CASH_BAND',s:'font-weight:700'},'2 jambe(s)',{t:`<span style="${pill.ko}">REJECTED:PRICE_SANITY,PRICE_SANITY</span>`},mo]]
+  :o.trig?[['rebalance',{t:'CASH_BAND',s:'font-weight:700'},'2 jambe(s)',{t:`<span style="${pill.ok}">ACCEPTED</span>`},mo]]
+  :[['rebalance',{t:'NONE',s:G},{t:'0 jambe(s)',s:G},{t:`<span style="${pill.ok}">ACCEPTED</span>`},{t:mo,s:G}]];
+ const ac=`<span style="${pill.ok}">ACCEPTED</span>`;
+ dec.push([{t:'rebalance_ab (ombre)',s:G},{t:o.trig||o.rej?'CASH_BAND':'NONE',s:G},{t:o.trig||o.rej?'2 jambe(s)':'0 jambe(s)',s:G},{t:ac},{t:mo,s:G}],[{t:'ladder (ombre)',s:G},{t:'NONE',s:G},{t:'0 jambe(s)',s:G},{t:ac},{t:mo,s:G}],[{t:'dca (ombre)',s:G},{t:'NONE',s:G},{t:'0 jambe(s)',s:G},{t:ac},{t:mo,s:G}]);
+ h+=sec('Decision du jour',tbl(['Strategie','Trigger','Jambes','Risque','Motif'],dec));
+ // orders
+ const O=o.orders||[];const cnt=(f)=>O.filter(f).length;
+ const r=(t,n,s)=>[t,{t:String(n),s:n===0?'color:#6b7482':s}];
+ const rej=O.filter(x=>x.e.startsWith('Rejete')||x.e==='Statut non lu');
+ const autre=cnt(x=>x.e==='Rejete (autre motif)'),nonlu=cnt(x=>x.e==='Statut non lu');
+ let ord=tbl(['Ordres','Nombre'],[r('Place',cnt(x=>!x.e.startsWith('Rejete')),''),r('Execute',cnt(x=>x.e==='Execute'),''),r('Partiel',cnt(x=>x.e.startsWith('Partiel')),''),r('Non execute',cnt(x=>x.e==='Non execute'),WARN),r('Statut non lu',nonlu,BAD),r('Rejete (post-only)',cnt(x=>x.e==='Rejete (post-only)'),WARN),r('Rejete (autre motif)',autre,BAD),['Frais reels',{t:o.fees,s:o.fees==='0.00 USDC'?'color:#6b7482':''}]]);
+ if(!O.length)ord+=note('Aucun ordre n\'est parti aujourd\'hui.');
+ else{const es=(e)=>e==='Non execute'||e==='Rejete (post-only)'?WARN:e==='Rejete (autre motif)'||e==='Statut non lu'?BAD:'';
+  ord+=tbl(['Jambe','Limite','Etat','Frais ou motif'],O.map(x=>[x.j,x.l,{t:x.e,s:es(x.e)},x.f]));
+  if(autre||nonlu)ord+=`<div style="${box.warn}"><strong>Attention : au moins un ordre n'a pas abouti normalement.</strong> Voir les lignes colorees ci-dessus.</div>`;
+  ord+=note('Etat lu juste apres le placement : un ordre limit au repos n\'est en general pas encore execute, et la suite se lit les jours suivants. Aucune jambe refusee n\'est replacee dans le run.')}
+ h+=sec('Ordres du jour',ord);
+ const ec=(t)=>Math.abs(parseFloat(t))>=5?{t:t+' !',s:WARN}:t;
+ h+=sec('Allocation',tbl(['Ligne','Quantite','Poids','Cible','Ecart'],[['BTC','0.04120000','38.70 %','40 %',ec('-1.30 %')],['ETH','0.62000000','25.54 %','30 %',ec('-4.46 %')],['USDC','2184.20000000',o.usdc,'30 %',ec(o.ecU)]]));
+ const om=(l)=>[l,{t:'sans courbe en phase 1 : aucune strategie n\'execute, son portefeuille simule serait le portefeuille reel',s:G,span:3}];
+ h+=sec('Comparaison',tbl(['','TWR cumule','Max drawdown','Sharpe 90 j'],[
+  [{t:'Portefeuille',s:PR},{t:sg(o.cum),s:PR},{t:'indisponible',s:PR+';color:#5a6472'},{t:'indisponible',s:PR+';color:#5a6472'}],
+  ['Hold BTC',sg('-7.75 %'),sg('-28.80 %'),'1.40'],['Hold 50/50',sg('-10.08 %'),sg('-31.27 %'),'1.04'],om('Ladder (ombre)'),om('DCA (ombre)')])
+  +note('Portefeuille : TWR depuis la premiere photo. Hold : fenetre OHLCV de 90 jour(s), du 2026-08-15 au 2026-11-13. Les deux periodes ne coincident pas tant que le systeme n\'a pas tourne aussi longtemps que la fenetre.')
+  +note('Recul actuel depuis le plus haut : '+(o.noDD?'indisponible':sg('-6.40 %'))+'. Ce n\'est pas un max drawdown : la photo porte l\'indice et son sommet, pas la serie — ni le pire recul passe ni le Sharpe du portefeuille ne s\'en lisent.')
+  +note('Ladder et DCA : leur decision du jour figure ci-dessus ; leur P&L demande un rejeu jour par jour, pas une photo.'));
+ if(o.gaps)h+=sec('Metriques indisponibles',tbl(['Cle','Code','Motif'],[['hold_btc_*','EMPTY_SERIES',V('motif')],['hold_5050_sharpe','WINDOW_INCOMPLETE',V('motif')]],true));
+ h+=sec('Derniers mouvements',o.mvUnread?note('Les derniers mouvements n\'ont pas pu etre lus : '+V('raison')+'. Le reste du rapport n\'en depend pas.'):tbl(['Date','Mouvement','Montant','Detail'],[['2026-11-13','Achat BTC','-1250.00 USDC','0.01400000 BTC a 89285.71 USDC, frais 1.84 USDC'],['2026-11-02','Apport','1000.00 USDC','virement']])+note('Les 8 plus recents au plus, apports, retraits et ordres executes confondus, du plus recent au plus ancien, quelle que soit leur date. Montant vu du cash : un retrait ou un achat est negatif, un apport ou une vente positif.'));
+ h+=sec('Lexique',tbl(['Terme','Definition'],[['P&L','Profit and loss : ce que le portefeuille a gagne ou perdu sur la periode, en pourcentage de ce qu\'il valait.'],[V('autres termes'),V('definitions de lexique.ts, une phrase chacune')]]));
+ return h+`</div>`}
+const CR=(c)=>({t:'franchie — 2.76 pt au-dela de la borne haute',s:BAD});
+const near={t:'0.60 pt de la borne haute — proche',s:WARN};
+const ex={j:'BUY BTC 0.01400000',l:'89285.71 USDC'};
+const days={
+ 'Jour normal (B arme)':{date:'2026-11-12',val:'6218.10 USDC',day:'+0.42 %',cum:'+5.10 %',usdc:'32.40 %',ecU:'+2.40 %',dist:near,ratio:1,fees:'0.00 USDC',noDD:0},
+ 'Bande franchie, ordres':{date:'2026-11-13',val:'6105.46 USDC',day:'-1.81 %',cum:'-6.92 %',usdc:'35.76 %',ecU:'+5.76 %',dist:CR(),neg:1,trig:1,fees:'1.84 USDC',
+  orders:[{...ex,e:'Execute',f:'1.84 USDC'},{j:'BUY ETH 0.30000000',l:'3200.00 USDC',e:'Non execute',f:'0.00 USDC'},{j:'SELL USDC 100.00000000',l:'1.00 USDC',e:'Rejete (autre motif)',f:V('motif de l\'exchange')},{j:'SELL ETH 0.10000000',l:'3300.00 USDC',e:'Rejete (post-only)',f:V('motif')}]},
+ 'Rejet PRICE_SANITY':{date:'2026-11-13',val:'6105.46 USDC',day:'-1.81 %',cum:'-6.92 %',usdc:'35.76 %',ecU:'+5.76 %',dist:CR(),neg:1,rej:1,fees:'0.00 USDC'},
+ 'Suspension':{date:'2026-11-14',val:'5290.00 USDC',day:'-3.20 %',cum:'-20.10 %',usdc:'35.76 %',ecU:'+5.76 %',dist:CR(),neg:1,alert:1,fees:'0.00 USDC'},
+ 'Recalcul au mid':{date:'2026-11-13',val:'6105.46 USDC',day:'-1.81 %',cum:'-6.92 %',usdc:'35.76 %',ecU:'+5.76 %',dist:CR(),mid:1,neg:1,trig:1,fees:'2.10 USDC',orders:[{...ex,e:'Execute',f:'1.05 USDC'},{j:'BUY ETH 0.30000000',l:'3200.00 USDC',e:'Execute',f:'1.05 USDC'}]},
+ 'Resynchronisation':{date:'2026-11-13',val:'7105.46 USDC',day:'+0.00 %',cum:'-6.92 %',usdc:'35.76 %',ecU:'+5.76 %',dist:CR(),resync:1,neg:1,fees:'0.00 USDC'},
+ 'Degrade':{date:'2026-11-13',val:'6105.46 USDC',day:'indisponible',cum:'indisponible',usdc:'31.00 %',ecU:'+1.00 %',dist:{t:'indisponible — '+'[reason]',s:G},graphNone:1,noDD:1,gaps:1,mvUnread:1,fees:'0.00 USDC'}
+};
+const tabs=document.getElementById('tabs');
+function show(k){document.getElementById('clair').innerHTML=mail(days[k]);document.getElementById('sombre').innerHTML=mail(days[k]);[...tabs.children].forEach(b=>b.setAttribute('aria-pressed',b.textContent===k))}
+Object.keys(days).forEach(k=>{const b=document.createElement('button');b.textContent=k;b.onclick=()=>show(k);tabs.appendChild(b)});
+show('Bande franchie, ordres');
+const pal=[['Role','Fond','Texte','Sens','Redoublement non colore'],
+['P&L / TWR / drawdown positif','-','#1e7a46 gras','> 0','signe +'],
+['P&L / TWR / drawdown negatif','-','#b3261e gras','< 0','signe -'],
+['Nul, n/d, indisponible','-','#5a6472','pas de jugement','mot ou 0.00'],
+['ACCEPTED','#e3f3e9','#14532d gras','verdict de risque','mot ACCEPTED'],
+['REJECTED','#fdecec','#8a1c12 gras','verdict refuse','mot REJECTED:code'],
+['Bande franchie','#fdecec','#8a1c12 gras','declencheur atteint','mot « franchie »'],
+['Proche du declencheur','#fff4db','#4d3500 gras','&lt; 2 pt (ratio 0.10)','mot « proche »'],
+['Ecart d\'allocation &gt;= 5 pt','#fff4db','#4d3500 gras','a surveiller','marque « ! »'],
+['Ordre non execute / post-only','#fff4db','#4d3500 gras','a surveiller','libelle de la ligne + nombre'],
+['Ordre autre motif / statut non lu','#fdecec','#8a1c12 gras','anormal','libelle de la ligne + encadre ATTENTION'],
+['Encadre ALERTE','#fdecec + barre #c0392b','#5c1410','suspension','mot « ALERTE — »'],
+['Encadre ATTENTION','#fff4db + barre #c98a00','#4d3500','ordre anormal','mot « Attention : »'],
+['Encadre INFO','#eef4fb + barre #2c6aa0','#12324f','resync, recalcul au mid','titre en gras'],
+['En-tete « Metriques indisponibles »','#fff4db','#4d3500','metrique absente','titre de section'],
+['Titre de section','#eef1f5 + barre #2c6aa0','#16191d','debut de bloc','titre'],
+['Barre du graphe','-','#1e7a46 / #b3261e','signe de la valeur','AUCUN : assume, signe lu dans l\'en-tete et l\'echelle de la note'],
+['Zero, ligne ombre','-','#6b7482 / #5a6472','sans enjeu','chiffre 0']];
+document.getElementById('pal').innerHTML=pal.map((r,i)=>`<tr>${r.map(x=>i?`<td>${x}</td>`:`<th>${x}</th>`).join('')}</tr>`).join('');
+</script>

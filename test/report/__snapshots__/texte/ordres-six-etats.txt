@@ -1,0 +1,84 @@
+Ubac — rapport du 2026-09-13
+Prix de cloture du 2026-09-12. Les ordres de la production partent en limit post-only ; les ombres n'en placent aucun.
+Valeur totale | P&L jour (TWR) | P&L cumule (TWR)
+100000.00 USDC | +4.17 % | +25.00 %
+Distance au prochain declenchement
+Bande | Constate | Bornes | Distance
+Bande de cash (A) | USDC 31.00 % | [27.00 %, 33.00 %] | 2.00 pt de la borne haute
+Declencheur B desarme : le ratio BTC/ETH n'est pas surveille en production (§5.2).
+Evolution du portefeuille (TWR cumule)
+P&L cumule (TWR) depuis la premiere photo, lu sur l'indice de croissance : 5 photo(s), du 2026-09-09 au 2026-09-13, 1 colonne = 1 photo. Echelle de +10.00 % a +25.00 %, et non depuis zero : une variation faible occupe toute la hauteur.
+Decision du jour
+Strategie | Trigger | Jambes | Risque | Motif
+rebalance | NONE | 0 jambe(s) | ACCEPTED | poids USDC dans la bande : aucun reequilibrage
+rebalance_ab (ombre) | NONE | 0 jambe(s) | ACCEPTED | ratio dans la bande : aucun reequilibrage
+ladder (ombre) | NONE | 0 jambe(s) | ACCEPTED | ancres posees au cours du jour
+dca (ombre) | NONE | 0 jambe(s) | ACCEPTED | hors jour de DCA
+Ordres du jour
+Ordres | Nombre
+Place | 4
+Execute | 1
+Partiel | 1
+Non execute | 1
+Statut non lu | 1
+Rejete (post-only) | 1
+Rejete (autre motif) | 1
+Frais reels | 5.70 USDC
+Jambe | Limite | Etat | Frais ou motif
+SELL BTC 0.14000000 | 50050.00 USDC | Execute | 4.20 USDC
+SELL BTC 0.14000000 | 50050.00 USDC | Partiel (0.05000000) | 1.50 USDC
+BUY BTC 0.14000000 | 50050.00 USDC | Non execute | 0.00 USDC
+BUY BTC 0.14000000 | 50050.00 USDC | Statut non lu | inconnus
+BUY BTC 0.14000000 | 50050.00 USDC | Rejete (post-only) | INVALID_LIMIT_PRICE_POST_ONLY
+SELL BTC 0.14000000 | 50050.00 USDC | Rejete (autre motif) | INSUFFICIENT_FUND
+Etat lu juste apres le placement : un ordre limit au repos n'est en general pas encore execute, et la suite se lit les jours suivants. Aucune jambe refusee n'est replacee dans le run.
+Allocation
+Ligne | Quantite | Poids | Cible | Ecart
+BTC | 0.50000000 | 41.00 % | 40.00 % | +1.00 %
+ETH | 8.00000000 | 28.00 % | 30.00 % | -2.00 %
+USDC | 31000.00000000 | 31.00 % | 30.00 % | +1.00 %
+Comparaison
+| TWR cumule | Max drawdown | Sharpe 90 j
+Portefeuille | +25.00 % | indisponible | indisponible
+Hold BTC | +41.23 % | -27.18 % | 1.41
+Hold 50/50 | +30.10 % | -31.41 % | 1.00
+Ladder (ombre) | sans courbe en phase 1 : aucune strategie n'execute, son portefeuille simule serait le portefeuille reel
+DCA (ombre) | sans courbe en phase 1 : aucune strategie n'execute, son portefeuille simule serait le portefeuille reel
+Portefeuille : TWR depuis la premiere photo. Hold : fenetre OHLCV de 3 jour(s), du 2026-09-10 au 2026-09-12. Les deux periodes ne coincident pas tant que le systeme n'a pas tourne aussi longtemps que la fenetre.
+Recul actuel depuis le plus haut : -3.85 %. Ce n'est pas un max drawdown : la photo porte l'indice et son sommet, pas la serie — ni le pire recul passe ni le Sharpe du portefeuille ne s'en lisent.
+Ladder et DCA : leur decision du jour figure ci-dessus ; leur P&L demande un rejeu jour par jour, pas une photo.
+Derniers mouvements
+Date | Mouvement | Montant | Detail
+2026-09-01 | Apport | 1000.00 USDC | virement initial
+Les 8 plus recents au plus, apports, retraits et ordres executes confondus, du plus recent au plus ancien, quelle que soit leur date. Montant vu du cash : un retrait ou un achat est negatif, un apport ou une vente positif. Un ordre compte pour sa quantite executee au prix moyen, hors frais ; en cours, il est encore au carnet et date de sa creation.
+Lexique
+Terme | Definition
+P&L | Profit and loss : ce que le portefeuille a gagne ou perdu sur la periode, en pourcentage de ce qu'il valait.
+TWR | Time-weighted return : le rendement une fois les apports et les retraits neutralises, donc ce que la gestion a fait et non ce qu'un virement a ajoute.
+indice de croissance | Le cumul des rendements quotidiens, flux exclus, parti de 1,00 a la premiere photo : a 1,25 le portefeuille a gagne 25 % depuis l'origine.
+photo | L'etat du portefeuille enregistre une fois par jour — valeur, poids, quantites et metriques — et jamais recalcule ensuite.
+prix de cloture | Le dernier cours du dernier jour clos, le seul qui ne bouge plus ; celui du jour en cours change encore, et une decision prise dessus serait fausse sans qu'aucun seuil ne morde.
+USDC | Le dollar numerique qui sert de monnaie au portefeuille : tout y est valorise, et le cash n'est detenu que sous cette forme.
+bande | L'intervalle dans lequel une grandeur surveillee a le droit de flotter sans qu'aucun reequilibrage ne soit propose.
+borne | L'une des deux extremites d'une bande. Elle appartient a la bande : etre exactement dessus ne declenche rien, le pas suivant si.
+trigger | Ce qui a declenche la decision du jour, ou NONE quand rien ne l'a declenchee.
+jambe | Un ordre elementaire d'un reequilibrage : un actif, un sens et un montant. Une decision en compte zero, une, ou plusieurs.
+risque | Le verdict de la couche de risque sur la decision du jour : ACCEPTED si elle passe, REJECTED suivi du code du refus sinon.
+place | Un ordre que l'exchange a accepte et pose au carnet. Les quatre etats qui suivent se partagent les ordres places, et eux seuls.
+execute | Un ordre place entierement rempli : la quantite demandee a change de mains au prix limite ou mieux.
+partiel | Un ordre place dont une partie seulement a ete remplie ; la quantite remplie est donnee entre parentheses.
+non execute | Un ordre place dont rien n'a encore ete rempli, ou qui a pris fin sans l'etre.
+statut non lu | Un ordre place dont le run n'a pas pu relire l'etat : il n'est compte ni execute ni non execute, et ses frais restent inconnus.
+post-only | Un ordre qui ne doit jamais croiser le carnet : s'il le croisait, l'exchange le rejette, et c'est le fonctionnement normal, pas une panne.
+frais reels | Les frais que l'exchange a effectivement preleves sur les ordres du jour, tels qu'il les rend, et jamais une estimation.
+poids | La part que represente une ligne dans la valeur totale, en pourcentage. La colonne Cible donne la part visee, la colonne Ecart la difference des deux.
+ombre | Une strategie evaluee chaque jour mais qui ne place jamais d'ordre : elle sert de point de comparaison, pas de gestion.
+hold | Ne rien faire, et le mesurer : Hold BTC garde du BTC seul, Hold 50/50 garde moitie BTC moitie ETH, aucun des deux n'arbitre jamais.
+ladder | Une strategie en echelle : une ancre par actif, un achat quand le cours passe un palier sous elle, une vente quand il en passe un au-dessus. En phase 1 elle est en ombre.
+DCA | Dollar cost averaging : acheter un montant fixe a intervalle fixe, sans regarder le cours. En phase 1 elle est en ombre.
+max drawdown | La pire baisse jamais subie entre un sommet et le creux qui l'a suivi, sur toute la periode mesuree.
+recul actuel depuis le plus haut | De combien l'indice est descendu sous son plus haut connu, aujourd'hui et non dans le passe. C'est la mesure sur laquelle la suspension se declenche.
+Sharpe 90 j | Le rendement rapporte a son agitation sur les 90 derniers jours : plus il est haut, plus la performance a ete reguliere plutot que chanceuse.
+fenetre OHLCV | Le nombre de jours de cours — ouverture, haut, bas, cloture, volume — que le run a relus pour calculer les courbes de reference.
+mouvement | Une ligne des derniers mouvements : un apport ou un retrait d'USDC, ou un ordre execute en tout ou en partie. Le montant est vu du cash : un retrait ou un achat est negatif. Le TWR neutralise les apports et les retraits ; un ordre ne fait qu'echanger une ligne contre une autre.
+NONE | Aucune bande n'est franchie : le run constate l'etat du portefeuille et ne propose rien.
