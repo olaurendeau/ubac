@@ -32,6 +32,7 @@ import {
   HOLD_BTC_KEYS as REPORT_BTC_KEYS,
   PORTFOLIO_KEYS as REPORT_PORTFOLIO_KEYS,
 } from '../../src/report/daily-report.js';
+import { defauts, lignes, parcourir, ratio, sansMotsAjoutes } from './rendu-html.js';
 
 /**
  * Le rendu du §9, sur un etat fige. **Aucun reseau, aucune cle, aucune base** :
@@ -200,30 +201,28 @@ const avecRun = (patch: Partial<CompletedRun>): DailyReportInput => ({
   run: { ...RUN, ...patch },
 });
 
-/**
- * Le texte du rapport, cellule par cellule. Les separateurs sont poses avant que
- * les balises ne tombent : sans eux, deux cellules voisines se recolleraient et
- * une valeur disparaitrait dans la suivante sans qu'aucune assertion ne bronche.
- */
-const ENTITES: Readonly<Record<string, string>> = {
-  '&amp;': '&',
-  '&lt;': '<',
-  '&gt;': '>',
-  '&quot;': '"',
-  '&#39;': "'",
+/** Les six etats d'un ordre du jour (E28), au niveau du fichier : la matrice du S6 les rejoue un a un. */
+const ordrePlace = (clientOrderId: string, side: 'BUY' | 'SELL'): ReportExecution['rejets'][number]['order'] => ({
+  clientOrderId,
+  asset: 'BTC',
+  quote: 'USDC',
+  side,
+  quantity: dec('0.14') as Quantity,
+  limitPrice: dec('50050') as Price,
+});
+const EXECUTION: ReportExecution = {
+  strategy: 'rebalance',
+  ordres: [
+    { order: ordrePlace('a', 'SELL'), etat: 'EXECUTE', filled: dec('0.14'), fees: dec('4.2042') },
+    { order: ordrePlace('b', 'SELL'), etat: 'PARTIEL', filled: dec('0.05'), fees: dec('1.5') },
+    { order: ordrePlace('c', 'BUY'), etat: 'NON_EXECUTE', filled: dec('0'), fees: dec('0') },
+    { order: ordrePlace('d', 'BUY'), etat: 'NON_LU', filled: dec('0'), fees: null },
+  ],
+  rejets: [
+    { order: ordrePlace('e', 'BUY'), reason: 'INVALID_LIMIT_PRICE_POST_ONLY', postOnly: true },
+    { order: ordrePlace('f', 'SELL'), reason: 'INSUFFICIENT_FUND', postOnly: false },
+  ],
 };
-
-function lignes(html: string): readonly string[] {
-  return html
-    .replace(/<\/t[dh]>/g, ' | ')
-    .replace(/<\/(tr|p|h1|h2|div|table)>/g, '\n')
-    .replace(/<[^>]+>/g, '')
-    /* Apres la chute des balises, et pas avant : sinon un `&lt;b&gt;` echappe redeviendrait une balise et disparaitrait a son tour. */
-    .replace(/&(amp|lt|gt|quot|#39);/g, (entite) => ENTITES[entite] ?? entite)
-    .split('\n')
-    .map((ligne) => ligne.replace(/\s+/g, ' ').replace(/\s*\|\s*$/, '').trim())
-    .filter((ligne) => ligne.length > 0);
-}
 
 // --- Le rapport entier, sur l'etat fige -------------------------------------
 
@@ -1102,27 +1101,6 @@ describe('R17 — 5 000 photos tiennent loin sous la coupure de Gmail', { timeou
 // --- E28 : les ordres du jour -----------------------------------------------
 
 describe('E28 — le rapport distingue place, execute, partiel et non execute, et cite les frais reels', () => {
-  const ordre = (clientOrderId: string, side: 'BUY' | 'SELL'): ReportExecution['rejets'][number]['order'] => ({
-    clientOrderId,
-    asset: 'BTC',
-    quote: 'USDC',
-    side,
-    quantity: dec('0.14') as Quantity,
-    limitPrice: dec('50050') as Price,
-  });
-  const EXECUTION: ReportExecution = {
-    strategy: 'rebalance',
-    ordres: [
-      { order: ordre('a', 'SELL'), etat: 'EXECUTE', filled: dec('0.14'), fees: dec('4.2042') },
-      { order: ordre('b', 'SELL'), etat: 'PARTIEL', filled: dec('0.05'), fees: dec('1.5') },
-      { order: ordre('c', 'BUY'), etat: 'NON_EXECUTE', filled: dec('0'), fees: dec('0') },
-      { order: ordre('d', 'BUY'), etat: 'NON_LU', filled: dec('0'), fees: null },
-    ],
-    rejets: [
-      { order: ordre('e', 'BUY'), reason: 'INVALID_LIMIT_PRICE_POST_ONLY', postOnly: true },
-      { order: ordre('f', 'SELL'), reason: 'INSUFFICIENT_FUND', postOnly: false },
-    ],
-  };
   const rendu = (): readonly string[] => lignes(renderDailyReport(avecRun({ executions: [EXECUTION] })).html);
 
   it('compte chaque etat a part : quatre places, un de chaque, et les deux refus separes', () => {
@@ -1275,5 +1253,277 @@ describe('Derniers mouvements', () => {
       expect(html.normalize('NFD')).not.toMatch(/[̀-ͯ]|[æœÆŒ]/);
       expect(rendu.some((ligne) => ligne.startsWith('mouvement | '))).toBe(true);
     }
+  });
+});
+
+// --- S6 : la couleur se prouve sur le HTML rendu ----------------------------
+
+/**
+ * Les rendus que la couleur devra tous garder lisibles. Chaque cas porte ce qu'il
+ * vise (`vise`, une sous-chaine d'une ligne du texte) : une fixture qui cesserait
+ * de produire le chiffre dont elle porte le nom ferait taire un cas sans qu'il
+ * rougisse. Les noms sont ceux des fichiers de `__snapshots__/texte/`.
+ */
+interface CasDeMatrice {
+  readonly cas: string;
+  readonly input: DailyReportInput;
+  readonly vise: string;
+}
+
+const poidsDe = (btc: string, eth: string, usdc: string): Pick<CompletedRun, 'weights'> => ({
+  weights: { BTC: poids(btc), ETH: poids(eth), USDC: poids(usdc) },
+});
+const ARME: RebalanceParams = { ...DEFAULT_REBALANCE_PARAMS, ratioBandEnabled: true };
+
+const JAMBES: Intent['legs'] = [
+  { asset: 'BTC', quote: 'USDC', side: 'SELL', amount: dec('4000') as UsdcAmount, limitPrice: PRICES.BTC },
+  { asset: 'ETH', quote: 'USDC', side: 'BUY', amount: dec('1500') as UsdcAmount, limitPrice: PRICES.ETH },
+];
+const declenche = (strategy: ReportOutcome['strategy']): Intent => ({
+  ...intent(strategy, 'poids USDC au-dessus de la borne haute : retour a la cible'),
+  trigger: 'CASH_BAND',
+  legs: JAMBES,
+});
+const REJET_SANITY: Verdict = {
+  status: 'REJECTED',
+  rejections: [{ code: 'PRICE_SANITY', reason: 'prix de decision a plus de 2 % du mid' }],
+};
+/** Le jour ou CASH_BAND tire : la production avec le verdict donne, l'ombre du ratio avec le meme declenchement. */
+const AVEC_DECLENCHEMENT = (verdict: Verdict): readonly ReportOutcome[] => [
+  { ...OUTCOMES[0]!, intent: declenche('rebalance'), verdict },
+  { ...OUTCOMES[1]!, intent: declenche('rebalance_ab') },
+  ...OUTCOMES.slice(2),
+];
+
+const execution = (ordres: ReportExecution['ordres'], rejets: ReportExecution['rejets'] = []): DailyReportInput =>
+  avecRun({ executions: [{ strategy: 'rebalance', ordres, rejets }] });
+const etat = (e: ReportExecution['ordres'][number]['etat']): ReportExecution['ordres'] =>
+  EXECUTION.ordres.filter((o) => o.etat === e);
+
+const MOTIF_RESYNC =
+  "ETAT_RESYNCHRONISE : USDC : 32100 sur l'exchange contre 30000 en interne, explique par 2100 USDC de flux enregistres depuis la photo. Jour de resynchronisation : le run refuse d'executer (O6).";
+const MOTIF_MID =
+  'RECALCUL_AU_MID : decision de production recalculee sur le mid en direct (BTC -4.6000 %, ETH -5.3000 % depuis la cloture) ; a la cloture elle proposait CASH_BAND, 2 jambe(s)';
+
+/** Le P&L d'un jour : l'indice du jour et celui de la veille, tout le reste du nominal. */
+const avecIndices = (aujourdhui: string, veille: string): DailyReportInput => ({
+  ...INPUT,
+  run: { ...RUN, benchmarks: { ...BENCHMARKS, [PORTFOLIO_KEYS.index]: dec(aujourdhui) } },
+  previous: { runDate: '2026-09-12', benchmarks: { [PORTFOLIO_KEYS.index]: dec(veille) } },
+});
+
+const MATRICE: readonly CasDeMatrice[] = [
+  { cas: 'nominal', input: INPUT, vise: '2.00 pt de la borne haute' },
+  { cas: 'cash-proche-haut', input: avecRun(poidsDe('0.4099', '0.28', '0.3101')), vise: '1.99 pt de la borne haute' },
+  { cas: 'cash-proche-bas', input: avecRun(poidsDe('0.4249', '0.30', '0.2751')), vise: '0.51 pt de la borne basse' },
+  { cas: 'cash-sur-borne-haute', input: avecRun(poidsDe('0.37', '0.30', '0.33')), vise: 'sur la borne haute' },
+  { cas: 'cash-sur-borne-basse', input: avecRun(poidsDe('0.43', '0.30', '0.27')), vise: 'sur la borne basse' },
+  {
+    cas: 'franchie-ecart-5-pile',
+    input: avecRun(poidsDe('0.38', '0.27', '0.35')),
+    vise: 'USDC | 31000.00000000 | 35.00 % | 30.00 % | +5.00 %',
+  },
+  { cas: 'franchie-ecart-au-dessus-de-5', input: avecRun(poidsDe('0.3624', '0.28', '0.3576')), vise: '+5.76 %' },
+  { cas: 'ecart-sous-5', input: avecRun(poidsDe('0.3601', '0.29', '0.3499')), vise: '+4.99 %' },
+  { cas: 'ecart-negatif-au-dessus-de-5', input: avecRun(poidsDe('0.45', '0.24', '0.31')), vise: '24.00 % | 30.00 % | -6.00 %' },
+  { cas: 'ratio-arme-loin', input: { ...INPUT, params: ARME }, vise: '0.2690 de la borne haute' },
+  { cas: 'ratio-arme-proche', input: { ...avecRun(poidsDe('0.425', '0.25', '0.325')), params: ARME }, vise: '0.0333 de la borne haute' },
+  { cas: 'ratio-arme-franchi', input: { ...avecRun(poidsDe('0.50', '0.20', '0.30')), params: ARME }, vise: 'Bande de ratio (B) | BTC/ETH 2.5000' },
+  {
+    cas: 'declenchement-accepte',
+    input: avecRun({ ...poidsDe('0.3624', '0.28', '0.3576'), outcomes: AVEC_DECLENCHEMENT(ACCEPTE) }),
+    vise: 'rebalance | CASH_BAND | 2 jambe(s) | ACCEPTED',
+  },
+  {
+    cas: 'rejet-prix-et-ombre-cash-band',
+    input: avecRun({ ...poidsDe('0.3624', '0.28', '0.3576'), outcomes: AVEC_DECLENCHEMENT(REJET_SANITY) }),
+    vise: 'rebalance | CASH_BAND | 2 jambe(s) | REJECTED:PRICE_SANITY',
+  },
+  { cas: 'ordres-six-etats', input: avecRun({ executions: [EXECUTION] }), vise: 'Rejete (autre motif) | INSUFFICIENT_FUND' },
+  { cas: 'ordres-executes', input: execution([...etat('EXECUTE'), ...etat('PARTIEL')]), vise: 'Partiel (0.05000000)' },
+  { cas: 'ordres-non-execute-seul', input: execution(etat('NON_EXECUTE')), vise: 'Non execute | 0.00 USDC' },
+  { cas: 'ordres-post-only-seul', input: execution([], EXECUTION.rejets.filter((r) => r.postOnly)), vise: 'Rejete (post-only) | 1' },
+  { cas: 'ordres-statut-non-lu-seul', input: execution(etat('NON_LU')), vise: 'Statut non lu | inconnus' },
+  { cas: 'ordres-autre-motif-seul', input: execution([], EXECUTION.rejets.filter((r) => !r.postOnly)), vise: 'Rejete (autre motif) | 1' },
+  {
+    cas: 'suspension',
+    input: avecRun({ suspension: { status: 'ACTIVE', drawdown: dec('-0.2612'), reason: 'SUSPENSION_DRAWDOWN : recul a -26.12 %' } }),
+    vise: 'SUSPENSION_DRAWDOWN : recul a -26.12 %',
+  },
+  {
+    cas: 'resynchronisation-expliquee',
+    input: avecRun({ resync: { status: 'RESYNCHRONIZED', explainedByFlows: true, reason: MOTIF_RESYNC } }),
+    vise: 'Etat interne resynchronise, ecart explique',
+  },
+  {
+    cas: 'recalcul-au-mid',
+    input: avecRun({
+      liveRecompute: { status: 'RECOMPUTED', reason: MOTIF_MID },
+      outcomes: OUTCOMES.map((o) =>
+        o.isShadow ? o : { ...o, intent: { ...o.intent, weightsBefore: { ...WEIGHTS, USDC: poids('0.3576') } } },
+      ),
+    }),
+    vise: 'Poids USDC de la production au mid : 35.76 %',
+  },
+  { cas: 'pnl-negatif', input: avecIndices('0.90', '0.95'), vise: '100000.00 USDC | -5.26 % | -10.00 %' },
+  { cas: 'pnl-nul', input: avecIndices('1', '1'), vise: '100000.00 USDC | +0.00 % | +0.00 %' },
+  {
+    cas: 'degrade-sans-veille-ni-serie',
+    input: { run: RUN, params: DEFAULT_REBALANCE_PARAMS, movements: SANS_MOUVEMENT },
+    vise: 'Graphe indisponible',
+  },
+  {
+    cas: 'degrade-metriques-absentes',
+    input: avecRun({
+      benchmarks: { [PORTFOLIO_KEYS.index]: dec('1.25') },
+      benchmarkGaps: [
+        { key: 'hold_btc_*', code: 'EMPTY_SERIES', reason: 'aucun jour de marche fourni' },
+        { key: HOLD_5050_KEYS.sharpe, code: 'WINDOW_INCOMPLETE', reason: 'fenetre de 90 rendements non pleine' },
+      ],
+      drawdown: { status: 'UNAVAILABLE', code: 'NO_PREVIOUS_SNAPSHOT', reason: 'aucune photo anterieure' },
+    }),
+    vise: 'Recul actuel depuis le plus haut : indisponible',
+  },
+  {
+    cas: 'degrade-mouvements-illisibles',
+    input: { ...INPUT, movements: { status: 'UNREADABLE', reason: 'connexion refusee' } },
+    vise: "Les derniers mouvements n'ont pas pu etre lus",
+  },
+  { cas: 'distance-indefinie', input: avecRun(poidsDe('0.41', '0.28', 'NaN')), vise: 'indisponible — valeur NaN' },
+];
+
+/** Plus que n'en porte la plus courte des tables : un parcours qui n'en verrait que quelques-uns serait aveugle. */
+const TEXTES_AU_MOINS = 100;
+
+describe('S6 — la couleur se prouve sur le HTML rendu, cas par cas', () => {
+  it('la matrice est faite de cas distincts, nommes pour leur fichier, et chacun vise ce qu’il dit', () => {
+    expect(MATRICE.length).toBeGreaterThanOrEqual(28);
+    expect(new Set(MATRICE.map((c) => c.cas)).size).toBe(MATRICE.length);
+    for (const { cas, input, vise } of MATRICE) {
+      expect(cas).toMatch(/^[a-z0-9-]+$/);
+      expect(lignes(renderDailyReport(input).html).some((ligne) => ligne.includes(vise)), cas).toBe(true);
+    }
+  });
+
+  describe.each(MATRICE)('$cas', ({ cas, input }) => {
+    const html = renderDailyReport(input).html;
+
+    it('structure et contraste : balisage permis, #rrggbb partout, fond et couleur ensemble, 4.5:1', () => {
+      expect(defauts(html)).toEqual([]);
+      expect(parcourir(html).textes.length).toBeGreaterThan(TEXTES_AU_MOINS);
+    });
+
+    /* Le texte d'aujourd'hui, enregistre avant toute couleur : celui d'apres n'en differe que par les quatre mots ajoutes. */
+    it('texte de reference : retirer balises et styles redonne le texte d’aujourd’hui', async () => {
+      await expect(`${sansMotsAjoutes(lignes(html)).join('\n')}\n`).toMatchFileSnapshot(`__snapshots__/texte/${cas}.txt`);
+    });
+  });
+});
+
+describe('S6 — les controles mordent', () => {
+  const dans = (corps: string): string => `<div style="color:#16191d">${corps}</div>`;
+
+  it('un texte a 4.48:1 est refuse, un texte a 4.54:1 passe', () => {
+    expect(ratio('#777777', '#ffffff')).toBeCloseTo(4.48, 2);
+    expect(defauts(dans('<span style="color:#777777">gris</span>')).join()).toContain('#777777 sur #ffffff fait 4.48:1');
+    expect(defauts(dans('<span style="color:#767676">gris</span>'))).toEqual([]);
+    expect(ratio('#000000', '#ffffff')).toBeCloseTo(21, 5);
+  });
+
+  it('la paire d’un texte est celle de l’ancetre le plus proche, couleur et fond separement', () => {
+    const html = '<table><tr><td style="background:#fdecec;color:#5c1410"><b><span style="color:#fdecec">x</span></b></td></tr></table>';
+    expect(parcourir(html).textes).toEqual([{ texte: 'x', couleur: '#fdecec', fond: '#fdecec' }]);
+    expect(defauts(html).join()).toContain('#fdecec sur #fdecec fait 1.00:1');
+    expect(parcourir('<p>a</p>').textes).toEqual([{ texte: 'a', couleur: '#16191d', fond: '#ffffff' }]);
+  });
+
+  it('un fond sans couleur est refuse', () => {
+    expect(defauts('<table><tr><td style="background:#fff4db">x</td></tr></table>').join()).toContain(
+      'pose le fond #fff4db sans poser sa couleur',
+    );
+    expect(defauts('<table><tr><td style="background:#fff4db;color:#4d3500">x</td></tr></table>')).toEqual([]);
+    /* Le texte d'un descendant ne suffit pas : la couleur doit etre posee avec le fond, sur le meme element. */
+    expect(defauts('<td style="background:#fff4db"><span style="color:#4d3500">x</span></td>').join()).toContain('sans poser sa couleur');
+  });
+
+  it('un fond sans texte n’est admis que sur une barre du graphe, et la barre doit tenir 3:1 sur blanc', () => {
+    expect(defauts('<td style="background:#eef1f5"></td>').join()).toContain("n'est pas une barre du graphe");
+    expect(defauts('<div style="background:#1e7a46"></div>').join()).toContain("n'est pas une barre du graphe");
+    expect(defauts('<div style="height:40px;background:#1e7a46"></div>')).toEqual([]);
+    expect(defauts('<div style="height:40px;background:#b3261e"></div>')).toEqual([]);
+    expect(defauts('<div style="height:40px;background:#cccccc"></div>').join()).toContain('barre #cccccc sous 3:1 sur blanc');
+  });
+
+  it('une bordure en #rrggbb n’est pas une couleur de texte, et le nom de la propriete est compare en entier', () => {
+    const html = '<div style="border-left:3px solid #c0392b;color:#16191d">x</div>';
+    expect(defauts(html)).toEqual([]);
+    expect(parcourir('<div style="border-left:3px solid #c0392b">x</div>').textes[0]?.couleur).toBe('#16191d');
+    /* `background-color` n'est pas `background` : sans fond reconnu, aucune regle de fond ne s'applique. */
+    expect(parcourir('<div style="background-color:#ff0000">x</div>').textes[0]?.fond).toBe('#ffffff');
+    expect(defauts('<div style="border-bottom:1px solid #eceef1">x</div>')).toEqual([]);
+  });
+
+  it('toute couleur est un #rrggbb en minuscules', () => {
+    for (const valeur of ['red', '#fff', '#ABCDEF', 'rgb(0,0,0)', '#16191d !important']) {
+      expect(defauts(`<div style="color:${valeur}">x</div>`).join(), valeur).toContain("n'est pas un #rrggbb");
+    }
+    expect(defauts('<div style="background:#16191d;color:#ffffff">x</div>')).toEqual([]);
+  });
+
+  it('ni <style>, ni class, ni <script>, ni <img>', () => {
+    for (const interdit of ['<style>p{}</style>', '<p class="a">x</p>', '<script>1</script>', '<img src="a">']) {
+      expect(defauts(interdit).join(), interdit).toContain('balisage interdit');
+    }
+    expect(defauts('<p>x</p>')).toEqual([]);
+  });
+
+  it('la pile de balises : <br> n’a pas de fermeture, toute autre fermeture doit correspondre', () => {
+    expect(parcourir('<p>a<br>b</p>').textes.map((t) => t.texte)).toEqual(['a', 'b']);
+    expect(() => parcourir('<p>a</div>')).toThrow('</div> ferme <p>');
+    expect(() => parcourir('<p><b>a</p></b>')).toThrow('</p> ferme <b>');
+    expect(() => parcourir('a</p>')).toThrow('ferme rien');
+    expect(() => parcourir('<div><p>a</p>')).toThrow('jamais ferme');
+  });
+
+  describe('sansMotsAjoutes — quatre regles, chacune retire son mot et rien d’autre', () => {
+    it('« ALERTE — » en tete de ligne', () => {
+      expect(sansMotsAjoutes(['ALERTE — SUSPENSION_DRAWDOWN : recul a -26.12 %'])).toEqual(['SUSPENSION_DRAWDOWN : recul a -26.12 %']);
+      expect(sansMotsAjoutes(['Un ALERTE — au milieu', 'ALERTE sans tiret'])).toEqual(['Un ALERTE — au milieu', 'ALERTE sans tiret']);
+    });
+
+    it('« — proche » en fin de ligne « Bande de … », et « franchie — … » reste intacte', () => {
+      const proche = 'Bande de cash (A) | USDC 31.01 % | [27.00 %, 33.00 %] | 1.99 pt de la borne haute — proche';
+      const franchie = 'Bande de cash (A) | USDC 35.76 % | [27.00 %, 33.00 %] | franchie — 2.76 pt au-dela de la borne haute';
+      const sur = 'Bande de cash (A) | USDC 33.00 % | [27.00 %, 33.00 %] | sur la borne haute — la bande est fermee, le moindre pas au-dela declenche';
+      expect(sansMotsAjoutes([proche])).toEqual(['Bande de cash (A) | USDC 31.01 % | [27.00 %, 33.00 %] | 1.99 pt de la borne haute']);
+      expect(sansMotsAjoutes([franchie, sur])).toEqual([franchie, sur]);
+      expect(sansMotsAjoutes(['Une note — proche'])).toEqual(['Une note — proche']);
+    });
+
+    it('« !» en fin de ligne d’allocation BTC, ETH ou USDC', () => {
+      for (const actif of ['BTC', 'ETH', 'USDC']) {
+        expect(sansMotsAjoutes([`${actif} | 0.5 | 35.76 % | 30.00 % | +5.76 % !`])).toEqual([`${actif} | 0.5 | 35.76 % | 30.00 % | +5.76 %`]);
+      }
+      expect(sansMotsAjoutes(['BTC | 0.5 | 41.00 % | 40.00 % | +1.00 %', 'Un cri !', 'Hold BTC | +1.00 % !'])).toEqual([
+        'BTC | 0.5 | 41.00 % | 40.00 % | +1.00 %',
+        'Un cri !',
+        'Hold BTC | +1.00 % !',
+      ]);
+    });
+
+    it('la phrase de l’encadre ATTENTION, en entier et seule', () => {
+      const phrase = "Attention : au moins un ordre n'a pas abouti normalement. Voir les lignes colorees ci-dessus.";
+      expect(sansMotsAjoutes(['avant', phrase, 'apres'])).toEqual(['avant', 'apres']);
+      expect(sansMotsAjoutes(["Attention : au moins un ordre n'a pas abouti normalement."])).toEqual([
+        "Attention : au moins un ordre n'a pas abouti normalement.",
+      ]);
+    });
+
+    it('sur le texte d’aujourd’hui, elles ne changent rien', () => {
+      for (const { input } of MATRICE) {
+        const texte = lignes(renderDailyReport(input).html);
+        expect(sansMotsAjoutes(texte)).toEqual(texte);
+      }
+    });
   });
 });

@@ -498,8 +498,8 @@ const TABLE = 'width:100%;border-collapse:collapse;font-size:14px';
 const CELL = 'padding:4px 6px;border-bottom:1px solid #eceef1;text-align:left;vertical-align:top';
 const HEAD = `${CELL};font-weight:600;color:#5a6472`;
 const NOTE = 'font-size:13px;color:#5a6472;margin:6px 0';
-const ALERT = 'background:#fdecec;border-left:3px solid #c0392b;padding:8px;margin:10px 0';
-const INFO = 'background:#eef4fb;border-left:3px solid #2c6aa0;padding:8px;margin:10px 0';
+const ALERT = 'background:#fdecec;color:#5c1410;border-left:3px solid #c0392b;padding:8px;margin:10px 0';
+const INFO = 'background:#eef4fb;color:#12324f;border-left:3px solid #2c6aa0;padding:8px;margin:10px 0';
 
 /**
  * Une cellule, etalee sur plusieurs colonnes quand une raison prend la place des
