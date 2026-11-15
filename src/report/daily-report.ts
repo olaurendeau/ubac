@@ -504,6 +504,10 @@ const GRIS = 'color:#5a6472';
 /** La ligne Portefeuille de la comparaison : posee sur chaque case, elle l'emporte sur CELL. */
 const PORTEFEUILLE = 'background:#f3f5f8;color:#16191d;font-weight:700';
 const AMBRE = 'background:#fff4db;color:#4d3500;font-weight:700';
+/** Anormal : le rouge de la pastille REJECTED, sur la case d'une distance franchie ou d'un ordre qui n'a pas abouti normalement. */
+const ANORMAL = 'background:#fdecec;color:#8a1c12;font-weight:700';
+/** Un compte nul ou des frais nuls : plus clair que le gris des notes, la case reste lisible a 4.5:1. */
+const NUL = 'color:#6b7482';
 const PASTILLE = 'font-weight:700;padding:1px 6px;border-radius:3px';
 const PASTILLE_ACCEPTEE = `background:#e3f3e9;color:#14532d;${PASTILLE}`;
 const PASTILLE_REFUSEE = `background:#fdecec;color:#8a1c12;${PASTILLE}`;
@@ -511,6 +515,13 @@ const PASTILLE_REFUSEE = `background:#fdecec;color:#8a1c12;${PASTILLE}`;
 /** Un ecart d'allocation d'au moins 5 points, lu sur les poids a 4 decimales : le seuil du renderer, pas un parametre de la strategie. */
 const ECART_ALLOCATION_ALERTE = new Decimal('0.05');
 const POIDS_SCALE = 4;
+
+/**
+ * « Proche » (decision B) : strictement moins de 2 points de la borne de cash, strictement moins de 0.10 de la borne du ratio.
+ * Le seuil se juge sur la marge imprimee, a la meme echelle que son texte : `2.00 pt` n'est jamais proche, `1.99 pt` l'est.
+ */
+const PROCHE_CASH = new Decimal('0.02');
+const PROCHE_RATIO = new Decimal('0.10');
 
 const indisponible = (): string => `<span style="${GRIS}">indisponible</span>`;
 
@@ -543,6 +554,7 @@ const HEAD_AMBRE = `${CELL_BASE};font-weight:600;color:#4d3500;background:#fff4d
 const HEAD_VIDE = `${CELL_BASE};font-weight:600;color:#5a6472`;
 const NOTE = 'font-size:13px;color:#5a6472;margin:6px 0';
 const ALERT = 'background:#fdecec;color:#5c1410;border-left:3px solid #c0392b;padding:8px;margin:10px 0';
+const ATTENTION = 'background:#fff4db;color:#4d3500;border-left:3px solid #c98a00;padding:8px;margin:10px 0';
 const INFO = 'background:#eef4fb;color:#12324f;border-left:3px solid #2c6aa0;padding:8px;margin:10px 0';
 
 /**
@@ -591,6 +603,29 @@ function distanceText(distance: BandDistance, show: (value: Decimal) => string):
 }
 
 /**
+ * La cellule d'une distance : franchie en rouge, sur la borne ou proche en ambre, indisponible en gris, le reste sans couleur.
+ * `proche` est la marge sous laquelle la borne est « proche », a l'echelle imprimee ; sur la borne, le texte dit deja « sur la
+ * borne » et n'ajoute rien.
+ */
+function distanceCell(
+  distance: BandDistance,
+  show: (value: Decimal) => string,
+  scale: number,
+  proche: Decimal,
+): Cell {
+  const text = distanceText(distance, show);
+  switch (distance.status) {
+    case 'CROSSED':
+      return { text, style: ANORMAL };
+    case 'INSIDE':
+      if (distance.onEdge) return { text, style: AMBRE };
+      return distance.gap.toDecimalPlaces(scale).lt(proche) ? { text: `${text} — proche`, style: AMBRE } : text;
+    case 'UNDEFINED':
+      return { text, style: GRIS };
+  }
+}
+
+/**
  * Le poids USDC contre sa bande, le ratio BTC/ETH contre la sienne quand B est
  * arme. Sinon le rapport le dit : une ligne absente se lirait « rien a signaler »,
  * alors que la bande n'est simplement pas surveillee (§5.2).
@@ -599,12 +634,12 @@ function distanceSection(input: DailyReportInput): string {
   const { run, params } = input;
   const bande = cashBand(params);
   const cash = bandDistance(run.weights.USDC, bande.lower, bande.upper);
-  const rows: string[][] = [
+  const rows: (readonly Cell[])[] = [
     [
       'Bande de cash (A)',
       `USDC ${pct(run.weights.USDC)}`,
       `[${pct(bande.lower)}, ${pct(bande.upper)}]`,
-      distanceText(cash, points),
+      distanceCell(cash, points, POIDS_SCALE, PROCHE_CASH),
     ],
   ];
 
@@ -615,7 +650,7 @@ function distanceSection(input: DailyReportInput): string {
       'Bande de ratio (B)',
       `BTC/ETH ${ratioText(ratio)}`,
       `[${ratioText(bandeRatio.lower)}, ${ratioText(bandeRatio.upper)}]`,
-      distanceText(bandDistance(ratio, bandeRatio.lower, bandeRatio.upper), ratioText),
+      distanceCell(bandDistance(ratio, bandeRatio.lower, bandeRatio.upper), ratioText, RATIO_SCALE, PROCHE_RATIO),
     ]);
   }
 
@@ -681,6 +716,23 @@ const ETATS: readonly (readonly [ReportOrdre['etat'], string])[] = [
 
 const jambe = (order: Order): string => `${order.side} ${order.asset} ${order.quantity.toFixed(8)}`;
 
+/** Ce que dit la couleur d'un etat : ambre « a surveiller » (non execute, refus post-only), rouge « anormal » (autre motif, statut non lu). */
+const COULEUR_ETAT: Readonly<Record<string, string>> = {
+  'Non execute': AMBRE,
+  'Rejete (post-only)': AMBRE,
+  'Rejete (autre motif)': ANORMAL,
+  'Statut non lu': ANORMAL,
+};
+
+/** La couleur se pose sur la case, jamais dans un span : le texte reste le premier contenu de sa cellule. */
+const etatCell = (libelle: string): Cell => ({ text: libelle, style: COULEUR_ETAT[libelle] });
+
+/** Un compte nul est gris ; non nul, il prend la couleur de son etat. */
+const compteCell = (libelle: string, n: number): Cell => ({
+  text: String(n),
+  style: n === 0 ? NUL : COULEUR_ETAT[libelle],
+});
+
 function etatText(ordre: ReportOrdre): string {
   const libelle = ETATS.find(([etat]) => etat === ordre.etat)?.[1] ?? ordre.etat;
   return ordre.etat === 'PARTIEL' ? `${libelle} (${ordre.filled.toFixed(8)})` : libelle;
@@ -699,16 +751,16 @@ function etatText(ordre: ReportOrdre): string {
 function ordresSection(run: CompletedRun): string {
   const ordres = run.executions.flatMap((execution) => execution.ordres);
   const rejets = run.executions.flatMap((execution) => execution.rejets);
-  const nombre = (n: number): string => String(n);
   const frais = ordres.reduce((total, ordre) => (ordre.fees === null ? total : total.plus(ordre.fees)), new Decimal(0));
   const comptes = table(
     ['Ordres', 'Nombre'],
     [
-      ['Place', nombre(ordres.length)],
-      ...ETATS.map(([etat, libelle]) => [libelle, nombre(ordres.filter((o) => o.etat === etat).length)]),
-      ['Rejete (post-only)', nombre(rejets.filter((r) => r.postOnly).length)],
-      ['Rejete (autre motif)', nombre(rejets.filter((r) => !r.postOnly).length)],
-      ['Frais reels', usdc(frais)],
+      ['Place', compteCell('Place', ordres.length)],
+      ...ETATS.map(([etat, libelle]): readonly Cell[] => [libelle, compteCell(libelle, ordres.filter((o) => o.etat === etat).length)]),
+      ['Rejete (post-only)', compteCell('Rejete (post-only)', rejets.filter((r) => r.postOnly).length)],
+      ['Rejete (autre motif)', compteCell('Rejete (autre motif)', rejets.filter((r) => !r.postOnly).length)],
+      /* Nul sur le chiffre imprime, comme les comptes. */
+      ['Frais reels', { text: usdc(frais), style: frais.toDecimalPlaces(SCALE).isZero() ? NUL : undefined }],
     ],
   );
   if (ordres.length === 0 && rejets.length === 0) {
@@ -717,14 +769,30 @@ function ordresSection(run: CompletedRun): string {
   const detail = table(
     ['Jambe', 'Limite', 'Etat', 'Frais ou motif'],
     [
-      ...ordres.map((o) => [jambe(o.order), usdc(o.order.limitPrice), etatText(o), o.fees === null ? 'inconnus' : usdc(o.fees)]),
-      ...rejets.map((r) => [jambe(r.order), usdc(r.order.limitPrice), r.postOnly ? 'Rejete (post-only)' : 'Rejete (autre motif)', escape(r.reason)]),
+      ...ordres.map((o): readonly Cell[] => [
+        jambe(o.order),
+        usdc(o.order.limitPrice),
+        etatCell(etatText(o)),
+        o.fees === null ? 'inconnus' : usdc(o.fees),
+      ]),
+      ...rejets.map((r): readonly Cell[] => [
+        jambe(r.order),
+        usdc(r.order.limitPrice),
+        etatCell(r.postOnly ? 'Rejete (post-only)' : 'Rejete (autre motif)'),
+        escape(r.reason),
+      ]),
     ],
   );
+  /* Un refus post-only ou un ordre au repos est attendu ; un autre refus, ou un statut que l'exchange n'a pas rendu, ne l'est pas. */
+  const anormal = rejets.some((r) => !r.postOnly) || ordres.some((o) => o.etat === 'NON_LU');
+  const attention = anormal
+    ? `<div style="${ATTENTION}"><strong>Attention : au moins un ordre n'a pas abouti normalement.</strong> Voir les lignes colorees ci-dessus.</div>`
+    : '';
   return section(
     'Ordres du jour',
     comptes +
       detail +
+      attention +
       `<p style="${NOTE}">Etat lu juste apres le placement : un ordre limit au repos n'est en general pas encore execute, et la suite se lit les jours suivants. Aucune jambe refusee n'est replacee dans le run.</p>`,
   );
 }
@@ -1168,7 +1236,7 @@ export function renderDailyReport(input: DailyReportInput): DailyReportMail {
 
   const alerte =
     run.suspension.status === 'ACTIVE'
-      ? `<div style="${ALERT}">${escape(run.suspension.reason)}</div>`
+      ? `<div style="${ALERT}"><strong>ALERTE — </strong>${escape(run.suspension.reason)}</div>`
       : '';
 
   const jour = dayReturn(run, input.previous);

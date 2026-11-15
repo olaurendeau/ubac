@@ -702,24 +702,26 @@ rééquilibrage » et non d'« un seul mouvement », pour ne pas croiser ce sens
 Demande de l'opérateur : « plus de couleurs dans le mail pour que ce soit plus
 lisible ». Le design est dans [design/rapport-couleurs/](design/rapport-couleurs/)
 (la page, et son README qui porte les décisions A à E et prévaut sur le bloc
-« Décisions (en attente) » de la page). Le lot s'écrit en trois temps : ce
-harnais d'abord, puis les couleurs de l'en-tête, des tableaux et du graphe.
+« Décisions (en attente) » de la page). Le lot s'est écrit en trois temps : le
+harnais d'abord, puis les couleurs de l'en-tête, des tableaux et du graphe, enfin
+celles qui signalent ce qui demande l'attention (alerte, ordres anormaux, bande
+proche).
 
 **La règle : la couleur redouble un signe, un mot ou un chiffre déjà imprimés.
 Jamais seule.** Un lecteur qui ne distingue pas les teintes, un client qui les
-écrase ou un affichage en niveaux de gris lit le même rapport. Vert et rouge sont
-réservés à la performance et au verdict de risque ; l'ambre dit « à surveiller »,
-le rouge « anormal », le bleu « information ».
+écrase ou un affichage en niveaux de gris lit le même rapport. Le vert et le
+rouge pleins (`#1e7a46`, `#b3261e`) sont réservés à la performance ; l'ambre dit
+« à surveiller », le rouge pâle « anormal » (verdict refusé, bande franchie, ordre
+qui n'a pas abouti normalement, suspension), le vert pâle « accepté », le bleu
+« information ».
 
 Elle n'ajoute que **quatre expressions** au texte (décision C) : « ALERTE — »
 devant le texte de la suspension, « — proche » au bout de la distance à une borne
 de moins de 2 points (de 0,10 pour le ratio), « ! » après un écart d'allocation
 d'au moins 5 points, et la phrase de l'encadré ATTENTION. Le lexique n'en glose
-aucune : aucune n'est un terme du rapport. Après le deuxième temps (signe,
-verdict, début de section) seul « ! » est imprimé ; les trois autres arrivent
-avec le troisième.
+aucune : aucune n'est un terme du rapport.
 
-### Ce qui est coloré après le deuxième temps
+### Ce qui est coloré
 
 Tout est en ligne, `style="…"`, en `#rrggbb` ; ni `<style>`, ni classe. Une
 couleur de case de tableau est posée sur le `<td>`, jamais dans un `<span>` : le
@@ -735,6 +737,14 @@ signé, la pastille d'un verdict, la note « Recul actuel »).
 | REJECTED:codes | `#fdecec` | `#8a1c12` gras | le mot et les codes |
 | Trigger `NONE`, ligne d'ombre, jambes et motif d'une production sans décision | — | `#5a6472` | le mot `NONE`, « (ombre) » |
 | Écart d'allocation d'au moins 5 points (décision A) | `#fff4db` | `#4d3500` gras | la marque « ! » |
+| Distance à moins de 2 points (ratio : 0.10) de la borne, ou exactement sur la borne (décision B) | `#fff4db` | `#4d3500` gras | « — proche » ; « sur la borne » |
+| Distance « franchie — … » | `#fdecec` | `#8a1c12` gras | le mot « franchie » |
+| Distance « indisponible — … » | — | `#5a6472` | le mot |
+| Compte nul du tableau des ordres, frais réels à `0.00 USDC` | — | `#6b7482` | le chiffre `0` |
+| `Non execute` et `Rejete (post-only)` non nuls (compte, et état du détail) | `#fff4db` | `#4d3500` gras | le libellé |
+| `Rejete (autre motif)` et `Statut non lu` non nuls (compte, et état du détail) | `#fdecec` | `#8a1c12` gras | le libellé |
+| Encadré ALERTE (suspension) | `#fdecec`, barre `#c0392b` | `#5c1410` | le mot « ALERTE — » |
+| Encadré ATTENTION (ordre anormal) | `#fff4db`, barre `#c98a00` | `#4d3500` | sa phrase |
 | Titre de section | `#eef1f5`, barre `#2c6aa0` | `#16191d` | le titre |
 | En-tête de tableau | `#f3f5f8` | `#5a6472` | — |
 | En-tête de « Métriques indisponibles » | `#fff4db` | `#4d3500` | le titre de la section |
@@ -753,6 +763,21 @@ De même l'écart d'allocation, lu sur les poids à 4 décimales : 4,9949 s'impr
 5 points est une constante du rendu, pas un paramètre de la stratégie. Aucun
 fond n'est posé sur le corps (décision D) ; la case vide qui ouvre l'en-tête de
 la comparaison n'en pose pas non plus.
+
+**« Proche » se juge sur la marge imprimée** (décision B), à l'échelle de son
+texte : 4 décimales de poids pour le cash (`2.00 pt`), 4 décimales de ratio. Une
+marge imprimée `2.00 pt` n'est jamais proche, même si elle vaut 1,995 ; `1.99 pt`
+l'est. Le seuil est strict : moins de 2 points, moins de 0.10 de ratio, deux
+constantes du rendu. Exactement sur la borne, la case est ambre sans suffixe : le
+texte dit déjà « sur la borne ».
+
+**Les ordres.** La couleur d'un compte ou d'un état se pose sur le `<td>` et
+jamais dans un `<span>`, et la case du libellé reste nue : le texte d'une cellule
+est son premier contenu, ce que `test/jobs/daily.test.ts` lit. L'encadré
+ATTENTION suit le détail des ordres et précède la note ; il n'existe que si un
+ordre est `Rejete (autre motif)` ou `Statut non lu` — jamais pour un
+`Non execute` ou un refus post-only seuls, ni sans ordre, ni quand les mouvements sont
+illisibles.
 
 ### Trois preuves, sur le HTML rendu et non sur les constantes
 
@@ -779,7 +804,8 @@ verdict refusé, états dégradés, distance indéfinie.
 3. **Texte inchangé.** Pour chaque cas de la matrice, le texte du rapport
    (`lignes()`) est enregistré dans `test/report/__snapshots__/texte/<cas>.txt`
    **avant** toute couleur ; après, il doit s'y retrouver, une fois retirées les
-   quatre expressions ci-dessus (`sansMotsAjoutes()`, une liste fermée). Ces
+   quatre expressions ci-dessus (`sansMotsAjoutes()`, une liste fermée dont
+   chaque règle est ancrée sur la forme de sa ligne). Ces
    fichiers sont générés, et ne se relisent pas : ils se régénèrent à
    l'identique tant que le texte ne bouge pas.
 

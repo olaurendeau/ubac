@@ -1106,7 +1106,7 @@ describe('E28 — le rapport distingue place, execute, partiel et non execute, e
   it('compte chaque etat a part : quatre places, un de chaque, et les deux refus separes', () => {
     const section = rendu();
     const debut = section.indexOf('Ordres du jour');
-    expect(section.slice(debut, debut + 18)).toEqual([
+    expect(section.slice(debut, debut + 19)).toEqual([
       'Ordres du jour',
       'Ordres | Nombre',
       'Place | 4',
@@ -1125,6 +1125,7 @@ describe('E28 — le rapport distingue place, execute, partiel et non execute, e
       'BUY BTC 0.14000000 | 50050.00 USDC | Statut non lu | inconnus',
       'BUY BTC 0.14000000 | 50050.00 USDC | Rejete (post-only) | INVALID_LIMIT_PRICE_POST_ONLY',
       'SELL BTC 0.14000000 | 50050.00 USDC | Rejete (autre motif) | INSUFFICIENT_FUND',
+      "Attention : au moins un ordre n'a pas abouti normalement. Voir les lignes colorees ci-dessus.",
       "Etat lu juste apres le placement : un ordre limit au repos n'est en general pas encore execute, et la suite se lit les jours suivants. Aucune jambe refusee n'est replacee dans le run.",
     ]);
   });
@@ -1541,14 +1542,53 @@ describe('S6 — les controles mordent', () => {
       ]);
     });
 
-    /* Avant la couleur, elles ne changeaient rien. Depuis S5, « ! » marque un ecart d'allocation de 5 points, et lui seul : tout autre mot ajoute (T3) fait echouer ce test. */
-    it('sur le texte rendu de chaque cas, elles ne retirent que « ! » en fin de ligne d’allocation', () => {
+    /*
+     * Un oracle indépendant de `sansMotsAjoutes` : chaque mot est retire a son endroit exact, par une regle ancree sur la forme
+     * de sa ligne, et le nombre de mots retires par cas est ecrit en dur. Une cinquieme regle, ou une regle qui mangerait plus
+     * qu'elle ne doit, fait echouer l'un des deux ; une simple idempotence ne ferait echouer ni l'un ni l'autre.
+     */
+    const MOTS_PAR_CAS: Readonly<Record<string, { alerte?: number; proche?: number; marque?: number; attention?: number }>> = {
+      'cash-proche-haut': { proche: 1 },
+      'cash-proche-bas': { proche: 1 },
+      'franchie-ecart-5-pile': { marque: 1 },
+      'franchie-ecart-au-dessus-de-5': { marque: 1 },
+      'ecart-negatif-au-dessus-de-5': { marque: 2 },
+      'ratio-arme-proche': { proche: 2, marque: 1 },
+      'ratio-arme-franchi': { marque: 2 },
+      'declenchement-accepte': { marque: 1 },
+      'rejet-prix-et-ombre-cash-band': { marque: 1 },
+      'ordres-six-etats': { attention: 1 },
+      'ordres-statut-non-lu-seul': { attention: 1 },
+      'ordres-autre-motif-seul': { attention: 1 },
+      suspension: { alerte: 1 },
+    };
+
+    it('sur le texte rendu de chaque cas, elles retirent exactement les mots ajoutes, a leur place', () => {
+      const ATTENTION = "Attention : au moins un ordre n'a pas abouti normalement. Voir les lignes colorees ci-dessus.";
       for (const { cas, input } of MATRICE) {
         const texte = lignes(renderDailyReport(input).html);
-        expect(
-          sansMotsAjoutes(texte),
-          cas,
-        ).toEqual(texte.map((ligne) => (/^(BTC|ETH|USDC) \| /.test(ligne) && ligne.endsWith(' !') ? ligne.slice(0, -2) : ligne)));
+        const retires = { alerte: 0, proche: 0, marque: 0, attention: 0 };
+        const attendu = texte.flatMap((ligne) => {
+          if (ligne === ATTENTION) {
+            retires.attention++;
+            return [];
+          }
+          if (ligne.startsWith('ALERTE — ')) {
+            retires.alerte++;
+            return [ligne.slice('ALERTE — '.length)];
+          }
+          if (/^Bande de (cash \(A\)|ratio \(B\)) \| .* \| .* \| .* — proche$/.test(ligne)) {
+            retires.proche++;
+            return [ligne.slice(0, -' — proche'.length)];
+          }
+          if (/^(BTC|ETH|USDC) \| [\d.]+ \| [\d.]+ % \| [\d.]+ % \| [+-][\d.]+ % !$/.test(ligne)) {
+            retires.marque++;
+            return [ligne.slice(0, -' !'.length)];
+          }
+          return [ligne];
+        });
+        expect(sansMotsAjoutes(texte), cas).toEqual(attendu);
+        expect(retires, cas).toEqual({ alerte: 0, proche: 0, marque: 0, attention: 0, ...MOTS_PAR_CAS[cas] });
       }
     });
   });
@@ -1791,6 +1831,184 @@ describe('S5 — le debut de chaque section se retrouve, et l’ecart d’alloca
 
   it('une cellule de donnees pose sa couleur d’encre', () => {
     expect(celluleDe(renderDailyReport(INPUT).html, 'BTC')).toEqual([`${CELLULE};color:#16191d`]);
+  });
+});
+
+// --- S2, S4 : la couleur dit l'alerte, les ordres anormaux et la bande proche ---
+
+const ANORMAL = 'background:#fdecec;color:#8a1c12;font-weight:700';
+const NUL = 'color:#6b7482';
+const ATTENTION_PHRASE = "Attention : au moins un ordre n'a pas abouti normalement. Voir les lignes colorees ci-dessus.";
+
+describe('S2 — la suspension s’ouvre sur « ALERTE — » et garde sa boite rouge', () => {
+  const reason = 'SUSPENSION_DRAWDOWN : recul a -26.12 %';
+  const suspendu = (motif: string): string =>
+    renderDailyReport(avecRun({ suspension: { status: 'ACTIVE', drawdown: dec('-0.2612'), reason: motif } })).html;
+
+  it('le mot est en gras en tete de la boite, le motif du run suit tel quel', () => {
+    const html = suspendu(reason);
+    expect(html).toContain(
+      `<div style="background:#fdecec;color:#5c1410;border-left:3px solid #c0392b;padding:8px;margin:10px 0"><strong>ALERTE — </strong>${reason}</div>`,
+    );
+    expect(lignes(html)).toContain(`ALERTE — ${reason}`);
+  });
+
+  it('sans suspension, ni boite ni mot', () => {
+    const calme = renderDailyReport(INPUT).html;
+    expect(calme).not.toContain('ALERTE');
+    expect(calme).not.toContain('#c0392b');
+  });
+
+  it('le motif reste echappe', () => {
+    expect(suspendu('<b>x</b>')).toContain('<strong>ALERTE — </strong>&lt;b&gt;x&lt;/b&gt;</div>');
+  });
+});
+
+describe('S4 — la distance a la borne : proche en ambre, sur la borne en ambre, franchie en rouge', () => {
+  const page = (usdc: string): string => renderDailyReport(avecRun(poidsDe('0.4', '0.3', usdc))).html;
+  const bande = (usdc: string): string => lignes(page(usdc)).find((ligne) => ligne.startsWith('Bande de cash'))!;
+
+  it('2.00 pt : neutre, sans mot ; 1.99 pt : ambre gras et « — proche »', () => {
+    expect(bande('0.31')).toBe('Bande de cash (A) | USDC 31.00 % | [27.00 %, 33.00 %] | 2.00 pt de la borne haute');
+    expect(celluleDe(page('0.31'), '2.00 pt de la borne haute')).toEqual([`${CELLULE};color:#16191d`]);
+    expect(bande('0.3101')).toBe('Bande de cash (A) | USDC 31.01 % | [27.00 %, 33.00 %] | 1.99 pt de la borne haute — proche');
+    expect(finit(celluleDe(page('0.3101'), '1.99 pt de la borne haute — proche'), AMBRE)).toEqual([true]);
+  });
+
+  it('le seuil se juge sur la marge imprimee : 1.995 s’imprime 2.00 et reste neutre, 1.994 s’imprime 1.99 et devient proche', () => {
+    expect(bande('0.31005')).toMatch(/ \| 2\.00 pt de la borne haute$/);
+    expect(bande('0.31006')).toMatch(/ \| 1\.99 pt de la borne haute — proche$/);
+  });
+
+  it('la borne basse se juge pareil', () => {
+    expect(bande('0.29')).toMatch(/ \| 2\.00 pt de la borne basse$/);
+    expect(bande('0.2901')).toMatch(/ \| 2\.01 pt de la borne basse$/);
+    expect(bande('0.2899')).toMatch(/ \| 1\.99 pt de la borne basse — proche$/);
+    expect(bande('0.2799')).toMatch(/ \| 0\.99 pt de la borne basse — proche$/);
+  });
+
+  it('exactement sur la borne : ambre gras, et le texte n’ajoute rien', () => {
+    const texte = 'sur la borne haute — la bande est fermee, le moindre pas au-dela declenche';
+    expect(bande('0.33')).toBe(`Bande de cash (A) | USDC 33.00 % | [27.00 %, 33.00 %] | ${texte}`);
+    expect(finit(celluleDe(page('0.33'), texte), AMBRE)).toEqual([true]);
+  });
+
+  it('franchie : rouge gras, texte inchange', () => {
+    expect(bande('0.35')).toMatch(/ \| franchie — 2\.00 pt au-dela de la borne haute$/);
+    expect(finit(celluleDe(page('0.35'), 'franchie — 2.00 pt au-dela de la borne haute'), ANORMAL)).toEqual([true]);
+  });
+
+  it('indisponible : gris, sans fond', () => {
+    const [style] = celluleDe(
+      page('NaN'),
+      'indisponible — valeur NaN contre bande [0.27, 0.33] : une distance demande trois nombres finis.',
+    );
+    expect(style?.endsWith(`;${GRIS}`)).toBe(true);
+    expect(style).not.toContain('background');
+  });
+
+  /* Bornes de ratio rondes : des cibles 0.3 / 0.3 donnent un ratio cible de 1 et la bande [0.7000, 1.3000]. */
+  const RONDE: RebalanceParams = {
+    ...DEFAULT_REBALANCE_PARAMS,
+    ratioBandEnabled: true,
+    targets: { BTC: poids('0.3'), ETH: poids('0.3'), USDC: poids('0.4') },
+  };
+  const pageRatio = (btc: string): string => renderDailyReport({ ...avecRun(poidsDe(btc, '0.25', '0.4')), params: RONDE }).html;
+  const ratioDe = (btc: string): string => lignes(pageRatio(btc)).find((ligne) => ligne.startsWith('Bande de ratio'))!;
+
+  it('ratio 0.1000 : neutre ; 0.0999 : ambre gras et « — proche »', () => {
+    expect(ratioDe('0.3')).toBe('Bande de ratio (B) | BTC/ETH 1.2000 | [0.7000, 1.3000] | 0.1000 de la borne haute');
+    expect(celluleDe(pageRatio('0.3'), '0.1000 de la borne haute')).toEqual([`${CELLULE};color:#16191d`]);
+    expect(ratioDe('0.30003')).toBe('Bande de ratio (B) | BTC/ETH 1.2001 | [0.7000, 1.3000] | 0.0999 de la borne haute — proche');
+    expect(finit(celluleDe(pageRatio('0.30003'), '0.0999 de la borne haute — proche'), AMBRE)).toEqual([true]);
+  });
+
+  it('le ratio se juge aussi sur la marge imprimee : 0.10004 s’imprime 0.1000 et reste neutre', () => {
+    expect(ratioDe('0.29999')).toBe('Bande de ratio (B) | BTC/ETH 1.2000 | [0.7000, 1.3000] | 0.1000 de la borne haute');
+  });
+
+  it('le ratio sur sa borne est ambre sans suffixe, franchi il est rouge', () => {
+    const sur = 'sur la borne haute — la bande est fermee, le moindre pas au-dela declenche';
+    expect(ratioDe('0.325')).toMatch(/ \| sur la borne haute — la bande est fermee, le moindre pas au-dela declenche$/);
+    expect(finit(celluleDe(pageRatio('0.325'), sur), AMBRE)).toEqual([true]);
+    expect(ratioDe('0.4')).toMatch(/ \| franchie — 0\.3000 au-dela de la borne haute$/);
+    expect(finit(celluleDe(pageRatio('0.4'), 'franchie — 0.3000 au-dela de la borne haute'), ANORMAL)).toEqual([true]);
+  });
+});
+
+describe('S4 — les ordres : zero en gris, a surveiller en ambre, anormal en rouge, et l’encadre ATTENTION', () => {
+  const html = (input: DailyReportInput): string => renderDailyReport(input).html;
+  /** Le style de la case qui suit le libelle dans le tableau des comptes, le premier du rapport. */
+  const compte = (page: string, libelle: string): string | undefined =>
+    new RegExp(`<td style="[^"]*">${regex(libelle)}</td><td style="([^"]*)">`).exec(page)?.[1];
+  const attention = (input: DailyReportInput): boolean => lignes(html(input)).includes(ATTENTION_PHRASE);
+
+  it('les six etats : chaque compte non nul prend la couleur de son etat, les autres restent neutres', () => {
+    const page = html(avecRun({ executions: [EXECUTION] }));
+    for (const libelle of ['Place', 'Execute', 'Partiel', 'Frais reels']) {
+      expect(compte(page, libelle), libelle).toBe(`${CELLULE};color:#16191d`);
+    }
+    for (const libelle of ['Non execute', 'Rejete (post-only)']) expect(finit([compte(page, libelle) ?? ''], AMBRE), libelle).toEqual([true]);
+    for (const libelle of ['Statut non lu', 'Rejete (autre motif)']) expect(finit([compte(page, libelle) ?? ''], ANORMAL), libelle).toEqual([true]);
+  });
+
+  it('un compte nul est gris, quel que soit son etat ; les frais nuls aussi', () => {
+    const page = html(avecRun({ executions: [{ strategy: 'rebalance', ordres: [], rejets: [] }] }));
+    for (const libelle of ['Place', 'Execute', 'Partiel', 'Non execute', 'Statut non lu', 'Rejete (post-only)', 'Rejete (autre motif)', 'Frais reels']) {
+      expect(finit([compte(page, libelle) ?? ''], NUL), libelle).toEqual([true]);
+    }
+    expect(lignes(page)).toContain('Frais reels | 0.00 USDC');
+    expect(page).not.toContain('background:#fff4db');
+    expect(page).not.toContain('background:#fdecec');
+  });
+
+  it('la couleur est sur la case, jamais dans un span, et le libelle reste nu', () => {
+    const page = html(avecRun({ executions: [EXECUTION] }));
+    expect(page).toMatch(/>Statut non lu<\/td><td[^>]*>1</);
+    expect(page).toMatch(/>Rejete \(autre motif\)<\/td><td[^>]*>1</);
+    expect(celluleDe(page, 'Statut non lu')[0]).toBe(`${CELLULE};color:#16191d`);
+    expect(celluleDe(page, 'Rejete (post-only)')[0]).toBe(`${CELLULE};color:#16191d`);
+  });
+
+  it('le detail colore l’etat, et lui seul : ambre pour non execute et post-only, rouge pour les deux autres', () => {
+    const page = html(avecRun({ executions: [EXECUTION] }));
+    /* Le libelle du tableau des comptes d'abord, nu ; l'etat du detail ensuite, colore. */
+    expect(finit(celluleDe(page, 'Non execute'), AMBRE)).toEqual([false, true]);
+    expect(finit(celluleDe(page, 'Rejete (post-only)'), AMBRE)).toEqual([false, true]);
+    expect(finit(celluleDe(page, 'Statut non lu'), ANORMAL)).toEqual([false, true]);
+    expect(finit(celluleDe(page, 'Rejete (autre motif)'), ANORMAL)).toEqual([false, true]);
+    for (const libelle of ['Execute', 'Partiel (0.05000000)']) {
+      expect(celluleDe(page, libelle).every((style) => !style.includes('background')), libelle).toBe(true);
+    }
+  });
+
+  it('l’encadre ATTENTION : ambre, barre #c98a00, apres le detail et avant la note', () => {
+    const page = html(avecRun({ executions: [EXECUTION] }));
+    const boite =
+      '<div style="background:#fff4db;color:#4d3500;border-left:3px solid #c98a00;padding:8px;margin:10px 0">' +
+      "<strong>Attention : au moins un ordre n'a pas abouti normalement.</strong> Voir les lignes colorees ci-dessus.</div>";
+    expect(page).toContain(boite);
+    expect(page.indexOf('INSUFFICIENT_FUND')).toBeLessThan(page.indexOf(boite));
+    expect(page.indexOf(boite)).toBeLessThan(page.indexOf('Etat lu juste apres le placement'));
+  });
+
+  it('present pour un statut non lu seul, et pour un refus d’un autre motif seul', () => {
+    expect(attention(execution(etat('NON_LU')))).toBe(true);
+    expect(attention(execution([], EXECUTION.rejets.filter((r) => !r.postOnly)))).toBe(true);
+  });
+
+  it('absent pour un non execute seul, un refus post-only seul, des ordres executes, et sans aucun ordre', () => {
+    expect(attention(execution(etat('NON_EXECUTE')))).toBe(false);
+    expect(attention(execution([], EXECUTION.rejets.filter((r) => r.postOnly)))).toBe(false);
+    expect(attention(execution([...etat('EXECUTE'), ...etat('PARTIEL')]))).toBe(false);
+    expect(attention(execution([]))).toBe(false);
+    expect(attention(INPUT)).toBe(false);
+  });
+
+  it('absent quand les mouvements sont illisibles, et il ne se dit qu’une fois', () => {
+    expect(attention({ ...INPUT, movements: { status: 'UNREADABLE', reason: 'connexion refusee' } })).toBe(false);
+    const phrases = lignes(html(avecRun({ executions: [EXECUTION, EXECUTION] }))).filter((ligne) => ligne === ATTENTION_PHRASE);
+    expect(phrases).toHaveLength(1);
   });
 });
 
