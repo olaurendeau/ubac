@@ -132,7 +132,9 @@ export function parcourir(html: string): Parcours {
       if (haut?.nom !== balise) throw new Error(`</${balise}> ferme ${haut === undefined ? 'rien' : `<${haut.nom}>`}`);
       continue;
     }
-    const style = /\sstyle="([^"]*)"/i.exec(attributs ?? '')?.[1] ?? '';
+    /* Guillemets doubles ou simples : un `style='…'` non lu laisserait passer toute couleur. */
+    const lu = /\sstyle\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(attributs ?? '');
+    const style = lu?.[1] ?? lu?.[2] ?? '';
     const ouverte: Balise = { nom: balise, style: declarations(style), aTexte: false };
     balises.push(ouverte);
     if (!VIDES.has(balise)) pile.push(ouverte);
@@ -171,7 +173,8 @@ const hauteur = (balise: Balise): boolean => /^\d+px$/.test(balise.style.get('he
  */
 export function defauts(html: string): readonly string[] {
   const trouves: string[] = [];
-  for (const interdit of [/<style/i, /\sclass=/i, /<script/i, /<img/i]) {
+  /* Le design ne pose un fond que par `background:` ; `background-color`, `background-image` et `bgcolor=` echappent au controle de contraste. */
+  for (const interdit of [/<style/i, /\sclass=/i, /<script/i, /<img/i, /background-/i, /\sbgcolor\s*=/i, /\sstyle\s*=\s*[^"'\s]/i]) {
     if (interdit.test(html)) trouves.push(`balisage interdit : ${String(interdit)}`);
   }
 

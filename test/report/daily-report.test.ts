@@ -1463,6 +1463,28 @@ describe('S6 — les controles mordent', () => {
     expect(defauts('<div style="border-bottom:1px solid #eceef1">x</div>')).toEqual([]);
   });
 
+  it('background-color et bgcolor= sont refuses : le design ne pose un fond que par `background:`', () => {
+    for (const interdit of [
+      '<td style="background-color:#fff4db;color:#4d3500">x</td>',
+      '<td style="color:#4d3500;background-image:none">x</td>',
+      '<table bgcolor="#fff4db"><tr><td>x</td></tr></table>',
+      "<td BGCOLOR='#fff4db'>x</td>",
+    ]) {
+      expect(defauts(interdit).join(), interdit).toContain('balisage interdit');
+    }
+    expect(defauts('<td style="background:#fff4db;color:#4d3500">x</td>')).toEqual([]);
+  });
+
+  it('un style entre guillemets simples est lu comme un style entre guillemets doubles', () => {
+    expect(parcourir("<td style='color:#777777'>x</td>").textes).toEqual([{ texte: 'x', couleur: '#777777', fond: '#ffffff' }]);
+    expect(defauts("<td style='color:#777777'>x</td>").join()).toContain('#777777 sur #ffffff fait 4.48:1');
+    expect(defauts("<td style='background:#fff4db'>x</td>").join()).toContain('sans poser sa couleur');
+    expect(defauts("<td style='background:#fff4db;color:#4d3500'>x</td>")).toEqual([]);
+    expect(defauts("<td style = 'color:red'>x</td>").join()).toContain("n'est pas un #rrggbb");
+    /* Ni guillemets : la valeur ne se delimite pas, le style n'est pas lisible, le rendu est refuse. */
+    expect(defauts('<td style=color:#777777>x</td>').join()).toContain('balisage interdit');
+  });
+
   it('toute couleur est un #rrggbb en minuscules', () => {
     for (const valeur of ['red', '#fff', '#ABCDEF', 'rgb(0,0,0)', '#16191d !important']) {
       expect(defauts(`<div style="color:${valeur}">x</div>`).join(), valeur).toContain("n'est pas un #rrggbb");
@@ -1519,11 +1541,276 @@ describe('S6 — les controles mordent', () => {
       ]);
     });
 
-    it('sur le texte d’aujourd’hui, elles ne changent rien', () => {
-      for (const { input } of MATRICE) {
+    /* Avant la couleur, elles ne changeaient rien. Depuis S5, « ! » marque un ecart d'allocation de 5 points, et lui seul : tout autre mot ajoute (T3) fait echouer ce test. */
+    it('sur le texte rendu de chaque cas, elles ne retirent que « ! » en fin de ligne d’allocation', () => {
+      for (const { cas, input } of MATRICE) {
         const texte = lignes(renderDailyReport(input).html);
-        expect(sansMotsAjoutes(texte)).toEqual(texte);
+        expect(
+          sansMotsAjoutes(texte),
+          cas,
+        ).toEqual(texte.map((ligne) => (/^(BTC|ETH|USDC) \| /.test(ligne) && ligne.endsWith(' !') ? ligne.slice(0, -2) : ligne)));
       }
     });
+  });
+});
+
+// --- S1, S3, S5 : la couleur dit le signe, le verdict et le debut de chaque section ---
+
+const VERT = 'color:#1e7a46;font-weight:700';
+const ROUGE = 'color:#b3261e;font-weight:700';
+const GRIS = 'color:#5a6472';
+const AMBRE = 'background:#fff4db;color:#4d3500;font-weight:700';
+const PASTILLE_OK = 'background:#e3f3e9;color:#14532d;font-weight:700;padding:1px 6px;border-radius:3px';
+const PASTILLE_KO = 'background:#fdecec;color:#8a1c12;font-weight:700;padding:1px 6px;border-radius:3px';
+const CELLULE = 'padding:4px 6px;border-bottom:1px solid #eceef1;text-align:left;vertical-align:top';
+
+const regex = (texte: string): string => texte.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** Le `style` de chaque element dont tout le contenu est ce texte : `<td style="…">+4.17 %</td>` ou `<span style="…">+4.17 %</span>`. */
+const stylesDe = (html: string, texte: string): readonly string[] =>
+  [...html.matchAll(new RegExp(`<(\\w+) style="([^"]*)">${regex(texte)}</\\1>`, 'g'))].map((m) => m[2] ?? '');
+
+/** Le `style` du <span> qui est tout le contenu d'une cellule, et seulement celui-la : un nombre signe d'un tableau. */
+const spanDe = (html: string, texte: string): readonly string[] =>
+  [...html.matchAll(new RegExp(`<td [^>]*><span style="([^"]*)">${regex(texte)}</span></td>`, 'g'))].map((m) => m[1] ?? '');
+
+/** Le style de chaque cellule `<td>` dont le texte est exactement celui-ci. */
+const celluleDe = (html: string, texte: string): readonly string[] =>
+  [...html.matchAll(new RegExp(`<td style="([^"]*)"[^>]*>${regex(texte)}</td>`, 'g'))].map((m) => m[1] ?? '');
+
+/** Le style d'une cellule se termine par la declaration ajoutee : la derniere gagne. */
+const finit = (styles: readonly string[], fin: string): readonly boolean[] => styles.map((style) => style.endsWith(`;${fin}`));
+
+describe('S1 — le signe d’un P&L se lit sur sa couleur, jugee sur le chiffre imprime', () => {
+  it('positif : vert gras, dans un span ; l’en-tete porte ses trois chiffres en 20 px', () => {
+    const html = renderDailyReport(INPUT).html;
+    expect(spanDe(html, '+4.17 %')).toEqual([VERT]);
+    expect(spanDe(html, '+25.00 %')).toContain(VERT);
+    expect(finit(stylesDe(html, '100000.00 USDC'), 'font-size:20px;font-weight:700')).toEqual([true]);
+    expect(finit(celluleDe(html, `<span style="${VERT}">+4.17 %</span>`), 'font-size:20px')).toEqual([true]);
+  });
+
+  it('negatif : rouge gras, signe imprime', () => {
+    const html = renderDailyReport(avecIndices('0.90', '0.95')).html;
+    expect(spanDe(html, '-5.26 %')).toEqual([ROUGE]);
+    expect(spanDe(html, '-10.00 %')).toContain(ROUGE);
+  });
+
+  it('nul : gris, ni vert ni rouge, pas de gras', () => {
+    const html = renderDailyReport(avecIndices('1', '1')).html;
+    /* L'en-tete (jour, cumul) et la ligne Portefeuille de la comparaison. */
+    expect(spanDe(html, '+0.00 %')).toEqual([GRIS, GRIS, GRIS]);
+  });
+
+  it('nul apres arrondi : 1.0000499 s’imprime « +0.00 % » et reste gris, dans les deux sens', () => {
+    const haut = renderDailyReport(avecIndices('1.0000499', '1')).html;
+    expect(lignes(haut)).toContain('100000.00 USDC | +0.00 % | +0.00 %');
+    expect(spanDe(haut, '+0.00 %')).toEqual([GRIS, GRIS, GRIS]);
+    const bas = renderDailyReport(avecIndices('0.9999501', '1')).html;
+    expect(lignes(bas)).toContain('100000.00 USDC | -0.00 % | -0.00 %');
+    expect(spanDe(bas, '-0.00 %')).toEqual([GRIS, GRIS, GRIS]);
+    /* D'un cheveu de plus, le chiffre imprime n'est plus nul : il prend sa couleur. */
+    const juste = renderDailyReport(avecIndices('1.000050', '1')).html;
+    expect(spanDe(juste, '+0.01 %')).toEqual([VERT, VERT, VERT]);
+  });
+
+  it('« indisponible » est gris, jamais vert ni rouge', () => {
+    const html = renderDailyReport({ run: RUN, params: DEFAULT_REBALANCE_PARAMS, movements: SANS_MOUVEMENT }).html;
+    expect(spanDe(html, 'indisponible')).toContain(GRIS);
+    const sans = renderDailyReport(
+      avecRun({ benchmarks: { [PORTFOLIO_KEYS.index]: dec('1.25') }, drawdown: { status: 'UNAVAILABLE', code: 'X', reason: 'aucune photo anterieure' } }),
+    ).html;
+    expect(spanDe(sans, 'indisponible').length).toBeGreaterThanOrEqual(8);
+    for (const style of spanDe(sans, 'indisponible')) expect(style).toBe(GRIS);
+    expect(sans).not.toMatch(/<span style="color:#(1e7a46|b3261e);font-weight:700">indisponible/);
+  });
+
+  it('le sujet est inchange, octet pour octet', () => {
+    expect(renderDailyReport(INPUT).subject).toBe('Ubac 2026-09-13 — 100000.00 USDC — jour +4.17 % · cumul +25.00 % — aucun declenchement');
+    expect(renderDailyReport(avecIndices('0.90', '0.95')).subject).toBe(
+      'Ubac 2026-09-13 — 100000.00 USDC — jour -5.26 % · cumul -10.00 % — aucun declenchement',
+    );
+    expect(renderDailyReport(avecIndices('1.0000499', '1')).subject).toBe(
+      'Ubac 2026-09-13 — 100000.00 USDC — jour +0.00 % · cumul +0.00 % — aucun declenchement',
+    );
+    expect(renderDailyReport({ run: RUN, params: DEFAULT_REBALANCE_PARAMS, movements: SANS_MOUVEMENT }).subject).toContain('jour n/d · cumul +25.00 %');
+  });
+
+  it('la comparaison colore le TWR et le max drawdown des holds, pas le Sharpe ; le recul actuel a sa couleur', () => {
+    const html = renderDailyReport(INPUT).html;
+    expect(spanDe(html, '+41.23 %')).toEqual([VERT]);
+    expect(spanDe(html, '+30.10 %')).toEqual([VERT]);
+    expect(spanDe(html, '-27.18 %')).toEqual([ROUGE]);
+    expect(spanDe(html, '-31.41 %')).toEqual([ROUGE]);
+    /* Le Sharpe n'est ni un gain ni une perte : une cellule nue, sans span. */
+    expect(html).toMatch(/<td style="[^"]*">1\.41<\/td>/);
+    expect(html).not.toMatch(/<span[^>]*>1\.4[01]</);
+    expect(stylesDe(html, '-3.85 %')).toEqual([ROUGE]);
+  });
+
+  it('un recul nul est gris, un recul indisponible aussi', () => {
+    expect(stylesDe(renderDailyReport(avecRun({ drawdown: { status: 'COMPUTED', drawdown: dec('0') } })).html, '+0.00 %')).toContain(GRIS);
+    const sans = renderDailyReport(avecRun({ drawdown: { status: 'UNAVAILABLE', code: 'X', reason: 'aucune photo anterieure' } })).html;
+    expect(sans).toContain('Recul actuel depuis le plus haut : <span style="color:#5a6472">indisponible</span>.');
+  });
+
+  it('la ligne Portefeuille est en gras sur fond clair, les holds non ; les ombres disent leur absence en gris', () => {
+    const html = renderDailyReport(INPUT).html;
+    const portefeuille = celluleDe(html, 'Portefeuille');
+    expect(finit(portefeuille, 'background:#f3f5f8;color:#16191d;font-weight:700')).toEqual([true]);
+    expect(html).toContain(`<td style="${portefeuille[0] ?? ''}"><span style="${VERT}">+25.00 %</span></td>`);
+    expect(html).toContain(`<td style="${portefeuille[0] ?? ''}"><span style="${GRIS}">indisponible</span></td>`);
+    expect(celluleDe(html, 'Hold BTC')[0]).not.toContain('font-weight:700');
+    expect(celluleDe(html, 'Ladder (ombre)')[0]).not.toContain('color:#5a6472');
+    const sansCourbe = "sans courbe en phase 1 : aucune strategie n'execute, son portefeuille simule serait le portefeuille reel";
+    expect(html.match(new RegExp(`<td style="[^"]*;${regex(GRIS)}" colspan="3">${regex(sansCourbe)}</td>`, 'g'))).toHaveLength(2);
+  });
+
+  it('la premiere case de l’en-tete de la comparaison est vide et ne pose aucun fond', () => {
+    const html = renderDailyReport(INPUT).html;
+    const entetes = [...html.matchAll(/<td style="([^"]*)"><\/td>/g)].map((m) => m[1] ?? '').filter((style) => style.includes('font-weight:600'));
+    expect(entetes).toHaveLength(1);
+    expect(entetes[0]).not.toContain('background');
+    expect(defauts(html)).toEqual([]);
+  });
+});
+
+describe('S3 — le verdict de risque se lit sans le motif', () => {
+  const html = renderDailyReport(INPUT).html;
+  const declenchee = renderDailyReport(avecRun({ ...poidsDe('0.3624', '0.28', '0.3576'), outcomes: AVEC_DECLENCHEMENT(ACCEPTE) })).html;
+  const refusee = renderDailyReport(avecRun({ ...poidsDe('0.3624', '0.28', '0.3576'), outcomes: AVEC_DECLENCHEMENT(REJET_SANITY) })).html;
+
+  it('ACCEPTED : pastille verte, gras, texte inchange', () => {
+    expect(stylesDe(html, 'ACCEPTED')).toEqual([PASTILLE_OK, PASTILLE_OK, PASTILLE_OK, PASTILLE_OK]);
+    expect(lignes(html)).toContain('rebalance | NONE | 0 jambe(s) | ACCEPTED | poids USDC dans la bande : aucun reequilibrage');
+  });
+
+  it('REJECTED:codes : pastille rouge, gras, texte inchange ; l’ombre acceptee garde la verte', () => {
+    expect(stylesDe(refusee, 'REJECTED:PRICE_SANITY')).toEqual([PASTILLE_KO]);
+    expect(stylesDe(refusee, 'ACCEPTED')).toEqual([PASTILLE_OK, PASTILLE_OK, PASTILLE_OK]);
+    expect(lignes(refusee)).toContain(
+      'rebalance | CASH_BAND | 2 jambe(s) | REJECTED:PRICE_SANITY | poids USDC au-dessus de la borne haute : retour a la cible',
+    );
+  });
+
+  it('trigger NONE gris, un autre trigger en gras ; jambes et motif gris quand rien n’est decide', () => {
+    /* Les quatre lignes de la decision ; la cinquieme « NONE » est le terme du lexique. */
+    expect(finit(celluleDe(html, 'NONE').slice(0, 4), GRIS)).toEqual([true, true, true, true]);
+    expect(finit(celluleDe(declenchee, 'CASH_BAND').slice(0, 1), 'font-weight:700')).toEqual([true]);
+    /* Production sans decision : la ligne est grise, sauf le nom de la strategie et la pastille. */
+    expect(finit(celluleDe(html, '0 jambe(s)'), GRIS)).toEqual([true, true, true, true]);
+    expect(finit(celluleDe(html, 'poids USDC dans la bande : aucun reequilibrage'), GRIS)).toEqual([true]);
+    expect(celluleDe(html, 'rebalance')[0]).not.toContain('color:#5a6472');
+  });
+
+  it('une decision de production garde sa couleur normale pour ses jambes et son motif', () => {
+    expect(celluleDe(declenchee, '2 jambe(s)')[0]).not.toContain('color:#5a6472');
+    expect(celluleDe(declenchee, 'poids USDC au-dessus de la borne haute : retour a la cible')[0]).not.toContain('color:#5a6472');
+  });
+
+  it('une ligne d’ombre est grise de bout en bout, meme declenchee, sauf sa pastille', () => {
+    for (const nom of ['rebalance_ab (ombre)', 'ladder (ombre)', 'dca (ombre)']) {
+      expect(finit(celluleDe(html, nom), GRIS), nom).toEqual([true]);
+    }
+    /* L'ombre du ratio declenche aussi CASH_BAND dans `declenchee` : grise, pas en gras. */
+    const ombre = celluleDe(declenchee, 'CASH_BAND')[1] ?? '';
+    expect(ombre).toMatch(/;color:#5a6472$/);
+    expect(ombre).not.toContain('font-weight:700');
+    expect(finit(celluleDe(declenchee, '2 jambe(s)').slice(1), GRIS)).toEqual([true]);
+    /* La cellule Risque d'une ombre n'est pas grise : la pastille garde son fond et son texte. */
+    expect(html).toMatch(
+      new RegExp(`<td style="[^"]*"><span style="${regex(PASTILLE_OK)}">ACCEPTED</span></td><td style="[^"]*;color:#5a6472">ratio dans la bande`),
+    );
+  });
+});
+
+describe('S5 — le debut de chaque section se retrouve, et l’ecart d’allocation de 5 points se voit', () => {
+  const allocation = (input: DailyReportInput): readonly string[] =>
+    lignes(renderDailyReport(input).html).filter((ligne) => /^(BTC|ETH|USDC) \| [\d.]+ \| /.test(ligne));
+
+  it('4.99 points : neutre, aucune marque', () => {
+    const input = avecRun(poidsDe('0.3601', '0.29', '0.3499'));
+    expect(allocation(input)).toEqual([
+      'BTC | 0.50000000 | 36.01 % | 40.00 % | -3.99 %',
+      'ETH | 8.00000000 | 29.00 % | 30.00 % | -1.00 %',
+      'USDC | 31000.00000000 | 34.99 % | 30.00 % | +4.99 %',
+    ]);
+    expect(renderDailyReport(input).html).not.toContain('background:#fff4db');
+  });
+
+  it('5.00 et -5.00 points : ambre gras et « !»', () => {
+    const html = renderDailyReport(avecRun(poidsDe('0.35', '0.35', '0.30'))).html;
+    expect(allocation(avecRun(poidsDe('0.35', '0.35', '0.30')))).toEqual([
+      'BTC | 0.50000000 | 35.00 % | 40.00 % | -5.00 % !',
+      'ETH | 8.00000000 | 35.00 % | 30.00 % | +5.00 % !',
+      'USDC | 31000.00000000 | 30.00 % | 30.00 % | +0.00 %',
+    ]);
+    expect(finit(celluleDe(html, '-5.00 % !'), AMBRE)).toEqual([true]);
+    expect(finit(celluleDe(html, '+5.00 % !'), AMBRE)).toEqual([true]);
+    expect(celluleDe(html, '+0.00 %')[0]).not.toContain('background');
+    /* Seul l'ecart est colore : le poids reste une cellule nue. */
+    expect(celluleDe(html, '35.00 %')).toEqual([`${CELLULE};color:#16191d`, `${CELLULE};color:#16191d`]);
+  });
+
+  it('le seuil se juge sur le chiffre imprime : 4.9949 s’imprime 4.99 et reste neutre, 4.995 s’imprime 5.00 et passe a l’ambre', () => {
+    const sous = avecRun(poidsDe('0.4', '0.250051', '0.349949'));
+    expect(allocation(sous)).toContain('USDC | 31000.00000000 | 34.99 % | 30.00 % | +4.99 %');
+    expect(renderDailyReport(sous).html).not.toContain('background:#fff4db');
+    const sur = avecRun(poidsDe('0.4', '0.25005', '0.34995'));
+    expect(allocation(sur)).toContain('USDC | 31000.00000000 | 35.00 % | 30.00 % | +5.00 % !');
+    expect(finit(celluleDe(renderDailyReport(sur).html, '+5.00 % !'), AMBRE)).toEqual([true]);
+  });
+
+  it('chaque titre de section porte une barre gauche, un fond et sa couleur ; le corps ne pose aucun fond', () => {
+    const html = renderDailyReport({ ...INPUT, run: { ...RUN, benchmarkGaps: [{ key: 'k', code: 'C', reason: 'r' }] } }).html;
+    const titres = [...html.matchAll(/<h2 style="([^"]*)">([^<]*)<\/h2>/g)];
+    expect(titres.map((m) => m[2])).toContain('Metriques indisponibles');
+    expect(titres).toHaveLength(9);
+    for (const [, style] of titres) {
+      expect(style).toBe('font-size:15px;margin:18px 0 6px;padding:4px 8px;border-left:4px solid #2c6aa0;background:#eef1f5;color:#16191d');
+    }
+    expect(html).toContain('<h1 style="font-size:17px;margin:0 0 4px;color:#16191d">');
+    expect(html.slice(0, html.indexOf('>'))).not.toContain('background');
+  });
+
+  it('les en-tetes de tableau sont gris sur fond clair, celui de « Metriques indisponibles » est ambre', () => {
+    const html = renderDailyReport({ ...INPUT, run: { ...RUN, benchmarkGaps: [{ key: 'k', code: 'C', reason: 'r' }] } }).html;
+    const gris = `${CELLULE};font-weight:600;color:#5a6472;background:#f3f5f8`;
+    const ambre = `${CELLULE};font-weight:600;color:#4d3500;background:#fff4db`;
+    expect(celluleDe(html, 'Strategie')).toEqual([gris]);
+    expect(celluleDe(html, 'Cle')).toEqual([ambre]);
+    expect(celluleDe(html, 'Code')).toEqual([ambre]);
+    /* « Motif » est aussi l'en-tete de la decision : grise la-bas, ambre ici. */
+    expect(celluleDe(html, 'Motif')).toEqual([gris, ambre]);
+    /* Les libelles de l'en-tete chiffre sont en 13 px. */
+    expect(finit(celluleDe(html, 'P&L jour (TWR)'), 'font-size:13px')).toEqual([true]);
+    expect(finit(celluleDe(html, 'Valeur totale'), 'font-size:13px')).toEqual([true]);
+    /* Sans metrique indisponible, aucun en-tete ambre. */
+    expect(renderDailyReport(INPUT).html).not.toContain('background:#fff4db');
+  });
+
+  it('une cellule de donnees pose sa couleur d’encre', () => {
+    expect(celluleDe(renderDailyReport(INPUT).html, 'BTC')).toEqual([`${CELLULE};color:#16191d`]);
+  });
+});
+
+describe('E — le graphe pose sa couleur par le signe, et sa hauteur reste lue', () => {
+  const barres = (html: string): readonly string[] =>
+    [...html.matchAll(/<div style="height:(\d+)px;background:(#[0-9a-f]{6})"><\/div>/g)].map((m) => `${m[1] ?? ''}|${m[2] ?? ''}`);
+
+  it('une serie positive : vert #1e7a46 partout', () => {
+    const rendu = barres(renderDailyReport(INPUT).html);
+    expect(rendu).toHaveLength(5);
+    for (const barre of rendu) expect(barre).toMatch(/^[1-9]\d?\|#1e7a46$/);
+  });
+
+  it('une serie qui passe sous zero : rouge #b3261e sous zero, vert au-dessus', () => {
+    const serie = [point('2026-09-09', '1.05'), point('2026-09-10', '0.98'), point('2026-09-11', '0.95'), point('2026-09-12', '1.01')];
+    const html = renderDailyReport({ ...INPUT, series: serie }).html;
+    const rendu = barres(html);
+    expect(rendu.map((barre) => barre.split('|')[1])).toEqual(['#1e7a46', '#b3261e', '#b3261e', '#1e7a46', '#1e7a46']);
+    for (const barre of rendu) expect(barre).toMatch(/^[1-9]\d?\|/);
+    expect(html).not.toContain('#2f6f4f');
+    expect(html).not.toContain('#c0392b');
   });
 });
