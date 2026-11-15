@@ -1541,13 +1541,14 @@ describe('S6 — les controles mordent', () => {
       ]);
     });
 
-    /* Avant la couleur, elles ne changeaient rien. Depuis S5, « ! » marque un ecart d'allocation de 5 points : une passe le retire, la seconde ne trouve plus rien. */
-    it('sur le texte rendu, une passe retire les mots ajoutes et la seconde ne change rien', () => {
-      for (const { input } of MATRICE) {
+    /* Avant la couleur, elles ne changeaient rien. Depuis S5, « ! » marque un ecart d'allocation de 5 points, et lui seul : tout autre mot ajoute (T3) fait echouer ce test. */
+    it('sur le texte rendu de chaque cas, elles ne retirent que « ! » en fin de ligne d’allocation', () => {
+      for (const { cas, input } of MATRICE) {
         const texte = lignes(renderDailyReport(input).html);
-        const une = sansMotsAjoutes(texte);
-        expect(sansMotsAjoutes(une)).toEqual(une);
-        if (!texte.some((ligne) => ligne.endsWith(' !'))) expect(une).toEqual(texte);
+        expect(
+          sansMotsAjoutes(texte),
+          cas,
+        ).toEqual(texte.map((ligne) => (/^(BTC|ETH|USDC) \| /.test(ligne) && ligne.endsWith(' !') ? ligne.slice(0, -2) : ligne)));
       }
     });
   });
