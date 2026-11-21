@@ -95,7 +95,7 @@ demande une décision de l'opérateur avant dispatch.
 | D4 | **Clés Coinbase** : le portefeuille dédié et la clé scopée existent-ils ? Avec quelles permissions en phase 1 — lecture seule, ou lecture + trade en prévision de la phase 3 ? La spec exige « jamais de permission de retrait ». | Q3 |
 | D5 | **Neon** : qui crée le projet, et qui exécute `drizzle-kit push` ? La spec dit « depuis le poste, jamais depuis le job ». Une base de développement locale suffit-elle pour Q2, ou vise-t-on Neon directement ? | Q2 |
 | D6 | **Brevo** : le domaine `olalpinesolutions` est-il authentifié SPF et DKIM ? Sans cela les rapports partent en spam et le lot ne peut pas prouver son critère. | Q5 |
-| D7 | Le **seuil de drawdown à 25 %** déclenche « alerte et suspension des rééquilibrages ». La suspension est un comportement opérationnel, absent de `core/risk.ts` dont les neuf codes sont figés et couverts à 100 %. Où vit-elle : dans le job, dans la configuration, ou faut-il rouvrir la couche risque ? | Q6 |
+| D7 | Le **seuil de drawdown à 25 %** déclenche « alerte et suspension des rééquilibrages » (suspension abandonnée le 2026-11-21 : alerte seule, spec §6.1). La suspension était un comportement opérationnel, absent de `core/risk.ts` dont les neuf codes sont figés et couverts à 100 %. Où vit-elle : dans le job, dans la configuration, ou faut-il rouvrir la couche risque ? | Q6 |
 
 D1 mérite une attention particulière : c'est une divergence **déjà présente dans
 le dépôt**, pas une question ouverte. Laisser la configuration de phase 1 lire
@@ -400,7 +400,7 @@ Critère de validation : chaque événement de la liste a son test et produit
 exactement une notification ; un job qui échoue avant la fin ne ping pas le
 healthcheck.
 
-Piège connu : le seuil de drawdown déclenche « alerte **et suspension des
+Piège connu (levé le 2026-11-21 : le drawdown n'alerte plus que, la suspension a été retirée, spec §6.1) : le seuil de drawdown déclenchait « alerte **et suspension des
 rééquilibrages** ». La suspension est un comportement, pas une notification. En
 phase 1 rien ne s'exécute, donc elle n'a aucun effet observable — d'où le risque
 de l'écrire sans jamais la tester et de découvrir en phase 3 qu'elle ne marche
@@ -447,7 +447,7 @@ verrou doit être structurel, comme celui de `risk.ts` : aucun drapeau, aucun
 | §4 | index unique, idempotence du run | Q2, Q4 |
 | §4 | `cash_flows` et TWR, un apport n'est pas une performance | Q4, Q5 |
 | §6 | valeurs de la couche risque appliquées par la config | Q1 (D1) |
-| §6 | alerte et suspension au drawdown de 25 % | Q6 (D7) |
+| §6 | alerte (et suspension, retirée le 2026-11-21) au drawdown de 25 % | Q6 (D7) |
 | §7 | portefeuille dédié, clé scopée, jamais de retrait | Q3 (D4) |
 | §7 | paires exclusivement en USDC | Q3 |
 | §7 | `client_order_id` déterministe | acquis phase 0 (`order-id.ts`) |

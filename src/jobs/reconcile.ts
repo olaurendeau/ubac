@@ -161,10 +161,11 @@ export interface ReconcileObservations {
 
 /**
  * Marqueur en tete du motif de resynchronisation, donc en tete de
- * `decisions.reason` le jour ou l'etat s'est resynchronise. Meme role que le
- * `DRAWDOWN_ALERT_MARKER` de `snapshot.ts` : sans lui, un jour ou le
- * portefeuille a bouge hors du systeme serait indistinguable d'un jour
- * ordinaire des que le push aurait ete oublie.
+ * `decisions.reason` le jour ou l'etat s'est resynchronise. Contrairement au
+ * `DRAWDOWN_ALERT_MARKER` de `snapshot.ts`, qui n'est plus ecrit dans
+ * `decisions.reason` (l'alerte vit dans le journal du run, le rapport et le push),
+ * celui-ci y reste : sans lui, un jour ou le portefeuille a bouge hors du systeme
+ * serait indistinguable d'un jour ordinaire des que le push aurait ete oublie.
  *
  * Il est **exporte** pour la meme raison que l'autre : deux litteraux divergent,
  * et c'est celui qui n'a pas de sonde qui gagne.

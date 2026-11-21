@@ -415,9 +415,9 @@ describe('les codes de rejet se partagent entre deux evenements', () => {
 
 describe('ce que porte chaque alerte', () => {
   /*
-   * Le texte vient de `snapshot.ts` et n'est pas reecrit : c'est celui de la
-   * ligne de `decisions` du jour. Une seule source, donc l'alerte et la base ne
-   * peuvent pas raconter deux chiffres differents.
+   * Le texte vient de `snapshot.ts` et n'est pas reecrit : c'est celui du journal
+   * du run et du rapport (la ligne de `decisions` ne le porte plus). Une seule
+   * source, donc l'alerte et le rapport ne peuvent pas raconter deux chiffres differents.
    */
   it('reprend mot pour mot le motif d’alerte', () => {
     const alerts = alertsFor(entree({ drawdownAlert: ALERTE_DD }));

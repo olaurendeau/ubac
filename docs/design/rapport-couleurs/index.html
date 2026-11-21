@@ -23,7 +23,7 @@ code{font-size:12px}
 </style>
 <div class="wrap">
 <h1>Rapport quotidien : la couleur au service de la lecture</h1>
-<p>Maquette du courrier « Ubac — rapport du AAAA-MM-JJ » colorise : toutes les sections du vrai rapport (<code>src/report/daily-report.ts</code> sur origin/main), dans leur ordre, sans changement de structure. Les chiffres sont illustratifs. Tout texte que le run fournit (motifs, texte de suspension, de resynchronisation, de recalcul, raisons de metrique) est ecrit <i>[entre crochets]</i> : il n'est pas invente ici. Dans le vrai mail : aucune feuille de style, aucun script.</p>
+<p>Maquette du courrier « Ubac — rapport du AAAA-MM-JJ » colorise : toutes les sections du vrai rapport (<code>src/report/daily-report.ts</code> sur origin/main), dans leur ordre, sans changement de structure. Les chiffres sont illustratifs. Tout texte que le run fournit (motifs, texte d'alerte de drawdown, de resynchronisation, de recalcul, raisons de metrique) est ecrit <i>[entre crochets]</i> : il n'est pas invente ici. Dans le vrai mail : aucune feuille de style, aucun script.</p>
 
 <div class="tabs" id="tabs"></div>
 <div class="grid" style="margin-top:12px">
@@ -57,7 +57,7 @@ code{font-size:12px}
 <p><b>S2 — Je reperais ce qui demande mon attention.</b></p>
 <ul class="ac">
 <li>Trois encadres, fond ET texte poses : ALERTE (<code>#fdecec</code> / <code>#5c1410</code>, barre <code>#c0392b</code>), ATTENTION (<code>#fff4db</code> / <code>#4d3500</code>, barre <code>#c98a00</code>), INFO (<code>#eef4fb</code> / <code>#12324f</code>, barre <code>#2c6aa0</code>).</li>
-<li>La suspension : « ALERTE — » en gras, puis <code>run.suspension.reason</code> tel quel. Resynchronisation et recalcul au mid : INFO, texte inchange (voir les onglets : phrases reelles, plus le texte du run).</li>
+<li>L'alerte de drawdown : « ALERTE — » en gras, puis <code>run.drawdownAlert.reason</code> tel quel ; la production decide normalement, ses ordres s'affichent comme un autre jour. Resynchronisation et recalcul au mid : INFO, texte inchange (voir les onglets : phrases reelles, plus le texte du run).</li>
 <li>Comptes d'ordres : un zero est gris <code>#6b7482</code> ; « Non execute » et « Rejete (post-only) » non nuls : ambre gras ; « Rejete (autre motif) » et « Statut non lu » non nuls : rouge gras.</li>
 <li>Detail des ordres (Jambe, Limite, Etat, Frais ou motif) : la cellule Etat suit la meme regle (Etat « Non execute » / « Rejete (post-only) » ambre gras ; « Rejete (autre motif) » / « Statut non lu » rouge gras ; « Execute » et « Partiel » normaux).</li>
 <li>Si au moins un ordre est « Rejete (autre motif) » ou « Statut non lu », un encadre ATTENTION suit le detail (et non les comptes) : « Attention : au moins un ordre n'a pas abouti normalement. Voir les lignes colorees ci-dessus. » Sinon, absent.</li>
@@ -86,7 +86,7 @@ code{font-size:12px}
 <li>Le graphe garde ses 90 colonnes ; seules ses deux teintes passent a <code>#1e7a46</code> / <code>#b3261e</code>.</li>
 </ul>
 <p><b>Hors perimetre.</b> Texte brut ; refonte de la mise en page ou de l'ordre ; couleur du sujet, des mouvements, du lexique, des notes ; mode sombre natif ; nouvelles alertes ou seuils hors « proche », ecart d'allocation et ordre anormal.</p>
-<p><b>Etats vides et degrades</b> (onglets « Degrade » et « Suspension ») : aucun ordre : comptes gris + note grise « Aucun ordre n'est parti aujourd'hui. » ; P&L du jour absent : « indisponible » gris + note grise ; graphe indisponible : note grise (« Graphe indisponible : ... ») ; mouvements illisibles : note grise, sans encadre ATTENTION ; metriques indisponibles : section a en-tete ambre ; distance indefinie : « indisponible — raison » gris ; suspension : encadre ALERTE, aucun ordre place.</p>
+<p><b>Etats vides et degrades</b> (onglets « Degrade » et « Alerte drawdown ») : aucun ordre : comptes gris + note grise « Aucun ordre n'est parti aujourd'hui. » ; P&L du jour absent : « indisponible » gris + note grise ; graphe indisponible : note grise (« Graphe indisponible : ... ») ; mouvements illisibles : note grise, sans encadre ATTENTION ; metriques indisponibles : section a en-tete ambre ; distance indefinie : « indisponible — raison » gris ; alerte drawdown : encadre ALERTE, la decision de production et ses ordres restent ceux du jour (aucun ordre dans cette maquette, faute d'en avoir tire un).</p>
 </div>
 </div>
 <script>
@@ -117,7 +117,7 @@ function graph(o){
  return `<table style="border-collapse:collapse;table-layout:fixed;height:90px;margin:8px 0 2px"><tr>${bars.join('')}</tr></table>`+note('P&L cumule (TWR) depuis la premiere photo, lu sur l\'indice de croissance : 90 photo(s), du 2026-08-15 au 2026-11-13, 1 colonne = 1 photo. Echelle de -1.00 % a +9.00 %, et non depuis zero : une variation faible occupe toute la hauteur.')}
 function mail(o){
  let h=`<div style="${S.body}"><h1 style="font-size:17px;margin:0 0 4px;color:#16191d">Ubac — rapport du ${o.date}</h1>${note('Prix de cloture du '+o.date+'. Les ordres de la production partent en limit post-only ; les ombres n\'en placent aucun.')}`;
- if(o.alert)h+=`<div style="${box.alert}"><strong>ALERTE — </strong>${V('run.suspension.reason, ex. « SUSPENSION_DRAWDOWN : recul a -26.12 % »')}</div>`;
+ if(o.alert)h+=`<div style="${box.alert}"><strong>ALERTE — </strong>${V('run.drawdownAlert.reason, ex. « ALERTE_DRAWDOWN : drawdown a -26.12 % depuis le plus haut »')}</div>`;
  if(o.resync)h+=`<div style="${box.info}"><strong>Etat interne resynchronise, ecart explique par les flux enregistres.</strong> Aucune alerte n'est partie pour cet ecart : c'est ce rapport qui le dit. Aucun ordre n'est place aujourd'hui.<br>${V('run.resync.reason')}</div>`;
  if(o.mid)h+=`<div style="${box.info}"><strong>Decision de production recalculee sur le mid en direct.</strong> Poids USDC de la production au mid : 32.40 %. Les ombres, l'allocation et les distances au declencheur restent a la cloture.<br>${V('run.liveRecompute.reason : ecarts signes des deux actifs, ce que la cloture proposait')}</div>`;
  h+=`<table style="${S.tab}">${['Valeur totale','P&L jour (TWR)','P&L cumule (TWR)'].map(x=>`<td style="${S.th};font-size:13px">${x}</td>`).join('')}<tr><td style="${S.td};font-size:20px;font-weight:700">${o.val}</td><td style="${S.td};font-size:20px">${sg(o.day)}</td><td style="${S.td};font-size:20px">${sg(o.cum)}</td></tr></table>`;
@@ -166,7 +166,7 @@ const days={
  'Bande franchie, ordres':{date:'2026-11-13',val:'6105.46 USDC',day:'-1.81 %',cum:'-6.92 %',usdc:'35.76 %',ecU:'+5.76 %',dist:CR(),neg:1,trig:1,fees:'1.84 USDC',
   orders:[{...ex,e:'Execute',f:'1.84 USDC'},{j:'BUY ETH 0.30000000',l:'3200.00 USDC',e:'Non execute',f:'0.00 USDC'},{j:'SELL USDC 100.00000000',l:'1.00 USDC',e:'Rejete (autre motif)',f:V('motif de l\'exchange')},{j:'SELL ETH 0.10000000',l:'3300.00 USDC',e:'Rejete (post-only)',f:V('motif')}]},
  'Rejet PRICE_SANITY':{date:'2026-11-13',val:'6105.46 USDC',day:'-1.81 %',cum:'-6.92 %',usdc:'35.76 %',ecU:'+5.76 %',dist:CR(),neg:1,rej:1,fees:'0.00 USDC'},
- 'Suspension':{date:'2026-11-14',val:'5290.00 USDC',day:'-3.20 %',cum:'-20.10 %',usdc:'35.76 %',ecU:'+5.76 %',dist:CR(),neg:1,alert:1,fees:'0.00 USDC'},
+ 'Alerte drawdown':{date:'2026-11-14',val:'5290.00 USDC',day:'-3.20 %',cum:'-20.10 %',usdc:'35.76 %',ecU:'+5.76 %',dist:CR(),neg:1,alert:1,fees:'0.00 USDC'},
  'Recalcul au mid':{date:'2026-11-13',val:'6105.46 USDC',day:'-1.81 %',cum:'-6.92 %',usdc:'35.76 %',ecU:'+5.76 %',dist:CR(),mid:1,neg:1,trig:1,fees:'2.10 USDC',orders:[{...ex,e:'Execute',f:'1.05 USDC'},{j:'BUY ETH 0.30000000',l:'3200.00 USDC',e:'Execute',f:'1.05 USDC'}]},
  'Resynchronisation':{date:'2026-11-13',val:'7105.46 USDC',day:'+0.00 %',cum:'-6.92 %',usdc:'35.76 %',ecU:'+5.76 %',dist:CR(),resync:1,neg:1,fees:'0.00 USDC'},
  'Degrade':{date:'2026-11-13',val:'6105.46 USDC',day:'indisponible',cum:'indisponible',usdc:'31.00 %',ecU:'+1.00 %',dist:{t:'indisponible — '+'[reason]',s:G},graphNone:1,noDD:1,gaps:1,mvUnread:1,fees:'0.00 USDC'}
@@ -186,7 +186,7 @@ const pal=[['Role','Fond','Texte','Sens','Redoublement non colore'],
 ['Ecart d\'allocation &gt;= 5 pt','#fff4db','#4d3500 gras','a surveiller','marque « ! »'],
 ['Ordre non execute / post-only','#fff4db','#4d3500 gras','a surveiller','libelle de la ligne + nombre'],
 ['Ordre autre motif / statut non lu','#fdecec','#8a1c12 gras','anormal','libelle de la ligne + encadre ATTENTION'],
-['Encadre ALERTE','#fdecec + barre #c0392b','#5c1410','suspension','mot « ALERTE — »'],
+['Encadre ALERTE','#fdecec + barre #c0392b','#5c1410','alerte drawdown','mot « ALERTE — »'],
 ['Encadre ATTENTION','#fff4db + barre #c98a00','#4d3500','ordre anormal','mot « Attention : »'],
 ['Encadre INFO','#eef4fb + barre #2c6aa0','#12324f','resync, recalcul au mid','titre en gras'],
 ['En-tete « Metriques indisponibles »','#fff4db','#4d3500','metrique absente','titre de section'],

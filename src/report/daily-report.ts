@@ -1213,21 +1213,26 @@ function recalculEncadre(run: CompletedRun): string {
 }
 
 /**
- * L'objet tient sur un ecran verrouille. Une alerte de drawdown passe devant le trigger : c'est la seule ligne qui demande une decision humaine, la production ayant decide normalement.
+ * L'objet tient sur un ecran verrouille. Une alerte de drawdown precede la decision de production sans la remplacer : le drawdown n'alerte plus
+ * que l'humain, la production decide normalement, et l'objet montre les deux (« ALERTE DRAWDOWN (recul …) — CASH_BAND, 2 jambe(s) »).
  * Les deux P&L sont les metriques **memes** que la case d'en-tete, mises en forme par le meme `signedPct` : l'objet ne peut pas dire
  * autre chose que le corps. Absents, ils disent « n/d », jamais une variation de valeur brute (C27).
  */
 function subjectOf(run: CompletedRun, jour: Metric, cumul: Metric): string {
   const twr = `jour ${metricText(jour, signedPct, 'n/d')} · cumul ${metricText(cumul, signedPct, 'n/d')}`;
   const tete = `Ubac ${run.runDate} — ${usdc(run.totalValue)} — ${twr}`;
-  if (run.drawdownAlert.status === 'ACTIVE') {
-    return `${tete} — ALERTE DRAWDOWN (recul ${signedPct(run.drawdownAlert.drawdown)})`;
-  }
-  if (resyncExplique(run) !== undefined) return `${tete} — etat resynchronise par un apport, aucun ordre`;
+  const alerte =
+    run.drawdownAlert.status === 'ACTIVE' ? ` — ALERTE DRAWDOWN (recul ${signedPct(run.drawdownAlert.drawdown)})` : '';
+  return `${tete}${alerte} — ${decisionOf(run)}`;
+}
+
+/** Le segment de decision de l'objet : ce que la production a decide, alerte ou non. */
+function decisionOf(run: CompletedRun): string {
+  if (resyncExplique(run) !== undefined) return 'etat resynchronise par un apport, aucun ordre';
   const prod = production(run);
-  if (prod === undefined) return `${tete} — aucune strategie de production`;
-  if (prod.intent.trigger === 'NONE') return `${tete} — aucun declenchement`;
-  return `${tete} — ${prod.intent.trigger}, ${String(prod.intent.legs.length)} jambe(s)`;
+  if (prod === undefined) return 'aucune strategie de production';
+  if (prod.intent.trigger === 'NONE') return 'aucun declenchement';
+  return `${prod.intent.trigger}, ${String(prod.intent.legs.length)} jambe(s)`;
 }
 
 /** Le rapport du §9. **Toujours un courrier**, `trigger NONE` compris. */

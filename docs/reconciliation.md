@@ -82,8 +82,9 @@ qu'elle remplace : le run conclurait normalement, la base porterait de nouveaux
 soldes, et personne ne saurait que le portefeuille a bougé hors du système.
 
 **Un marqueur durable**, `ETAT_RESYNCHRONISE`, en tête de `decisions.reason` des
-**quatre** stratégies du jour. Même forme, et même motif, que le
-`ALERTE_DRAWDOWN` du §6. L'alerte réveille le jour même ; elle ne se relit pas
+**quatre** stratégies du jour. Contrairement au
+`ALERTE_DRAWDOWN` du §6, qui ne vit que dans l'alerte, le journal du run et le
+rapport, ce marqueur est écrit dans `decisions.reason`. L'alerte réveille le jour même ; elle ne se relit pas
 six mois plus tard. Le journal des décisions, si : un lecteur doit pouvoir dire,
 sans rien d'autre sous la main, que ce jour-là quelqu'un a bougé le portefeuille
 hors du système. Les quatre lignes le portent parce que l'état resynchronisé est

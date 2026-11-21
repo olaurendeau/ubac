@@ -278,9 +278,10 @@ export function alertsFor(input: AlertInput): readonly Alert[] {
 
   if (input.drawdownAlert.status === 'ACTIVE') {
     /*
-     * Le texte vient de `snapshot.ts` et n'est pas reecrit ici : c'est celui que
-     * porte la ligne de `decisions` du jour. Une seule source, donc l'alerte et
-     * la base ne peuvent pas raconter deux chiffres differents — et le seuil
+     * Le texte vient de `snapshot.ts` et n'est pas reecrit ici : c'est celui du
+     * journal du run et de l'encadre du rapport (la ligne de `decisions` ne le
+     * porte plus). Une seule source, donc l'alerte, le journal et le rapport ne
+     * peuvent pas raconter deux chiffres differents — et le seuil
      * reste celui du §6, borne incluse, sans qu'un second seuil existe.
      */
     alerts.push(

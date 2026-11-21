@@ -3,7 +3,7 @@
 Artifact : https://claude.ai/artifact/9R8mENsFzYg79d84mfF6nX
 Epic : a creer (demande de l'operateur : « plus de couleurs dans le mail pour que ce soit plus lisible »).
 
-Montre : six jours types (normal, bande franchie avec ordres, rejet PRICE_SANITY, suspension/panne, encadre RECALCUL_AU_MID, encadre resynchronisation), en clair et en sombre simule ; la palette et son sens ; les criteres d'acceptation (S1 a S6).
+Montre : six jours types (normal, bande franchie avec ordres, rejet PRICE_SANITY, alerte drawdown, encadre RECALCUL_AU_MID, encadre resynchronisation), en clair et en sombre simule ; la palette et son sens ; les criteres d'acceptation (S1 a S6).
 
 Mots ajoutes : "ALERTE — ", " — proche", " !" (ecart d'allocation >= 5 pt), « Attention : au moins un ordre n'a pas abouti normalement. Voir les lignes colorees ci-dessus. »
 

@@ -1157,7 +1157,7 @@ describe('§6, §8 etape 7 — la photo du jour et l’alerte de drawdown', () =
     expect(evenements(h)).toContain('DRAWDOWN');
   });
 
-  it('juste au-dessus du seuil, aucune alerte et la meme decision', async () => {
+  it('a -23 %, sous le seuil, aucune alerte et la meme decision', async () => {
     const h = harnais({ balances: HORS_BANDE, snapshot: veille('130000') });
     const result = complete(await lance(h));
 
@@ -1276,7 +1276,7 @@ describe('§9 — le rapport quotidien part par Brevo', () => {
     expect(result.report.mail).toEqual({ status: 'SENT', httpStatus: 201 });
   });
 
-  /* Les deux autres sujets : le declenchement, et l'alerte de drawdown qui passe devant. */
+  /* Les deux autres sujets : le declenchement, et l'alerte de drawdown, qui s'ajoute a la decision. */
   it('part aussi quand le run declenche, et quand le drawdown est au seuil', async () => {
     const declenche = harnais({ balances: HORS_BANDE });
     await lance(declenche);
@@ -1284,7 +1284,7 @@ describe('§9 — le rapport quotidien part par Brevo', () => {
 
     const alerte = harnais({ balances: HORS_BANDE, snapshot: veille('200000') });
     await lance(alerte);
-    expect(courrier(alerte).subject).toContain('ALERTE DRAWDOWN (recul -50.00 %)');
+    expect(courrier(alerte).subject).toContain('ALERTE DRAWDOWN (recul -50.00 %) — CASH_BAND, 2 jambe(s)');
   });
 
   it('porte l’expediteur, le destinataire et le tag daily-report du §9', async () => {
