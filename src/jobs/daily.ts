@@ -521,9 +521,9 @@ function ladderIntent(decision: LadderDecision, weights: Weights): Intent {
  * trace qui survive a un push manque.
  *
  * Le texte vient de `reconcile.ts` et n'est pas reecrit ici : une seule source,
- * donc l'alerte et la base ne peuvent pas annoncer deux ecarts differents. Meme
- * choix que le motif d'alerte de drawdown qui vient de `snapshot.ts` ; la forme
- * est la meme aussi, un marqueur en tete.
+ * donc l'alerte et la base ne peuvent pas annoncer deux ecarts differents. Le
+ * motif d'alerte de drawdown de `snapshot.ts`, lui, n'est plus ecrit dans
+ * `decisions.reason` : la decision de production n'en porte aucune trace.
  *
  * **Les quatre strategies sont marquees**, pas seulement la production. L'etat
  * resynchronise est celui du portefeuille, pas d'une strategie : n'en marquer

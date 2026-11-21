@@ -314,8 +314,8 @@ non « de plus de 25 % » — les quatre stratégies passent par `decide()` comm
 n'importe quel jour, la production comprise, et la couche risque s'applique
 inchangée (plafond de 50 % par actif, `REBALANCE_TOO_LARGE`, etc.). Le seuil
 atteint se lit à trois endroits : la ligne `ALERTE_DRAWDOWN : drawdown a … %` du
-journal du run, l'encadré « ALERTE — » du rapport et son objet
-(`… — ALERTE DRAWDOWN (recul -26.12 %)`), et l'alerte push `DRAWDOWN`. La ligne de
+journal du run, l'encadré « ALERTE — » du rapport et son objet, qui garde la
+décision (`… — ALERTE DRAWDOWN (recul -26.12 %) — CASH_BAND, 2 jambe(s)`), et l'alerte push `DRAWDOWN`. La ligne de
 `decisions` ne porte pas le marqueur : elle dit ce que `decide()` a formulé.
 Aucune vente n'est déclenchée par le drawdown : la décision de sortir reste
 humaine (§6).

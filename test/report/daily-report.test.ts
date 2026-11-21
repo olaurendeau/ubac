@@ -356,12 +356,38 @@ describe('§9 — un rapport part meme quand le trigger vaut NONE', () => {
     );
   });
 
-  it('met l’alerte de drawdown du §6 devant le trigger, et la rend en clair', () => {
+  it('met l’alerte de drawdown du §6 devant la décision, et la rend en clair', () => {
     const mail = renderDailyReport(
       avecRun({ drawdownAlert: { status: 'ACTIVE', drawdown: dec('-0.2612'), reason: 'ALERTE_DRAWDOWN : recul a -26.12 %' } }),
     );
-    expect(mail.subject).toBe('Ubac 2026-09-13 — 100000.00 USDC — jour +4.17 % · cumul +25.00 % — ALERTE DRAWDOWN (recul -26.12 %)');
+    expect(mail.subject).toBe(
+      'Ubac 2026-09-13 — 100000.00 USDC — jour +4.17 % · cumul +25.00 % — ALERTE DRAWDOWN (recul -26.12 %) — aucun declenchement',
+    );
     expect(mail.html).toContain('ALERTE_DRAWDOWN : recul a -26.12 %');
+  });
+
+  /* L'alerte n'ecrase plus la decision : un jour de drawdown avec ordres, l'objet porte les deux (#115). */
+  it('montre l’alerte de drawdown ET la décision avec ses jambes dans l’objet', () => {
+    const tire: ReportOutcome = {
+      ...OUTCOMES[0]!,
+      intent: {
+        ...intent('rebalance', 'poids USDC sous la borne basse : retour a la cible'),
+        trigger: 'CASH_BAND',
+        legs: [
+          { asset: 'BTC', quote: 'USDC', side: 'BUY', amount: dec('4000') as UsdcAmount, limitPrice: PRICES.BTC },
+          { asset: 'ETH', quote: 'USDC', side: 'BUY', amount: dec('2000') as UsdcAmount, limitPrice: PRICES.ETH },
+        ],
+      },
+    };
+    const mail = renderDailyReport(
+      avecRun({
+        outcomes: [tire, ...OUTCOMES.slice(1)],
+        drawdownAlert: { status: 'ACTIVE', drawdown: dec('-0.2617'), reason: 'ALERTE_DRAWDOWN : drawdown a -26.17 %' },
+      }),
+    );
+    expect(mail.subject).toBe(
+      'Ubac 2026-09-13 — 100000.00 USDC — jour +4.17 % · cumul +25.00 % — ALERTE DRAWDOWN (recul -26.17 %) — CASH_BAND, 2 jambe(s)',
+    );
   });
 
   it('le dit plutot que d’inventer un trigger quand aucune ligne n’est en production', () => {
@@ -412,11 +438,11 @@ describe('CV15 — un jour d’apport, le rapport dit ce que l’alerte ne dit p
     }
   });
 
-  it('l’alerte de drawdown garde la tete de l’objet', () => {
+  it('l’alerte de drawdown précède la décision dans l’objet, sans l’effacer', () => {
     const mail = renderDailyReport(
       avecRun({ resync: EXPLIQUE, drawdownAlert: { status: 'ACTIVE', drawdown: dec('-0.2612'), reason: 'ALERTE_DRAWDOWN' } }),
     );
-    expect(mail.subject).toContain('ALERTE DRAWDOWN');
+    expect(mail.subject).toContain('ALERTE DRAWDOWN (recul -26.12 %) — etat resynchronise par un apport, aucun ordre');
     expect(encadre(mail.html)).toHaveLength(1);
   });
 
@@ -547,11 +573,11 @@ describe('objet — les TWR du jour et cumule, ceux du corps et pas d’autres',
     expect(twrDe(renderDailyReport(avecIndices('NaN', '1.20')).subject)).toBe('jour n/d · cumul n/d');
   });
 
-  it('garde le segment un jour d’alerte de drawdown, la mention ALERTE DRAWDOWN en fin', () => {
+  it('garde le segment un jour d’alerte de drawdown, la mention ALERTE DRAWDOWN avant la décision', () => {
     const mail = renderDailyReport(
       avecRun({ drawdownAlert: { status: 'ACTIVE', drawdown: dec('-0.2612'), reason: 'ALERTE_DRAWDOWN' } }),
     );
-    expect(mail.subject).toBe('Ubac 2026-09-13 — 100000.00 USDC — jour +4.17 % · cumul +25.00 % — ALERTE DRAWDOWN (recul -26.12 %)');
+    expect(mail.subject).toBe('Ubac 2026-09-13 — 100000.00 USDC — jour +4.17 % · cumul +25.00 % — ALERTE DRAWDOWN (recul -26.12 %) — aucun declenchement');
   });
 
   it('garde le segment un jour de resynchronisation, la mention en fin', () => {
