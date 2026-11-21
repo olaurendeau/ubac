@@ -55,7 +55,7 @@ export type ReportDrawdown =
   | { readonly status: 'COMPUTED'; readonly drawdown: Decimal }
   | { readonly status: 'UNAVAILABLE'; readonly code: string; readonly reason: string };
 
-export type ReportSuspension =
+export type ReportDrawdownAlert =
   | { readonly status: 'ACTIVE'; readonly drawdown: Decimal; readonly reason: string }
   | { readonly status: 'INACTIVE' };
 
@@ -123,7 +123,7 @@ export interface CompletedRun {
   readonly benchmarks: Readonly<Record<string, Decimal>>;
   readonly benchmarkGaps: readonly ReportGap[];
   readonly drawdown: ReportDrawdown;
-  readonly suspension: ReportSuspension;
+  readonly drawdownAlert: ReportDrawdownAlert;
   /** Lu un jour d'apport seulement : voir `resyncExplique`. */
   readonly resync: ReportResync;
   /** Lu pour l'encadre du recalcul au mid : voir `recalculEncadre`. */
@@ -1148,7 +1148,7 @@ function lexiqueSection(run: CompletedRun): string {
         ? outcome.verdict.rejections.map((rejet) => rejet.code)
         : [],
     ),
-    suspendu: run.suspension.status === 'ACTIVE',
+    alerteDrawdown: run.drawdownAlert.status === 'ACTIVE',
     resynchronise: resyncExplique(run) !== undefined,
     metriquesIndisponibles: run.benchmarkGaps.length > 0,
   });
@@ -1213,15 +1213,15 @@ function recalculEncadre(run: CompletedRun): string {
 }
 
 /**
- * L'objet tient sur un ecran verrouille. Une suspension passe devant le trigger : c'est la seule ligne qui demande une decision humaine.
+ * L'objet tient sur un ecran verrouille. Une alerte de drawdown passe devant le trigger : c'est la seule ligne qui demande une decision humaine, la production ayant decide normalement.
  * Les deux P&L sont les metriques **memes** que la case d'en-tete, mises en forme par le meme `signedPct` : l'objet ne peut pas dire
  * autre chose que le corps. Absents, ils disent « n/d », jamais une variation de valeur brute (C27).
  */
 function subjectOf(run: CompletedRun, jour: Metric, cumul: Metric): string {
   const twr = `jour ${metricText(jour, signedPct, 'n/d')} · cumul ${metricText(cumul, signedPct, 'n/d')}`;
   const tete = `Ubac ${run.runDate} — ${usdc(run.totalValue)} — ${twr}`;
-  if (run.suspension.status === 'ACTIVE') {
-    return `${tete} — SUSPENDU (recul ${signedPct(run.suspension.drawdown)})`;
+  if (run.drawdownAlert.status === 'ACTIVE') {
+    return `${tete} — ALERTE DRAWDOWN (recul ${signedPct(run.drawdownAlert.drawdown)})`;
   }
   if (resyncExplique(run) !== undefined) return `${tete} — etat resynchronise par un apport, aucun ordre`;
   const prod = production(run);
@@ -1235,8 +1235,8 @@ export function renderDailyReport(input: DailyReportInput): DailyReportMail {
   const { run } = input;
 
   const alerte =
-    run.suspension.status === 'ACTIVE'
-      ? `<div style="${ALERT}"><strong>ALERTE — </strong>${escape(run.suspension.reason)}</div>`
+    run.drawdownAlert.status === 'ACTIVE'
+      ? `<div style="${ALERT}"><strong>ALERTE — </strong>${escape(run.drawdownAlert.reason)}</div>`
       : '';
 
   const jour = dayReturn(run, input.previous);

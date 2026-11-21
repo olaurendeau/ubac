@@ -161,8 +161,8 @@ export interface ReconcileObservations {
 
 /**
  * Marqueur en tete du motif de resynchronisation, donc en tete de
- * `decisions.reason` le jour ou l'etat s'est resynchronise. Meme role et meme
- * forme que le `SUSPENSION_MARKER` de `snapshot.ts` : sans lui, un jour ou le
+ * `decisions.reason` le jour ou l'etat s'est resynchronise. Meme role que le
+ * `DRAWDOWN_ALERT_MARKER` de `snapshot.ts` : sans lui, un jour ou le
  * portefeuille a bouge hors du systeme serait indistinguable d'un jour
  * ordinaire des que le push aurait ete oublie.
  *

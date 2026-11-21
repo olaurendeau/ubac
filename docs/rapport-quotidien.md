@@ -42,7 +42,7 @@ s'arrête au 201 ; la réception est affaire de DNS.
 
 ## 2. Ce que le rapport contient
 
-Les six points du §9, dans l'ordre où ils apparaissent. L'alerte de suspension,
+Les six points du §9, dans l'ordre où ils apparaissent. L'alerte de drawdown,
 l'encadré de resynchronisation et l'encadré du recalcul au mid, quand ils
 existent, passent avant l'en-tête :
 
@@ -90,7 +90,7 @@ celui-là ; un rendu qui oublierait le tag part quand même tagué.
 ```
 Ubac 2026-09-13 — 100000.00 USDC — jour +4.17 % · cumul +25.00 % — aucun declenchement
 Ubac 2026-09-13 — 100000.00 USDC — jour -8.33 % · cumul +10.00 % — CASH_BAND, 2 jambe(s)
-Ubac 2026-09-13 — 100000.00 USDC — jour n/d · cumul +25.00 % — SUSPENDU (recul -26.12 %)
+Ubac 2026-09-13 — 100000.00 USDC — jour n/d · cumul +25.00 % — ALERTE DRAWDOWN (recul -26.12 %)
 Ubac 2026-09-13 — 100000.00 USDC — jour +4.17 % · cumul +25.00 % — etat resynchronise par un apport, aucun ordre
 ```
 
@@ -100,7 +100,7 @@ les **mêmes** métriques, mises en forme par le même `signedPct` : signe expli
 deux décimales, point décimal. L'objet ne peut donc pas dire autre chose que le
 corps. Là où la case dit « indisponible » (pas de photo de la veille, indice du
 jour absent ou non fini), l'objet dit « n/d » : jamais une variation de valeur
-brute (C27). Le segment figure aussi les jours de suspension et de
+brute (C27). Le segment figure aussi les jours d'alerte de drawdown et de
 resynchronisation ; la mention qui demande l'attention reste en fin.
 
 La dernière forme est celle d'un jour où l'état interne s'est resynchronisé et
@@ -252,7 +252,7 @@ Quatre absences sont structurelles en phase 1 :
 - **Max drawdown et Sharpe du portefeuille.** La photo porte l'indice et son
   sommet, pas la série ; ni le pire recul passé ni un écart-type ne s'en lisent.
   Ce qui est rendu, et nommé comme tel, est le **recul actuel depuis le plus
-  haut** — celui que la règle de suspension du §6 applique. Ce n'est pas un max
+  haut** — celui que l'alerte du §6 applique. Ce n'est pas un max
   drawdown, et l'appeler ainsi serait faux.
 - **Courbes ladder et DCA.** `snapshot.ts` ne les écrit pas. C'est un écart
   assumé avec le §9 de la spec, traité à part en section 6 : le rapport le dit
@@ -441,7 +441,7 @@ Vingt entrées fixes, présentes chaque jour parce que les titres de section et 
 en-têtes de colonne qui les portent le sont. Et des entrées **conditionnelles**,
 rendues seulement quand le rapport du jour imprime ce qu'elles définissent : une
 par valeur de `Trigger` réellement imprimée, une par `RejectionCode` réellement
-imprimé, « suspension » quand l'encadré est présent, « etat interne
+imprimé, « alerte de drawdown » quand l'encadré est présent, « etat interne
 resynchronise » quand celui de CV15 l'est, et la convention de nommage
 des clés de la photo quand le tableau des trous l'est. Gloser les neuf codes de
 refus tous les jours serait neuf lignes de bruit pour des rejets qui n'arrivent
@@ -712,11 +712,11 @@ Jamais seule.** Un lecteur qui ne distingue pas les teintes, un client qui les
 écrase ou un affichage en niveaux de gris lit le même rapport. Le vert et le
 rouge pleins (`#1e7a46`, `#b3261e`) sont réservés à la performance ; l'ambre dit
 « à surveiller », le rouge pâle « anormal » (verdict refusé, bande franchie, ordre
-qui n'a pas abouti normalement, suspension), le vert pâle « accepté », le bleu
+qui n'a pas abouti normalement, alerte de drawdown), le vert pâle « accepté », le bleu
 « information ».
 
 Elle n'ajoute que **quatre expressions** au texte (décision C) : « ALERTE — »
-devant le texte de la suspension, « — proche » au bout de la distance à une borne
+devant le texte de l'alerte de drawdown, « — proche » au bout de la distance à une borne
 de moins de 2 points (de 0,10 pour le ratio), « ! » après un écart d'allocation
 d'au moins 5 points, et la phrase de l'encadré ATTENTION. Le lexique n'en glose
 aucune : aucune n'est un terme du rapport.
@@ -743,7 +743,7 @@ signé, la pastille d'un verdict, la note « Recul actuel »).
 | Compte nul du tableau des ordres, frais réels à `0.00 USDC` | — | `#6b7482` | le chiffre `0` |
 | `Non execute` et `Rejete (post-only)` non nuls (compte, et état du détail) | `#fff4db` | `#4d3500` gras | le libellé |
 | `Rejete (autre motif)` et `Statut non lu` non nuls (compte, et état du détail) | `#fdecec` | `#8a1c12` gras | le libellé |
-| Encadré ALERTE (suspension) | `#fdecec`, barre `#c0392b` | `#5c1410` | le mot « ALERTE — » |
+| Encadré ALERTE (drawdown) | `#fdecec`, barre `#c0392b` | `#5c1410` | le mot « ALERTE — » |
 | Encadré ATTENTION (ordre anormal) | `#fff4db`, barre `#c98a00` | `#4d3500` | sa phrase |
 | Titre de section | `#eef1f5`, barre `#2c6aa0` | `#16191d` | le titre |
 | En-tête de tableau | `#f3f5f8` | `#5a6472` | — |
@@ -790,7 +790,7 @@ un statut non lu le même jour le fait paraître quand même.
 `test/report/daily-report.test.ts` (bloc S6) le fait sur chaque cas d'une
 matrice de rendus — le jour nominal à 2,00 points de la borne, « proche »,
 exactement sur la borne, bande franchie avec un écart d'allocation à 4,99, 5,00 et
-au-delà, les six états d'ordre, suspension, resynchronisation, recalcul au mid,
+au-delà, les six états d'ordre, alerte de drawdown, resynchronisation, recalcul au mid,
 verdict refusé, états dégradés, distance indéfinie.
 
 1. **Structure.** Ni `<style`, ni `class=`, ni `<script`, ni `<img`, ni

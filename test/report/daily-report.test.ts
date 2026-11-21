@@ -112,7 +112,7 @@ const RUN: CompletedRun = {
   benchmarks: BENCHMARKS,
   benchmarkGaps: [],
   drawdown: { status: 'COMPUTED', drawdown: dec('-0.0385') },
-  suspension: { status: 'INACTIVE' },
+  drawdownAlert: { status: 'INACTIVE' },
   resync: { status: 'NOT_NEEDED' },
   liveRecompute: { status: 'NOT_NEEDED' },
   outcomes: OUTCOMES,
@@ -301,7 +301,7 @@ describe('rendu — la sortie attendue, ligne a ligne', () => {
       "ladder | Une strategie en echelle : une ancre par actif, un achat quand le cours passe un palier sous elle, une vente quand il en passe un au-dessus. En phase 1 elle est en ombre.",
       'DCA | Dollar cost averaging : acheter un montant fixe a intervalle fixe, sans regarder le cours. En phase 1 elle est en ombre.',
       "max drawdown | La pire baisse jamais subie entre un sommet et le creux qui l'a suivi, sur toute la periode mesuree.",
-      "recul actuel depuis le plus haut | De combien l'indice est descendu sous son plus haut connu, aujourd'hui et non dans le passe. C'est la mesure sur laquelle la suspension se declenche.",
+      "recul actuel depuis le plus haut | De combien l'indice est descendu sous son plus haut connu, aujourd'hui et non dans le passe. C'est la mesure sur laquelle l'alerte de drawdown se declenche.",
       'Sharpe 90 j | Le rendement rapporte a son agitation sur les 90 derniers jours : plus il est haut, plus la performance a ete reguliere plutot que chanceuse.',
       'fenetre OHLCV | Le nombre de jours de cours — ouverture, haut, bas, cloture, volume — que le run a relus pour calculer les courbes de reference.',
       "mouvement | Une ligne des derniers mouvements : un apport ou un retrait d'USDC, ou un ordre execute en tout ou en partie. Le montant est vu du cash : un retrait ou un achat est negatif. Le TWR neutralise les apports et les retraits ; un ordre ne fait qu'echanger une ligne contre une autre.",
@@ -356,12 +356,12 @@ describe('§9 — un rapport part meme quand le trigger vaut NONE', () => {
     );
   });
 
-  it('met la suspension du §6 devant le trigger, et la rend en clair', () => {
+  it('met l’alerte de drawdown du §6 devant le trigger, et la rend en clair', () => {
     const mail = renderDailyReport(
-      avecRun({ suspension: { status: 'ACTIVE', drawdown: dec('-0.2612'), reason: 'SUSPENSION_DRAWDOWN : recul a -26.12 %' } }),
+      avecRun({ drawdownAlert: { status: 'ACTIVE', drawdown: dec('-0.2612'), reason: 'ALERTE_DRAWDOWN : recul a -26.12 %' } }),
     );
-    expect(mail.subject).toBe('Ubac 2026-09-13 — 100000.00 USDC — jour +4.17 % · cumul +25.00 % — SUSPENDU (recul -26.12 %)');
-    expect(mail.html).toContain('SUSPENSION_DRAWDOWN : recul a -26.12 %');
+    expect(mail.subject).toBe('Ubac 2026-09-13 — 100000.00 USDC — jour +4.17 % · cumul +25.00 % — ALERTE DRAWDOWN (recul -26.12 %)');
+    expect(mail.html).toContain('ALERTE_DRAWDOWN : recul a -26.12 %');
   });
 
   it('le dit plutot que d’inventer un trigger quand aucune ligne n’est en production', () => {
@@ -412,11 +412,11 @@ describe('CV15 — un jour d’apport, le rapport dit ce que l’alerte ne dit p
     }
   });
 
-  it('la suspension garde la tete de l’objet', () => {
+  it('l’alerte de drawdown garde la tete de l’objet', () => {
     const mail = renderDailyReport(
-      avecRun({ resync: EXPLIQUE, suspension: { status: 'ACTIVE', drawdown: dec('-0.2612'), reason: 'SUSPENSION_DRAWDOWN' } }),
+      avecRun({ resync: EXPLIQUE, drawdownAlert: { status: 'ACTIVE', drawdown: dec('-0.2612'), reason: 'ALERTE_DRAWDOWN' } }),
     );
-    expect(mail.subject).toContain('SUSPENDU');
+    expect(mail.subject).toContain('ALERTE DRAWDOWN');
     expect(encadre(mail.html)).toHaveLength(1);
   });
 
@@ -547,11 +547,11 @@ describe('objet — les TWR du jour et cumule, ceux du corps et pas d’autres',
     expect(twrDe(renderDailyReport(avecIndices('NaN', '1.20')).subject)).toBe('jour n/d · cumul n/d');
   });
 
-  it('garde le segment un jour de suspension, la mention SUSPENDU en fin', () => {
+  it('garde le segment un jour d’alerte de drawdown, la mention ALERTE DRAWDOWN en fin', () => {
     const mail = renderDailyReport(
-      avecRun({ suspension: { status: 'ACTIVE', drawdown: dec('-0.2612'), reason: 'SUSPENSION_DRAWDOWN' } }),
+      avecRun({ drawdownAlert: { status: 'ACTIVE', drawdown: dec('-0.2612'), reason: 'ALERTE_DRAWDOWN' } }),
     );
-    expect(mail.subject).toBe('Ubac 2026-09-13 — 100000.00 USDC — jour +4.17 % · cumul +25.00 % — SUSPENDU (recul -26.12 %)');
+    expect(mail.subject).toBe('Ubac 2026-09-13 — 100000.00 USDC — jour +4.17 % · cumul +25.00 % — ALERTE DRAWDOWN (recul -26.12 %)');
   });
 
   it('garde le segment un jour de resynchronisation, la mention en fin', () => {
@@ -861,12 +861,12 @@ describe('R1 a R6 — le lexique vit dans le rapport, et n’y est ni mort ni mu
     expect(avecRejet.some((entree) => entree.startsWith('MIN_CASH |'))).toBe(true);
     expect(avecRejet.filter((entree) => /^(ASSET_NOT_ALLOWED|COOLDOWN|PRICE_SANITY) \|/.test(entree))).toHaveLength(0);
 
-    /* Une suspension : son entree apparait, et pas avant. */
-    expect(nominal.some((entree) => entree.startsWith('suspension |'))).toBe(false);
-    const suspendu = entrees(
-      renderDailyReport(avecRun({ suspension: { status: 'ACTIVE', drawdown: dec('-0.2612'), reason: 'SUSPENSION_DRAWDOWN : recul a -26.12 %' } })).html,
+    /* Une alerte de drawdown : son entree apparait, et pas avant. */
+    expect(nominal.some((entree) => entree.startsWith('alerte de drawdown |'))).toBe(false);
+    const alerteDd = entrees(
+      renderDailyReport(avecRun({ drawdownAlert: { status: 'ACTIVE', drawdown: dec('-0.2612'), reason: 'ALERTE_DRAWDOWN : recul a -26.12 %' } })).html,
     );
-    expect(suspendu.some((entree) => entree.startsWith('suspension |'))).toBe(true);
+    expect(alerteDd.some((entree) => entree.startsWith('alerte de drawdown |'))).toBe(true);
 
     /* Le tableau des trous : la convention de nommage des cles est glosee avec lui, jamais sans. */
     expect(nominal.some((entree) => entree.startsWith('cle |'))).toBe(false);
@@ -885,7 +885,7 @@ describe('R1 a R6 — le lexique vit dans le rapport, et n’y est ni mort ni mu
   it('R6 — aucun caractere accentue dans le rapport rendu, lexique compris', () => {
     /* NFD decompose « e » accentue en « e » suivi d'une diacritique combinante ; ae et oe lies ne se decomposent pas. */
     const accentue = /[̀-ͯ]|[æœÆŒ]/;
-    for (const input of [INPUT, avecRun({ benchmarkGaps: [{ key: 'hold_btc_*', code: 'EMPTY_SERIES', reason: 'aucun jour' }], suspension: { status: 'ACTIVE', drawdown: dec('-0.30'), reason: 'SUSPENSION_DRAWDOWN' } })]) {
+    for (const input of [INPUT, avecRun({ benchmarkGaps: [{ key: 'hold_btc_*', code: 'EMPTY_SERIES', reason: 'aucun jour' }], drawdownAlert: { status: 'ACTIVE', drawdown: dec('-0.30'), reason: 'ALERTE_DRAWDOWN' } })]) {
       const mail = renderDailyReport(input);
       expect(mail.html.normalize('NFD')).not.toMatch(accentue);
       expect(mail.subject.normalize('NFD')).not.toMatch(accentue);
@@ -960,12 +960,12 @@ describe('R7 a R16 — le graphe du TWR cumule', () => {
   it('R7 — alerte et resynchronisation restent au-dessus de l’en-tete, donc du graphe', () => {
     const html = renderDailyReport(
       avecRun({
-        suspension: { status: 'ACTIVE', drawdown: dec('-0.2612'), reason: 'SUSPENSION_DRAWDOWN' },
+        drawdownAlert: { status: 'ACTIVE', drawdown: dec('-0.2612'), reason: 'ALERTE_DRAWDOWN' },
         resync: { status: 'RESYNCHRONIZED', explainedByFlows: true, reason: 'ETAT_RESYNCHRONISE' },
       }),
     ).html;
     const entete = positions(html)[0] ?? -1;
-    for (const tete of ['SUSPENSION_DRAWDOWN', 'Etat interne resynchronise']) {
+    for (const tete of ['ALERTE_DRAWDOWN', 'Etat interne resynchronise']) {
       expect(html.indexOf(tete)).toBeGreaterThan(-1);
       expect(html.indexOf(tete)).toBeLessThan(entete);
     }
@@ -1347,9 +1347,9 @@ const MATRICE: readonly CasDeMatrice[] = [
   { cas: 'ordres-statut-non-lu-seul', input: execution(etat('NON_LU')), vise: 'Statut non lu | inconnus' },
   { cas: 'ordres-autre-motif-seul', input: execution([], EXECUTION.rejets.filter((r) => !r.postOnly)), vise: 'Rejete (autre motif) | 1' },
   {
-    cas: 'suspension',
-    input: avecRun({ suspension: { status: 'ACTIVE', drawdown: dec('-0.2612'), reason: 'SUSPENSION_DRAWDOWN : recul a -26.12 %' } }),
-    vise: 'SUSPENSION_DRAWDOWN : recul a -26.12 %',
+    cas: 'alerte-drawdown',
+    input: avecRun({ drawdownAlert: { status: 'ACTIVE', drawdown: dec('-0.2612'), reason: 'ALERTE_DRAWDOWN : recul a -26.12 %' } }),
+    vise: 'ALERTE_DRAWDOWN : recul a -26.12 %',
   },
   {
     cas: 'resynchronisation-expliquee',
@@ -1510,7 +1510,7 @@ describe('S6 — les controles mordent', () => {
 
   describe('sansMotsAjoutes — quatre regles, chacune retire son mot et rien d’autre', () => {
     it('« ALERTE — » en tete de ligne', () => {
-      expect(sansMotsAjoutes(['ALERTE — SUSPENSION_DRAWDOWN : recul a -26.12 %'])).toEqual(['SUSPENSION_DRAWDOWN : recul a -26.12 %']);
+      expect(sansMotsAjoutes(['ALERTE — ALERTE_DRAWDOWN : recul a -26.12 %'])).toEqual(['ALERTE_DRAWDOWN : recul a -26.12 %']);
       expect(sansMotsAjoutes(['Un ALERTE — au milieu', 'ALERTE sans tiret'])).toEqual(['Un ALERTE — au milieu', 'ALERTE sans tiret']);
     });
 
@@ -1560,7 +1560,7 @@ describe('S6 — les controles mordent', () => {
       'ordres-six-etats': { attention: 1 },
       'ordres-statut-non-lu-seul': { attention: 1 },
       'ordres-autre-motif-seul': { attention: 1 },
-      suspension: { alerte: 1 },
+      'alerte-drawdown': { alerte: 1 },
     };
 
     it('sur le texte rendu de chaque cas, elles retirent exactement les mots ajoutes, a leur place', () => {
@@ -1840,27 +1840,27 @@ const ANORMAL = 'background:#fdecec;color:#8a1c12;font-weight:700';
 const NUL = 'color:#6b7482';
 const ATTENTION_PHRASE = "Attention : au moins un ordre n'a pas abouti normalement. Voir les lignes colorees ci-dessus.";
 
-describe('S2 — la suspension s’ouvre sur « ALERTE — » et garde sa boite rouge', () => {
-  const reason = 'SUSPENSION_DRAWDOWN : recul a -26.12 %';
-  const suspendu = (motif: string): string =>
-    renderDailyReport(avecRun({ suspension: { status: 'ACTIVE', drawdown: dec('-0.2612'), reason: motif } })).html;
+describe('S2 — l’alerte de drawdown s’ouvre sur « ALERTE — » et garde sa boite rouge', () => {
+  const reason = 'ALERTE_DRAWDOWN : recul a -26.12 %';
+  const alerteDd = (motif: string): string =>
+    renderDailyReport(avecRun({ drawdownAlert: { status: 'ACTIVE', drawdown: dec('-0.2612'), reason: motif } })).html;
 
   it('le mot est en gras en tete de la boite, le motif du run suit tel quel', () => {
-    const html = suspendu(reason);
+    const html = alerteDd(reason);
     expect(html).toContain(
       `<div style="background:#fdecec;color:#5c1410;border-left:3px solid #c0392b;padding:8px;margin:10px 0"><strong>ALERTE — </strong>${reason}</div>`,
     );
     expect(lignes(html)).toContain(`ALERTE — ${reason}`);
   });
 
-  it('sans suspension, ni boite ni mot', () => {
+  it('sans alerte de drawdown, ni boite ni mot', () => {
     const calme = renderDailyReport(INPUT).html;
     expect(calme).not.toContain('ALERTE');
     expect(calme).not.toContain('#c0392b');
   });
 
   it('le motif reste echappe', () => {
-    expect(suspendu('<b>x</b>')).toContain('<strong>ALERTE — </strong>&lt;b&gt;x&lt;/b&gt;</div>');
+    expect(alerteDd('<b>x</b>')).toContain('<strong>ALERTE — </strong>&lt;b&gt;x&lt;/b&gt;</div>');
   });
 });
 

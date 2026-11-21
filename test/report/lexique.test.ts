@@ -23,7 +23,7 @@ import { lexique } from '../../src/report/lexique.js';
 const VIDE: LexiqueContexte = {
   triggers: [],
   rejets: [],
-  suspendu: false,
+  alerteDrawdown: false,
   resynchronise: false,
   metriquesIndisponibles: false,
 };
@@ -64,7 +64,7 @@ describe('R2 — chaque entree porte un terme et une definition', () => {
   const complet = lexique({
     triggers: TRIGGERS,
     rejets: REJETS,
-    suspendu: true,
+    alerteDrawdown: true,
     resynchronise: true,
     metriquesIndisponibles: true,
   });
@@ -129,10 +129,10 @@ describe('R5 — les entrees conditionnelles suivent ce que le rapport imprime',
     expect(fixes).toContain('indice de croissance');
     /* Derive de la fenetre du noyau : la changer ne peut pas oublier le terme. */
     expect(fixes).toContain(`Sharpe ${String(SHARPE_WINDOW)} j`);
-    /* Et rien de conditionnel : ni trigger, ni refus, ni suspension, ni convention de cle. */
+    /* Et rien de conditionnel : ni trigger, ni refus, ni alerte de drawdown, ni convention de cle. */
     expect(fixes).not.toContain('NONE');
     expect(fixes).not.toContain('MIN_CASH');
-    expect(fixes).not.toContain('suspension');
+    expect(fixes).not.toContain('alerte de drawdown');
     expect(fixes).not.toContain('cle');
   });
 
@@ -146,11 +146,11 @@ describe('R5 — les entrees conditionnelles suivent ce que le rapport imprime',
     expect(termes({ triggers: ['NONE', 'NONE', 'CASH_BAND', 'NONE'] }).filter((t) => t === 'NONE')).toHaveLength(1);
   });
 
-  it('la suspension et la convention de cle suivent leur encadre et leur tableau', () => {
-    expect(termes({ suspendu: true })).toContain('suspension');
+  it('l’alerte de drawdown et la convention de cle suivent leur encadre et leur tableau', () => {
+    expect(termes({ alerteDrawdown: true })).toContain('alerte de drawdown');
     expect(termes({ metriquesIndisponibles: true })).toContain('cle');
-    expect(termes({ suspendu: true })).not.toContain('cle');
-    expect(termes({ metriquesIndisponibles: true })).not.toContain('suspension');
+    expect(termes({ alerteDrawdown: true })).not.toContain('cle');
+    expect(termes({ metriquesIndisponibles: true })).not.toContain('alerte de drawdown');
   });
 
   /**

@@ -37,8 +37,8 @@ export interface LexiqueContexte {
   readonly triggers: readonly Trigger[];
   /** Les codes de refus effectivement rendus. */
   readonly rejets: readonly RejectionCode[];
-  /** L'encadre de suspension est-il present. */
-  readonly suspendu: boolean;
+  /** L'encadre d'alerte de drawdown est-il present. */
+  readonly alerteDrawdown: boolean;
   /** L'encadre d'un etat resynchronise par un apport est-il present (CV15). */
   readonly resynchronise: boolean;
   /** Le tableau « Metriques indisponibles » est-il present. */
@@ -151,7 +151,7 @@ const FIXES: readonly EntreeLexique[] = [
   ),
   entree(
     'recul actuel depuis le plus haut',
-    "De combien l'indice est descendu sous son plus haut connu, aujourd'hui et non dans le passe. C'est la mesure sur laquelle la suspension se declenche.",
+    "De combien l'indice est descendu sous son plus haut connu, aujourd'hui et non dans le passe. C'est la mesure sur laquelle l'alerte de drawdown se declenche.",
   ),
   entree(
     `Sharpe ${String(SHARPE_WINDOW)} j`,
@@ -196,9 +196,9 @@ const REJETS: Readonly<Record<RejectionCode, string>> = {
     "Les soldes lus sur l'exchange ne concordent pas avec la derniere photo : rien n'est decide tant que l'ecart n'est pas explique.",
 };
 
-const SUSPENSION = entree(
-  'suspension',
-  'La production est mise en pause parce que le recul depuis le plus haut a franchi son seuil ; aucun ordre ne sera propose tant qu\'elle dure.',
+const ALERTE_DRAWDOWN = entree(
+  'alerte de drawdown',
+  "Le recul depuis le plus haut a franchi son seuil. C'est un signal pour vous : les reequilibrages continuent et la production decide comme les autres jours, aucune vente n'est declenchee.",
 );
 
 const RESYNCHRONISE = entree(
@@ -231,7 +231,7 @@ export function lexique(contexte: LexiqueContexte): readonly EntreeLexique[] {
       entree(trigger, TRIGGERS[trigger]),
     ),
     ...uniques(contexte.rejets, ORDRE_REJETS).map((code) => entree(code, REJETS[code])),
-    ...(contexte.suspendu ? [SUSPENSION] : []),
+    ...(contexte.alerteDrawdown ? [ALERTE_DRAWDOWN] : []),
     ...(contexte.resynchronise ? [RESYNCHRONISE] : []),
     ...(contexte.metriquesIndisponibles ? [CLE] : []),
   ];

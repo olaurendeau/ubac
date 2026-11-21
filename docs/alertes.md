@@ -89,7 +89,7 @@ Le §9 en nomme six. Un ajout est assumé, et un nom est élargi.
 | Événement | Priorité | Se déclenche quand |
 |---|---|---|
 | `REBALANCE_EXECUTED` | high | au moins un ordre a été placé ; porte le compte placé et le compte exécuté |
-| `DRAWDOWN` | urgent | la suspension du §6 est active |
+| `DRAWDOWN` | urgent | le drawdown a atteint le seuil du §6 (alerte seule, les rééquilibrages continuent) |
 | `REBALANCE_TOO_LARGE` | urgent | un rejet porte ce code |
 | `RECONCILIATION_DRIFT` | urgent | l'état interne s'est resynchronisé sur l'exchange ; son texte dit aussi qu'aucun ordre ne part ce jour-là (E60). **Ne part pas** quand toutes les divergences sont expliquées par les flux enregistrés et que le run a conclu : le rapport du jour porte alors le même texte (CV15, `docs/reconciliation.md` §2 ter) |
 | `RISK_REJECTED` | high | un verdict est rejeté pour tout autre code, ou l'exchange refuse une jambe pour un autre motif que le post-only |
@@ -148,10 +148,10 @@ classement se fait par égalité exacte sur les codes
 tu.
 
 **Le drawdown ne définit pas son propre seuil.** L'alerte part exactement quand
-la suspension du §6 est active, et son corps est le texte que porte la ligne de
-`decisions` du jour — produit une seule fois par `src/jobs/snapshot.ts`. L'alerte
-et la base ne peuvent donc pas raconter deux chiffres différents, et il n'existe
-pas un second seuil qui pourrait dériver du premier. Conséquence : la borne est
+le seuil du §6 est atteint, et son corps est le texte que porte la ligne
+`ALERTE_DRAWDOWN` du journal du run et l'encadré du rapport — produit une seule
+fois par `src/jobs/snapshot.ts`. L'alerte, le journal et le rapport ne peuvent
+donc pas raconter deux chiffres différents, et il n'existe pas un second seuil qui pourrait dériver du premier. Conséquence : la borne est
 **incluse** comme au §6, et non « plus de 25 % » comme le §9 pourrait se lire.
 
 ### Ce qui n'alerte pas
@@ -189,7 +189,7 @@ le point d'entrée doit toujours la voir et sortir en 1. Alerter n'est pas
 rattraper.
 
 Une exception qui survient **après** le calcul de la photo emporte avec elle un
-drawdown déjà connu : le résultat d'abandon porte donc la suspension, et les deux
+drawdown déjà connu : le résultat d'abandon porte donc l'alerte de drawdown, et les deux
 alertes partent. Sans ce champ, le drawdown de ce jour-là serait perdu.
 
 ### La tension, et comment elle est tranchée

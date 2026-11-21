@@ -20,7 +20,7 @@ import type {
   SnapshotRecord,
   TransitionToRecord,
 } from '../../src/adapters/db.js';
-import { PORTFOLIO_KEYS, SUSPENSION_MARKER } from '../../src/jobs/snapshot.js';
+import { PORTFOLIO_KEYS, DRAWDOWN_ALERT_MARKER } from '../../src/jobs/snapshot.js';
 import type { DailyCandle, DailyWindow } from '../../src/adapters/market.js';
 import type { HttpOutcome, HttpRequest, HttpSend } from '../../src/adapters/http.js';
 import { RUN_MARKER, openHealthcheck } from '../../src/adapters/healthcheck.js';
@@ -1101,7 +1101,7 @@ describe('§4 — deux runs le meme jour, une seule decision par strategie', () 
   });
 });
 
-// --- Etape 7 et suspension --------------------------------------------------
+// --- Etape 7 et alerte de drawdown --------------------------------------------------
 
 /** Une photo de la veille, chainable : positions accordees et indice a 1. */
 function veille(total: string): SnapshotRecord {
@@ -1113,50 +1113,73 @@ function veilleAmple(total: string): SnapshotRecord {
   return cache({ BTC: qty('1'), ETH: qty('19.2'), USDC: qty('2000') }, total);
 }
 
-describe('§6, §8 etape 7 — la photo du jour et la suspension au drawdown', () => {
+describe('§6, §8 etape 7 — la photo du jour et l’alerte de drawdown', () => {
   /*
-   * Les deux cotes du seuil sur le meme portefeuille hors bande : a 200 000 USDC
-   * la veille le recul vaut 50 %, a 130 000 il vaut 23 %. Seule la premiere
-   * ligne change de comportement, donc la difference vient bien du drawdown.
+   * Decision du 2026-11-21 : le drawdown ne suspend plus. Les deux cotes du seuil
+   * sur le meme portefeuille hors bande — a 200 000 USDC la veille le recul vaut
+   * 50 %, a 130 000 il vaut 23 % — doivent donner la meme decision de production :
+   * seule l'alerte differe.
    */
-  it('au-dela du seuil, la production est suspendue et les ombres continuent', async () => {
+  it('au-dela du seuil, la production decide normalement et l’alerte part', async () => {
     const h = harnais({ balances: HORS_BANDE, snapshot: veille('200000') });
     const result = complete(await lance(h));
 
-    expect(result.suspension.status).toBe('ACTIVE');
+    expect(result.drawdownAlert.status).toBe('ACTIVE');
     const parNom = new Map(result.outcomes.map((o) => [o.strategy, o]));
-    expect(parNom.get('rebalance')?.intent.trigger).toBe('NONE');
-    expect(parNom.get('rebalance')?.intent.legs).toEqual([]);
-    // Les ombres ne passent aucun ordre : les suspendre couperait la comparaison
-    // au moment ou elle est la plus interessante.
+    expect(parNom.get('rebalance')?.intent.trigger).toBe('CASH_BAND');
+    expect(parNom.get('rebalance')?.intent.legs).toHaveLength(2);
     expect(parNom.get('rebalance_ab')?.intent.trigger).toBe('CASH_BAND');
-    expect(parNom.get('rebalance_ab')?.intent.legs).toHaveLength(2);
     expect(parNom.get('dca')?.isShadow).toBe(true);
     expect(h.table.size).toBe(4);
+    expect(evenements(h)).toContain('DRAWDOWN');
   });
 
   /*
-   * La trace, et non le seul comportement : sans elle un jour suspendu porte
-   * exactement la meme ligne qu'un jour ou rien n'a declenche — `trigger NONE`,
-   * zero jambe — et la base ne permet plus de les distinguer.
+   * La borne elle-meme : 100 000 -> 75 000 USDC fait exactement -25 %, et la
+   * production, qui a du cash a 46,7 %, achete. C'est le motif de la decision :
+   * un plongeon est le moment de continuer a acheter.
    */
-  it('la suspension laisse sa trace dans decisions, et le run la journalise', async () => {
+  it('a -25 % pile, la production decide normalement (achats) et l’alerte part', async () => {
+    const positions = { BTC: qty('0.4'), ETH: qty('8'), USDC: qty('35000') };
+    const h = harnais({
+      balances: [solde('BTC', '0.4'), solde('ETH', '8'), solde('USDC', '35000')],
+      snapshot: cache(positions, '100000'),
+    });
+    const result = complete(await lance(h));
+
+    expect(result.drawdown.status === 'COMPUTED' && result.drawdown.drawdown.toString()).toBe('-0.25');
+    expect(result.drawdownAlert.status).toBe('ACTIVE');
+    const production = result.outcomes.find((o) => !o.isShadow);
+    expect(production?.intent.trigger).toBe('CASH_BAND');
+    expect(production?.intent.legs.length).toBeGreaterThan(0);
+    expect(production?.intent.legs.every((jambe) => jambe.side === 'BUY')).toBe(true);
+    expect(production?.verdict.status).toBe('ACCEPTED');
+    expect(evenements(h)).toContain('DRAWDOWN');
+  });
+
+  it('juste au-dessus du seuil, aucune alerte et la meme decision', async () => {
+    const h = harnais({ balances: HORS_BANDE, snapshot: veille('130000') });
+    const result = complete(await lance(h));
+
+    expect(result.drawdownAlert.status).toBe('INACTIVE');
+    expect(result.outcomes.find((o) => !o.isShadow)?.intent.trigger).toBe('CASH_BAND');
+    expect(evenements(h)).not.toContain('DRAWDOWN');
+    expect(h.lignes.some((l) => l.includes(DRAWDOWN_ALERT_MARKER))).toBe(false);
+  });
+
+  /*
+   * La trace : le seuil atteint reste lisible dans le journal du run, et la ligne
+   * de `decisions` ne dit rien d'autre que ce que `decide()` a formule.
+   */
+  it('le seuil atteint laisse sa trace dans le journal, sans toucher decisions', async () => {
     const h = harnais({ balances: HORS_BANDE, snapshot: veille('200000') });
     await lance(h);
 
+    expect(h.lignes.some((l) => l.includes(DRAWDOWN_ALERT_MARKER) && l.includes('-50.00 %'))).toBe(true);
     const ligne = h.table.get(`${RUN_DATE}|rebalance|false`);
-    expect(ligne?.intent.reason).toContain(SUSPENSION_MARKER);
-    expect(ligne?.intent.reason).toContain('-50.00 %');
-    // La cible permanente reste lisible : la production la vise toujours.
+    expect(ligne?.intent.trigger).toBe('CASH_BAND');
+    expect(ligne?.intent.reason).not.toContain(DRAWDOWN_ALERT_MARKER);
     expect(ligne?.intent.weightsTarget.USDC.toString()).toBe('0.3');
-    expect(h.lignes.some((l) => l.includes(SUSPENSION_MARKER))).toBe(true);
-    // Le jour sans suspension n'a aucune ligne qui porte le marqueur.
-    const sans = harnais({ balances: HORS_BANDE, snapshot: veille('130000') });
-    await lance(sans);
-    const libre = sans.table.get(`${RUN_DATE}|rebalance|false`);
-    expect(libre?.intent.trigger).toBe('CASH_BAND');
-    // Meme colonne `weights_target` suspendu ou non : la ligne reste lisible.
-    expect(libre?.intent.weightsTarget.USDC.toString()).toBe('0.3');
   });
 
   it('ecrit la photo du jour, avec ses poids, ses positions et ses benchmarks', async () => {
@@ -1191,7 +1214,7 @@ describe('§6, §8 etape 7 — la photo du jour et la suspension au drawdown', (
     expect(h.photos.size).toBe(2);
     expect(premier.snapshot.status).toBe('TO_RECORD');
     expect(second.snapshot).toMatchObject({ status: 'SKIPPED', code: 'ALREADY_SNAPSHOTTED' });
-    // Le meme chiffre aux deux runs : la suspension ne peut pas basculer entre eux.
+    // Le meme chiffre aux deux runs : l'alerte ne peut pas basculer entre eux.
     expect(premier.drawdown.status === 'COMPUTED' && premier.drawdown.drawdown.toString()).toBe('0');
     expect(second.drawdown.status === 'COMPUTED' && second.drawdown.drawdown.toString()).toBe('0');
   });
@@ -1253,15 +1276,15 @@ describe('§9 — le rapport quotidien part par Brevo', () => {
     expect(result.report.mail).toEqual({ status: 'SENT', httpStatus: 201 });
   });
 
-  /* Les deux autres sujets : le declenchement, et la suspension qui passe devant. */
-  it('part aussi quand le run declenche, et quand il est suspendu', async () => {
+  /* Les deux autres sujets : le declenchement, et l'alerte de drawdown qui passe devant. */
+  it('part aussi quand le run declenche, et quand le drawdown est au seuil', async () => {
     const declenche = harnais({ balances: HORS_BANDE });
     await lance(declenche);
     expect(courrier(declenche).subject).toContain('CASH_BAND, 2 jambe(s)');
 
-    const suspendu = harnais({ balances: HORS_BANDE, snapshot: veille('200000') });
-    await lance(suspendu);
-    expect(courrier(suspendu).subject).toContain('SUSPENDU (recul -50.00 %)');
+    const alerte = harnais({ balances: HORS_BANDE, snapshot: veille('200000') });
+    await lance(alerte);
+    expect(courrier(alerte).subject).toContain('ALERTE DRAWDOWN (recul -50.00 %)');
   });
 
   it('porte l’expediteur, le destinataire et le tag daily-report du §9', async () => {
@@ -1660,25 +1683,25 @@ describe('§9 — les alertes push', () => {
     expect(h.pushes[0]?.payload.topic).toBe('ubac-test');
   });
 
-  it('pousse DRAWDOWN quand la suspension du §6 est active', async () => {
+  it('pousse DRAWDOWN quand le seuil du §6 est atteint, sans rien suspendre', async () => {
     const h = harnais({ balances: TROP_AMPLE, snapshot: veilleAmple('200000') });
     const result = complete(await lance(h));
 
-    expect(result.suspension.status).toBe('ACTIVE');
+    expect(result.drawdownAlert.status).toBe('ACTIVE');
     /*
-     * La production est suspendue ; l'ombre `rebalance_ab` ne l'est pas, declenche
-     * sur le meme portefeuille hors bande et bute sur le plafond (E31) : elle ne
-     * place rien, mais son refus n'est pas silencieux.
+     * La production decide normalement : sur ce portefeuille hors bande elle bute
+     * sur le plafond (E31) comme l'ombre `rebalance_ab`, et chacun des deux refus
+     * a son alerte, le drawdown restant la premiere.
      */
-    expect(evenements(h)).toEqual(['DRAWDOWN', 'REBALANCE_TOO_LARGE']);
-    expect(h.pushes[1]?.payload.title).toContain('rebalance_ab (ombre)');
-    // Le meme texte que la ligne de `decisions` : une seule source, un seul chiffre.
-    expect(h.pushes[0]?.payload.message).toBe(h.table.get(`${RUN_DATE}|rebalance|false`)?.intent.reason);
+    expect(evenements(h)).toEqual(['DRAWDOWN', 'REBALANCE_TOO_LARGE', 'REBALANCE_TOO_LARGE']);
+    expect(h.pushes[0]?.payload.message).toContain(DRAWDOWN_ALERT_MARKER);
+    expect(h.table.get(`${RUN_DATE}|rebalance|false`)?.intent.trigger).toBe('CASH_BAND');
+    expect(h.pushes[2]?.payload.title).toContain('rebalance_ab (ombre)');
   });
 
   /*
-   * Un abandon posterieur au calcul de la photo connait la suspension : les deux
-   * faits partent, dans l'ordre du catalogue. Sans la suspension portee par le
+   * Un abandon posterieur au calcul de la photo connait l'alerte : les deux
+   * faits partent, dans l'ordre du catalogue. Sans l'alerte portee par le
    * resultat d'abandon, le drawdown de ce jour-la serait perdu.
    */
   it('pousse le drawdown ET l’abandon quand le run s’arrete apres la photo', async () => {
@@ -1723,9 +1746,10 @@ describe('§9 — les alertes push', () => {
 
     expect(h.table.size).toBe(4);
     expect(h.photos.has(RUN_DATE)).toBe(true);
-    // Le refus de l'ombre par le plafond (E31) echoue de la meme facon, et le dit aussi.
+    // Les refus par le plafond (E31, production et ombre) echouent de la meme facon, et le disent aussi.
     expect(result.report.alerts).toEqual([
       { status: 'FAILED', event: 'DRAWDOWN', key: CLE, reason: 'refus du serveur, HTTP 401' },
+      { status: 'FAILED', event: 'REBALANCE_TOO_LARGE', key: CLE, reason: 'refus du serveur, HTTP 401' },
       { status: 'FAILED', event: 'REBALANCE_TOO_LARGE', key: CLE, reason: 'refus du serveur, HTTP 401' },
     ]);
     expect(h.lignes.some((l) => l.includes('NON PARTIE') && l.includes('DRAWDOWN'))).toBe(true);
@@ -1798,6 +1822,7 @@ describe('§9 — les alertes push', () => {
     expect(h.table.size).toBe(4);
     expect(result.report.alerts).toEqual([
       { status: 'FAILED', event: 'DRAWDOWN', key: CLE, reason: 'transport en echec' },
+      { status: 'FAILED', event: 'REBALANCE_TOO_LARGE', key: CLE, reason: 'transport en echec' },
       { status: 'FAILED', event: 'REBALANCE_TOO_LARGE', key: CLE, reason: 'transport en echec' },
     ]);
   });

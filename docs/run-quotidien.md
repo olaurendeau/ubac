@@ -166,8 +166,8 @@ l'envoi du rapport l'obligerait à affirmer « tout est rendu » sans l'avoir
 seulement tenté.
 
 L'étape 7 est **calculée avant l'étape 5** et **écrite après**. Calculée avant,
-parce que la suspension au drawdown est une entrée de la décision et ne peut pas
-attendre. Écrite après, parce que c'est ce qui donne gratuitement la propriété
+parce que l'alerte de drawdown doit être connue du rapport, des alertes et d'un
+abandon, et ne peut pas attendre. Écrite après, parce que c'est ce qui donne gratuitement la propriété
 que la spec attend d'un abandon : **un run abandonné n'écrit aucune photo**,
 puisqu'il rend avant d'y arriver.
 
@@ -274,7 +274,7 @@ externe qui le dit, depuis le lot Q6b — un abandon pingue **sans son marqueur*
 une exception ne pingue **pas du tout**, et c'est l'absence qui alerte. Voir
 [healthcheck.md](healthcheck.md).
 
-### La photo du jour, le drawdown et la suspension du §6
+### La photo du jour, le drawdown et son alerte du §6
 
 `src/jobs/snapshot.ts` calcule l'étape 7 ; son en-tête porte les motifs, cette
 section porte ce qu'un opérateur doit en savoir.
@@ -296,7 +296,7 @@ chaque photo porte dans `benchmarks` l'indice (`portfolio_twr_index`) et son
 plus-haut (`portfolio_twr_peak`), et la suivante s'y enchaîne.
 
 **La photo du jour se prend une fois.** Un second run le même jour ne la réécrit
-pas : il relit le drawdown qu'elle porte, donc il suspend exactement comme le
+pas : il relit le drawdown qu'elle porte, donc il alerte exactement comme le
 premier. Un rejeu d'un jour antérieur à une photo existante ne réécrit rien non
 plus. Le motif est dans l'en-tête du module : le plus-haut est idempotent,
 l'indice ne l'est pas.
@@ -304,18 +304,21 @@ l'indice ne l'est pas.
 **Le premier run n'a pas de drawdown, et n'écrit pas zéro à la place.** La clé
 `portfolio_drawdown` est **absente** de `benchmarks`, et son absence est ce qui
 enregistre l'indisponibilité — un zéro se lirait « tout va bien » et ce serait
-faux. Conséquence : **un drawdown indisponible ne suspend pas**, la règle disant
-« un drawdown de 25 % suspend » et inconnu n'étant pas 25 %.
+faux. Conséquence : **un drawdown indisponible n'alerte pas**, la règle disant
+« un drawdown de 25 % alerte » et inconnu n'étant pas 25 %.
 
-**La suspension porte sur la seule stratégie de production.** Au-delà de -25 %
-— borne **incluse**, le §6 disant « de 25 % » et non « de plus de 25 % » —
-`decide()` n'est pas appelé pour la production, et sa ligne de `decisions` porte
-`trigger NONE`, zéro jambe et une `reason` préfixée `SUSPENSION_DRAWDOWN` avec le
-chiffre. Sans ce marqueur, un jour suspendu serait indistinguable d'un jour où
-rien n'a déclenché. Les trois stratégies d'ombre continuent d'être
-journalisées : elles ne passent aucun ordre, donc les suspendre ne protégerait
-rien et couperait la comparaison au moment où elle est la plus intéressante.
-Aucune vente n'est déclenchée : la décision de sortir reste humaine (§6).
+**Le drawdown n'alerte, il ne suspend rien** (décision du 2026-11-21, §6.1 de la
+spec : « un plongeon est une opportunité, c'est maintenant qu'il faut continuer à
+acheter »). À -25 % ou au-delà — borne **incluse**, le §6 disant « de 25 % » et
+non « de plus de 25 % » — les quatre stratégies passent par `decide()` comme
+n'importe quel jour, la production comprise, et la couche risque s'applique
+inchangée (plafond de 50 % par actif, `REBALANCE_TOO_LARGE`, etc.). Le seuil
+atteint se lit à trois endroits : la ligne `ALERTE_DRAWDOWN : drawdown a … %` du
+journal du run, l'encadré « ALERTE — » du rapport et son objet
+(`… — ALERTE DRAWDOWN (recul -26.12 %)`), et l'alerte push `DRAWDOWN`. La ligne de
+`decisions` ne porte pas le marqueur : elle dit ce que `decide()` a formulé.
+Aucune vente n'est déclenchée par le drawdown : la décision de sortir reste
+humaine (§6).
 
 ### Une conséquence pour la réconciliation
 

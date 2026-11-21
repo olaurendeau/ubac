@@ -24,7 +24,7 @@ import type { Holdings, PricedAsset, Prices } from '../core/portfolio.js';
 import type { IsoDate, UsdcAmount, Weights } from '../core/types.js';
 
 /**
- * L'etape 7 du §8 — **benchmarks et photo du jour** — et la regle de suspension
+ * L'etape 7 du §8 — **benchmarks et photo du jour** — et la regle d'alerte
  * au drawdown du §6. Ce module ne touche pas la base : il rend la photo a
  * ecrire, `daily.ts` l'ecrit.
  *
@@ -40,7 +40,7 @@ import type { IsoDate, UsdcAmount, Weights } from '../core/types.js';
  * 1. **Le drawdown se mesure sur l'indice de croissance, pas sur la valeur en
  *    USDC**, pour le motif que `maxDrawdown` donne deja : un retrait de la
  *    moitie du portefeuille creuse la valeur de 50 % sans qu'aucun prix n'ait
- *    bouge, et le seuil du §6 suspendrait sur un virement sortant. L'indice part
+ *    bouge, et le seuil du §6 alerterait sur un virement sortant. L'indice part
  *    de 1 a la premiere photo et ne bouge que des rendements, flux exclus.
  * 2. **La fenetre est l'historique entier.** Ni 90 jours ni 200 : un drawdown
  *    qui oublie son plus haut n'est pas un drawdown. La source est donc **la
@@ -56,7 +56,7 @@ import type { IsoDate, UsdcAmount, Weights } from '../core/types.js';
  *    Le maximum est idempotent, le produit ne l'est pas : rechainer l'indice sur
  *    une photo du jour deja prise compterait deux fois le rendement du jour. Un
  *    second run du meme jour ne reecrit donc rien et **relit** le drawdown que
- *    la photo porte, ce qui lui fait suspendre comme le premier. Un rejeu d'un
+ *    la photo porte, ce qui lui fait alerter comme le premier. Un rejeu d'un
  *    jour anterieur a une photo existante ne reecrit rien non plus : les photos
  *    posterieures ont ete chainees sur l'ancienne valeur. Compromis assume —
  *    entre une photo legerement perimee et un indice faux, la photo.
@@ -64,8 +64,8 @@ import type { IsoDate, UsdcAmount, Weights } from '../core/types.js';
  *    cle `portfolio_drawdown` est **absente**, et son absence est ce qui
  *    enregistre l'indisponibilite. Un zero se lirait « tout va bien » et ce
  *    serait faux ; c'est le choix du Sharpe 90 j de la phase 0, `UNDEFINED` sur
- *    les 89 premiers jours. Consequence : un drawdown indisponible ne suspend
- *    pas — la regle dit « un drawdown de 25 % suspend », inconnu n'est pas 25 %.
+ *    les 89 premiers jours. Consequence : un drawdown indisponible n'alerte
+ *    pas — la regle dit « un drawdown de 25 % alerte », inconnu n'est pas 25 %.
  * 6. **Les courbes d'ombre `ladder` et `dca` du §4 ne sont pas ecrites.** En
  *    phase 1 aucune strategie ne place d'ordre : les trois portefeuilles simules
  *    seraient le portefeuille reel au centime pres, et trois courbes identiques
@@ -323,7 +323,7 @@ function chain(input: ChainInput): DrawdownState {
 /**
  * La photo du jour existe deja, ou une plus recente existe : la chaine ne se
  * reprend pas par le milieu. Dans le premier cas on relit ce que la photo du
- * jour porte — c'est ce qui fait que deux runs du meme jour suspendent
+ * jour porte — c'est ce qui fait que deux runs du meme jour alertent
  * pareil —, dans le second on declare l'indisponibilite.
  */
 function storedState(previous: SnapshotRecord, runDate: IsoDate): DrawdownState {
@@ -348,50 +348,48 @@ function storedState(previous: SnapshotRecord, runDate: IsoDate): DrawdownState 
   return { status: 'COMPUTED', drawdown: asReturn(stocke), carried };
 }
 
-// --- La suspension du §6 -----------------------------------------------------
+// --- L'alerte de drawdown du §6 ----------------------------------------------
 
 /**
- * Seuil du §6 : « un drawdown de 25 % declenche une alerte et une suspension des
- * reequilibrages ». Borne **incluse** — la spec dit « de 25 % », pas « de plus de
- * 25 % ». C'est l'inverse du seuil de reconciliation, ou 1 % pile passe ; les
- * deux cotes de celui-ci sont sondes.
+ * Seuil du §6 : « un drawdown de 25 % declenche une alerte ». Borne **incluse** —
+ * la spec dit « de 25 % », pas « de plus de 25 % ». C'est l'inverse du seuil de
+ * reconciliation, ou 1 % pile passe ; les deux cotes de celui-ci sont sondes.
+ *
+ * Decision du 2026-11-21 (§6.1 de la spec) : ce seuil ne suspend plus rien. Un
+ * plongeon est une opportunite, c'est la que le rebalancement doit continuer
+ * d'acheter. Il reste une alerte, et la decision de sortir reste humaine.
  */
-export const DRAWDOWN_SUSPENSION_THRESHOLD = new Decimal('-0.25');
+export const DRAWDOWN_ALERT_THRESHOLD = new Decimal('-0.25');
 
 /**
- * Marqueur en tete de `decisions.reason` d'une ligne suspendue. Sans lui, un
- * jour suspendu serait indistinguable d'un jour ou rien n'a declenche : les deux
- * portent `trigger NONE` et zero jambe.
+ * Marqueur en tete du texte de l'alerte, du rapport et du journal du run. Il
+ * rend lisible que le seuil est atteint un jour ou la production decide
+ * pourtant normalement.
  */
-export const SUSPENSION_MARKER = 'SUSPENSION_DRAWDOWN';
+export const DRAWDOWN_ALERT_MARKER = 'ALERTE_DRAWDOWN';
 
-export type Suspension =
+export type DrawdownAlert =
   | { readonly status: 'ACTIVE'; readonly drawdown: Return; readonly reason: string }
   | { readonly status: 'INACTIVE' };
 
 const pct = (value: Decimal): string => `${value.times(100).toFixed(2)} %`;
 
 /**
- * La suspension porte sur la **seule strategie de production** ; les trois
- * strategies d'ombre continuent d'etre journalisees. Les ombres ne passent aucun
- * ordre : les suspendre ne protegerait rien et couperait la comparaison
- * exactement au moment ou elle est la plus interessante — un marche a -25 % est
- * precisement ou l'on veut savoir ce que le ladder et le DCA auraient fait. La
- * suspension protege le capital, et le capital n'est expose que par la
- * production. Consequence assumee : `rebalance_ab` tourne pendant qu'une
- * suspension bloque `rebalance`, et c'est ce que l'ombre existe pour dire.
+ * L'alerte ne change **aucune decision** : la production appelle `decide()` comme
+ * un jour sans alerte, les ombres aussi. Elle n'est portee que par le rapport,
+ * l'alerte push et le journal du run.
  */
-function suspensionOf(drawdown: DrawdownState): Suspension {
+function drawdownAlertOf(drawdown: DrawdownState): DrawdownAlert {
   if (drawdown.status !== 'COMPUTED') return { status: 'INACTIVE' };
-  if (drawdown.drawdown.gt(DRAWDOWN_SUSPENSION_THRESHOLD)) return { status: 'INACTIVE' };
+  if (drawdown.drawdown.gt(DRAWDOWN_ALERT_THRESHOLD)) return { status: 'INACTIVE' };
   return {
     status: 'ACTIVE',
     drawdown: drawdown.drawdown,
     reason:
-      `${SUSPENSION_MARKER} : drawdown a ${pct(drawdown.drawdown)} depuis le plus haut, au seuil de ` +
-      `${pct(DRAWDOWN_SUSPENSION_THRESHOLD)} ou au-dela (§6). Les reequilibrages de la strategie de ` +
-      `production sont suspendus ; les strategies d'ombre restent journalisees. Aucune vente : la ` +
-      `decision de sortir reste humaine.`,
+      `${DRAWDOWN_ALERT_MARKER} : drawdown a ${pct(drawdown.drawdown)} depuis le plus haut, au seuil de ` +
+      `${pct(DRAWDOWN_ALERT_THRESHOLD)} ou au-dela (§6). Les reequilibrages continuent normalement : ` +
+      `un plongeon est le moment de continuer a acheter. Aucune vente : la decision de sortir ` +
+      `reste humaine.`,
   };
 }
 
@@ -422,18 +420,18 @@ export interface SnapshotStepInput {
 
 export interface SnapshotStep {
   readonly drawdown: DrawdownState;
-  readonly suspension: Suspension;
+  readonly drawdownAlert: DrawdownAlert;
   readonly benchmarks: Readonly<Record<string, Decimal>>;
   readonly gaps: readonly BenchmarkGap[];
   readonly write: SnapshotWrite;
 }
 
 /**
- * L'etape 7 en entier : benchmarks, drawdown, suspension, et la photo a ecrire.
+ * L'etape 7 en entier : benchmarks, drawdown, alerte, et la photo a ecrire.
  *
  * Tout est **calcule** avant l'etape 5, alors que la spec place l'etape 7 apres,
- * parce que la suspension est une entree de la decision et ne peut pas
- * l'attendre. Seule l'**ecriture** reste a l'etape 7 : un run abandonne rend
+ * parce que l'alerte de drawdown est une entree du rapport et des alertes, et
+ * que le run doit la connaitre meme s'il s'abandonne a l'etape 5. Seule l'**ecriture** reste a l'etape 7 : un run abandonne rend
  * avant d'y arriver et ne laisse donc aucune photo.
  */
 export function prepareSnapshot(input: SnapshotStepInput): SnapshotStep {
@@ -487,7 +485,7 @@ export function prepareSnapshot(input: SnapshotStepInput): SnapshotStep {
 
   return {
     drawdown,
-    suspension: suspensionOf(drawdown),
+    drawdownAlert: drawdownAlertOf(drawdown),
     benchmarks: values,
     gaps,
     write: writeOf(input, values, carried),

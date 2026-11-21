@@ -261,7 +261,11 @@ Déterministe, testée exhaustivement, appliquée à toute intention quelle que 
 
 Un stop-loss est incompatible avec un système qui rééquilibre vers la cible, donc qui achète mécaniquement les baisses. Il transformerait chaque repli en perte réalisée au pire moment.
 
-Le contrôle du risque repose sur l'**allocation cible elle-même** : la ligne USDC est le coussin, et un plafond d'exposition à 50 % par actif borne le pire cas. Un drawdown de 25 % déclenche une **alerte et une suspension des rééquilibrages**, pas une vente. La décision de sortir reste humaine.
+Le contrôle du risque repose sur l'**allocation cible elle-même** : la ligne USDC est le coussin, et un plafond d'exposition à 50 % par actif borne le pire cas. Un drawdown de 25 % (borne incluse) déclenche une **alerte**, ni une vente ni une suspension des rééquilibrages (§6.1). La décision de sortir reste humaine.
+
+### 6.1 Décision du 2026-11-21 : le drawdown de 25 % n'est plus qu'une alerte
+
+Decision: le drawdown de −25 % ou pire (borne incluse) ne suspend plus les rééquilibrages de la stratégie de production : `decide()` est appelé et sa décision validée comme n'importe quel jour. Il déclenche une **alerte seule** (ntfy `DRAWDOWN`, encadré « ALERTE — » du rapport, ligne du journal du run). Les autres garde-fous sont inchangés (plafond d'exposition à 50 % par actif, `REBALANCE_TOO_LARGE`, `MIN_CASH`, `COOLDOWN`, etc.), et aucune vente n'est déclenchée par le drawdown lui-même. — Reason: « un plongeon est une opportunité, c'est maintenant qu'il faut continuer à acheter » ; un run réel venait de s'arrêter sur `SUSPENSION_DRAWDOWN : drawdown a -26.17 %`. Décidé le 2026-11-21 par l'opérateur. Un drawdown indisponible (premier run, historique trop court) n'alerte pas, comme avant.
 
 ---
 
@@ -330,7 +334,7 @@ Domaine authentifié (SPF, DKIM) sur `olalpinesolutions`, sinon les rapports fin
 
 ### Alertes (ntfy, push immédiat)
 
-Rééquilibrage exécuté, drawdown > 25 %, `REBALANCE_TOO_LARGE` déclenché, divergence de réconciliation, jambe rejetée, job en échec.
+Rééquilibrage exécuté, drawdown ≥ 25 % (borne incluse, alerte seule, §6.1), `REBALANCE_TOO_LARGE` déclenché, divergence de réconciliation, jambe rejetée, job en échec.
 
 Le mail est un mauvais canal d'alerte : un drawdown le dimanche ne doit pas attendre le lundi.
 

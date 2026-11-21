@@ -8,16 +8,16 @@ import type { Holdings, PricedAsset } from '../../src/core/portfolio.js';
 import type { Price, Quantity, UsdcAmount, Weight, Weights } from '../../src/core/types.js';
 import type { SnapshotStepInput } from '../../src/jobs/snapshot.js';
 import {
-  DRAWDOWN_SUSPENSION_THRESHOLD,
+  DRAWDOWN_ALERT_THRESHOLD,
   HOLD_5050_KEYS,
   HOLD_BTC_KEYS,
   PORTFOLIO_KEYS,
   prepareSnapshot,
-  SUSPENSION_MARKER,
+  DRAWDOWN_ALERT_MARKER,
 } from '../../src/jobs/snapshot.js';
 
 /**
- * L'etape 7 et la suspension du §6, contre des entrees fabriquees. **Aucun
+ * L'etape 7 et l'alerte de drawdown du §6, contre des entrees fabriquees. **Aucun
  * reseau, aucune base** : les deux imports d'adapters sont des `import type`.
  *
  * Ce que ce fichier etablit, garde-fou par garde-fou :
@@ -28,7 +28,7 @@ import {
  * - le plus-haut ne se reinitialise pas sur l'indice du jour ;
  * - le seuil de -25 % est sonde de part et d'autre, borne comprise ;
  * - une photo deja prise n'est pas rechainee, et le drawdown qu'elle porte est
- *   relu pour que deux runs du meme jour suspendent pareil.
+ *   relu pour que deux runs du meme jour alertent pareil.
  */
 
 // --- Fenetre de marche ------------------------------------------------------
@@ -129,8 +129,8 @@ describe('le premier run n’a pas de drawdown, et ne le remplace pas par zero',
     expect(step.gaps.map((g) => g.key)).toContain(PORTFOLIO_KEYS.drawdown);
     expect(valeur(step, PORTFOLIO_KEYS.index)).toBe('1');
     expect(valeur(step, PORTFOLIO_KEYS.peak)).toBe('1');
-    // Inconnu n'est pas 25 % : rien n'est suspendu.
-    expect(step.suspension.status).toBe('INACTIVE');
+    // Inconnu n'est pas 25 % : aucune alerte.
+    expect(step.drawdownAlert.status).toBe('INACTIVE');
     expect(step.write.status).toBe('TO_RECORD');
   });
 
@@ -219,7 +219,7 @@ describe('le drawdown se lit sur l’indice de croissance, jamais sur la valeur'
   /*
    * Le garde-fou central du §6 : lu sur la valeur en USDC, chacun de ces deux
    * cas bougerait l'indice de 25 % sans qu'aucun prix n'ait change, et le
-   * premier suspendrait les reequilibrages sur un virement sortant.
+   * premier alerterait sur un virement sortant.
    */
   it.each([
     ['un retrait de 25 000 USDC', '75000', '-25000'],
@@ -235,7 +235,7 @@ describe('le drawdown se lit sur l’indice de croissance, jamais sur la valeur'
 
     expect(valeur(step, PORTFOLIO_KEYS.index)).toBe('1');
     expect(valeur(step, PORTFOLIO_KEYS.drawdown)).toBe('0');
-    expect(step.suspension.status).toBe('INACTIVE');
+    expect(step.drawdownAlert.status).toBe('INACTIVE');
   });
 
   /*
@@ -270,25 +270,25 @@ describe('le drawdown se lit sur l’indice de croissance, jamais sur la valeur'
 
 // --- Le seuil du §6 ---------------------------------------------------------
 
-describe('§6 — la suspension au drawdown de 25 %', () => {
+describe('§6 — l’alerte au drawdown de 25 %', () => {
   /* Les deux cotes de la borne, et la borne elle-meme : « de 25 % » l'inclut. */
   it.each([
     ['75000.01', false],
     ['75000', true],
     ['60000', true],
-  ])('valeur a %s USDC : suspension %s', (total, attendue) => {
+  ])('valeur a %s USDC : alerte %s', (total, attendue) => {
     const step = prepareSnapshot(entree({ previous: VEILLE, totalValue: usdc(total) }));
 
-    expect(step.suspension.status).toBe(attendue ? 'ACTIVE' : 'INACTIVE');
-    if (step.suspension.status === 'ACTIVE') {
-      expect(step.suspension.drawdown.lte(DRAWDOWN_SUSPENSION_THRESHOLD)).toBe(true);
-      expect(step.suspension.reason).toContain(SUSPENSION_MARKER);
+    expect(step.drawdownAlert.status).toBe(attendue ? 'ACTIVE' : 'INACTIVE');
+    if (step.drawdownAlert.status === 'ACTIVE') {
+      expect(step.drawdownAlert.drawdown.lte(DRAWDOWN_ALERT_THRESHOLD)).toBe(true);
+      expect(step.drawdownAlert.reason).toContain(DRAWDOWN_ALERT_MARKER);
     }
   });
 
-  it('un drawdown indisponible ne suspend pas', () => {
+  it('un drawdown indisponible n’alerte pas', () => {
     const step = prepareSnapshot(entree({ previous: photoPassee('2026-09-11', '100000', {}) }));
-    expect(step.suspension.status).toBe('INACTIVE');
+    expect(step.drawdownAlert.status).toBe('INACTIVE');
   });
 });
 
@@ -304,9 +304,9 @@ describe('la photo du jour se prend une fois', () => {
     const step = prepareSnapshot(entree({ previous: dejaPrise, totalValue: usdc('70000') }));
 
     expect(step.write).toMatchObject({ status: 'SKIPPED', code: 'ALREADY_SNAPSHOTTED' });
-    // Meme chiffre que le premier run, donc meme decision de suspension.
+    // Meme chiffre que le premier run, donc meme decision d'alerte.
     expect(step.drawdown.status === 'COMPUTED' && step.drawdown.drawdown.toString()).toBe('-0.3');
-    expect(step.suspension.status).toBe('ACTIVE');
+    expect(step.drawdownAlert.status).toBe('ACTIVE');
   });
 
   it('une photo du jour posee sans historique reste sans drawdown au second run', () => {

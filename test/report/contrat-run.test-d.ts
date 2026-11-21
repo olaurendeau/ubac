@@ -14,7 +14,7 @@ import type {
   ReportMarketDay,
   ReportOutcome,
   ReportResync,
-  ReportSuspension,
+  ReportDrawdownAlert,
   TwrPoint,
 } from '../../src/report/daily-report.js';
 
@@ -60,7 +60,7 @@ const history: CompletedRun['history'] = acheve.history;
 const benchmarks: CompletedRun['benchmarks'] = acheve.benchmarks;
 const gaps: readonly ReportGap[] = acheve.benchmarkGaps;
 const drawdown: ReportDrawdown = acheve.drawdown;
-const suspension: ReportSuspension = acheve.suspension;
+const drawdownAlert: ReportDrawdownAlert = acheve.drawdownAlert;
 const outcomes: readonly ReportOutcome[] = acheve.outcomes;
 /** E28 (S7b) : l'etape 6 vue de l'exchange, que le rapport rend en « Ordres du jour ». */
 const executions: readonly ReportExecution[] = acheve.executions;
@@ -68,7 +68,7 @@ const executions: readonly ReportExecution[] = acheve.executions;
 const resync: ReportResync = acheve.resync;
 /** D7 : la decision de production recalculee sur le mid en direct s'annonce en tete du rapport. */
 const liveRecompute: ReportLiveRecompute = acheve.liveRecompute;
-void [runDate, pricedOn, totalValue, weights, holdings, history, benchmarks, gaps, drawdown, suspension, outcomes, executions, resync, liveRecompute];
+void [runDate, pricedOn, totalValue, weights, holdings, history, benchmarks, gaps, drawdown, drawdownAlert, outcomes, executions, resync, liveRecompute];
 
 /**
  * V4 — les deux branches de chaque union. L'assignation du type entier ne dirait
@@ -77,8 +77,8 @@ void [runDate, pricedOn, totalValue, weights, holdings, history, benchmarks, gap
  */
 declare const dessine: Extract<Completed['drawdown'], { status: 'COMPUTED' }>;
 declare const sansDrawdown: Extract<Completed['drawdown'], { status: 'UNAVAILABLE' }>;
-declare const suspendu: Extract<Completed['suspension'], { status: 'ACTIVE' }>;
-declare const libre: Extract<Completed['suspension'], { status: 'INACTIVE' }>;
+declare const alerte: Extract<Completed['drawdownAlert'], { status: 'ACTIVE' }>;
+declare const libre: Extract<Completed['drawdownAlert'], { status: 'INACTIVE' }>;
 declare const resynchronise: Extract<Completed['resync'], { status: 'RESYNCHRONIZED' }>;
 declare const concordant: Extract<Completed['resync'], { status: 'NOT_NEEDED' }>;
 declare const auMid: Extract<Completed['liveRecompute'], { status: 'RECOMPUTED' }>;
@@ -87,14 +87,14 @@ declare const alaCloture: Extract<Completed['liveRecompute'], { status: 'NOT_NEE
 const branches: readonly [
   ReportDrawdown,
   ReportDrawdown,
-  ReportSuspension,
-  ReportSuspension,
+  ReportDrawdownAlert,
+  ReportDrawdownAlert,
   ReportResync,
   ReportResync,
   ReportLiveRecompute,
   ReportLiveRecompute,
   ReportLiveRecompute,
-] = [dessine, sansDrawdown, suspendu, libre, resynchronise, concordant, auMid, refuse2, alaCloture];
+] = [dessine, sansDrawdown, alerte, libre, resynchronise, concordant, auMid, refuse2, alaCloture];
 void branches;
 
 /** V5 — une bougie du run est un jour de marche du rapport : seule sa date est lue. */
@@ -126,7 +126,7 @@ rendre({
   benchmarks: acheve.benchmarks,
   benchmarkGaps: acheve.benchmarkGaps,
   drawdown: acheve.drawdown,
-  suspension: acheve.suspension,
+  drawdownAlert: acheve.drawdownAlert,
   resync: acheve.resync,
   liveRecompute: acheve.liveRecompute,
   outcomes: acheve.outcomes,
