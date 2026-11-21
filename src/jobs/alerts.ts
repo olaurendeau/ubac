@@ -1,7 +1,7 @@
 import type { Alert, AlertEvent, AlertPriority } from '../adapters/notifier.js';
 import type { IsoDate, Rejection, StrategyName, UsdcAmount, Verdict } from '../core/types.js';
 import type { Resynchronization } from './reconcile.js';
-import type { Suspension } from './snapshot.js';
+import type { DrawdownAlert } from './snapshot.js';
 
 /**
  * Ce qui merite un push, et comment ca se lit sur un telephone. **Module pur** :
@@ -111,7 +111,7 @@ export interface RebalanceExecuted {
 export interface AlertInput {
   readonly runDate: IsoDate;
   readonly ending: RunEnding;
-  readonly suspension: Suspension;
+  readonly drawdownAlert: DrawdownAlert;
   /** §7 : l'etat interne s'est-il resynchronise sur l'exchange ce jour-la. */
   readonly resync: Resynchronization;
   readonly outcomes: readonly RiskOutcome[];
@@ -276,7 +276,7 @@ export function alertsFor(input: AlertInput): readonly Alert[] {
     );
   }
 
-  if (input.suspension.status === 'ACTIVE') {
+  if (input.drawdownAlert.status === 'ACTIVE') {
     /*
      * Le texte vient de `snapshot.ts` et n'est pas reecrit ici : c'est celui que
      * porte la ligne de `decisions` du jour. Une seule source, donc l'alerte et
@@ -287,8 +287,8 @@ export function alertsFor(input: AlertInput): readonly Alert[] {
       alert(
         input.runDate,
         'DRAWDOWN',
-        `Ubac ${input.runDate} — drawdown au seuil, production suspendue`,
-        input.suspension.reason,
+        `Ubac ${input.runDate} — drawdown au seuil, reequilibrages maintenus`,
+        input.drawdownAlert.reason,
       ),
     );
   }

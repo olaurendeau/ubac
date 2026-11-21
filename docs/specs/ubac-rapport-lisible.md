@@ -100,7 +100,7 @@ imprime ce qu'elles définissent :
 - une entrée par `RejectionCode` effectivement imprimé — les neuf codes glosés
   tous les jours seraient dix-huit lignes de bruit pour des rejets qui
   n'arrivent pas en phase 1 ;
-- « suspension », quand l'encadré de suspension est présent ;
+- « alerte de drawdown », quand l'encadré d'alerte de drawdown est présent ;
 - la convention de nommage des clés de la photo (`<strategie>_<metrique>`),
   quand le tableau « Métriques indisponibles » est présent.
 
@@ -348,7 +348,7 @@ est propre à ce cadrage et n'entre en collision avec aucun C de la phase 0.
 
 - **R7** — Le graphe est rendu dans sa propre section « Evolution du portefeuille
   (TWR cumule) », troisième bloc du rapport : après l'en-tête chiffré et la
-  distance au prochain déclenchement, avant la décision. L'alerte de suspension
+  distance au prochain déclenchement, avant la décision. L'alerte de drawdown
   et l'encadré de resynchronisation restent au-dessus de l'en-tête ; la section
   « Comparaison » ne porte plus le graphe. *Révisé le 2026-10-10 sur décision de
   l'opérateur (« qu'il apparaisse dès l'ouverture ») ; d'abord rendu dans

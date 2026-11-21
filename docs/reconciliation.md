@@ -83,7 +83,7 @@ soldes, et personne ne saurait que le portefeuille a bougé hors du système.
 
 **Un marqueur durable**, `ETAT_RESYNCHRONISE`, en tête de `decisions.reason` des
 **quatre** stratégies du jour. Même forme, et même motif, que le
-`SUSPENSION_DRAWDOWN` du §6. L'alerte réveille le jour même ; elle ne se relit pas
+`ALERTE_DRAWDOWN` du §6. L'alerte réveille le jour même ; elle ne se relit pas
 six mois plus tard. Le journal des décisions, si : un lecteur doit pouvoir dire,
 sans rien d'autre sous la main, que ce jour-là quelqu'un a bougé le portefeuille
 hors du système. Les quatre lignes le portent parce que l'état resynchronisé est
@@ -91,9 +91,8 @@ celui du **portefeuille**, pas d'une stratégie — et c'est la ligne qu'on ne l
 pas qui mentirait. Le texte est celui de `reconcile.ts`, repris tel quel par
 l'alerte et par la base : une seule source, donc jamais deux chiffres différents.
 
-Le marqueur **précède** le motif de la stratégie et ne le remplace pas,
-contrairement à la ligne d'un jour suspendu : la décision a bien eu lieu, sur les
-soldes réels, et son motif reste lisible.
+Le marqueur **précède** le motif de la stratégie et ne le remplace pas : la
+décision a bien eu lieu, sur les soldes réels, et son motif reste lisible.
 
 **Un jour d'apport, l'alerte cède la place au rapport** (CV15, section 2 ter) :
 quand l'écart est entièrement expliqué par les flux enregistrés, le marqueur

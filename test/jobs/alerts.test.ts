@@ -16,7 +16,7 @@ import type { AlertInput, RebalanceExecuted, RunEnding } from '../../src/jobs/al
 import { ALERT_ORDER, alertsFor } from '../../src/jobs/alerts.js';
 import type { BalanceDivergence, Resynchronization } from '../../src/jobs/reconcile.js';
 import { RESYNC_MARKER } from '../../src/jobs/reconcile.js';
-import type { Suspension } from '../../src/jobs/snapshot.js';
+import type { DrawdownAlert } from '../../src/jobs/snapshot.js';
 
 /**
  * Le catalogue d'alertes. Module pur : ces sondes n'ouvrent rien, ne stubent
@@ -42,7 +42,7 @@ const usdc = (value: string): UsdcAmount => new Decimal(value) as UsdcAmount;
 const SAIN: AlertInput = {
   runDate: RUN_DATE,
   ending: { status: 'COMPLETED' },
-  suspension: { status: 'INACTIVE' },
+  drawdownAlert: { status: 'INACTIVE' },
   resync: { status: 'NOT_NEEDED' },
   outcomes: [],
   executed: [],
@@ -79,10 +79,10 @@ function verdicts(
   return entree({ outcomes: [{ strategy, isShadow, verdict }] });
 }
 
-const SUSPENDU: Extract<Suspension, { status: 'ACTIVE' }> = {
+const ALERTE_DD: Extract<DrawdownAlert, { status: 'ACTIVE' }> = {
   status: 'ACTIVE',
   drawdown: new Decimal('-0.27') as Return,
-  reason: 'SUSPENSION_DRAWDOWN : drawdown a -27.00 % depuis le plus haut',
+  reason: 'ALERTE_DRAWDOWN : drawdown a -27.00 % depuis le plus haut',
 };
 
 /**
@@ -124,7 +124,7 @@ const ATTEINT: Readonly<Record<AlertEvent, AlertInput>> = {
   REBALANCE_EXECUTED: entree({
     executed: [parti()],
   }),
-  DRAWDOWN: entree({ suspension: SUSPENDU }),
+  DRAWDOWN: entree({ drawdownAlert: ALERTE_DD }),
   REBALANCE_TOO_LARGE: verdicts(rejete([rejet('REBALANCE_TOO_LARGE')])),
   RECONCILIATION_DRIFT: entree({ resync: RESYNCHRONISE }),
   RISK_REJECTED: verdicts(rejete([rejet('MIN_CASH')])),
@@ -193,8 +193,8 @@ describe('le silence est le cas nominal', () => {
     expect(alertsFor(verdicts(accepte))).toEqual([]);
   });
 
-  it('n’alerte pas au drawdown tant que la suspension est inactive', () => {
-    expect(alertsFor(entree({ suspension: { status: 'INACTIVE' } }))).toEqual([]);
+  it('n’alerte pas au drawdown tant que l’alerte est inactive', () => {
+    expect(alertsFor(entree({ drawdownAlert: { status: 'INACTIVE' } }))).toEqual([]);
   });
 
   it('n’alerte pas d’un reequilibrage execute quand la liste est vide', () => {
@@ -223,11 +223,11 @@ describe('tout abandon alerte, et une seule fois', () => {
   });
 
   /*
-   * Un abandon posterieur a l'etape 4bis connait la suspension : le drawdown
+   * Un abandon posterieur a l'etape 4bis connait l'alerte : le drawdown
    * doit alerter meme si le run s'arrete la. Deux alertes, chacune sur son fait.
    */
-  it('joint l’alerte de drawdown a l’abandon quand la suspension est connue', () => {
-    const alerts = alertsFor(entree({ ending: abandon('DECIDE'), suspension: SUSPENDU }));
+  it('joint l’alerte de drawdown a l’abandon quand l’alerte est connue', () => {
+    const alerts = alertsFor(entree({ ending: abandon('DECIDE'), drawdownAlert: ALERTE_DD }));
     expect(evenements(alerts)).toEqual(['DRAWDOWN', 'RUN_ABORTED']);
   });
 });
@@ -419,9 +419,9 @@ describe('ce que porte chaque alerte', () => {
    * ligne de `decisions` du jour. Une seule source, donc l'alerte et la base ne
    * peuvent pas raconter deux chiffres differents.
    */
-  it('reprend mot pour mot le motif de suspension', () => {
-    const alerts = alertsFor(entree({ suspension: SUSPENDU }));
-    expect(alerts[0]?.body).toBe(SUSPENDU.reason);
+  it('reprend mot pour mot le motif d’alerte', () => {
+    const alerts = alertsFor(entree({ drawdownAlert: ALERTE_DD }));
+    expect(alerts[0]?.body).toBe(ALERTE_DD.reason);
   });
 
   /*
@@ -449,7 +449,7 @@ describe('ce que porte chaque alerte', () => {
     const alerts = alertsFor({
       runDate: RUN_DATE,
       ending: abandon('DECIDE'),
-      suspension: SUSPENDU,
+      drawdownAlert: ALERTE_DD,
       resync: RESYNCHRONISE,
       outcomes: [
         {

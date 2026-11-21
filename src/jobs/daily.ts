@@ -48,7 +48,7 @@ import type { PendingOrderReconciliation, ReconcileObservations, Resynchronizati
 import { reconcile } from './reconcile.js';
 import type { ExecutionDeStrategie } from './suivi.js';
 import { compter, engage, fraisReels, suivre } from './suivi.js';
-import type { BenchmarkGap, DrawdownState, SnapshotWrite, Suspension } from './snapshot.js';
+import type { BenchmarkGap, DrawdownState, SnapshotWrite, DrawdownAlert } from './snapshot.js';
 import { prepareSnapshot } from './snapshot.js';
 
 /**
@@ -93,9 +93,9 @@ import { prepareSnapshot } from './snapshot.js';
  *    `snapshots` ne peut pas venir de la meme place : sa cle primaire accepte le
  *    remplacement, et l'indice de croissance qu'une photo porte ne se rechaine
  *    pas sur lui-meme. C'est `snapshot.ts` qui la tient, et le motif y est.
- * 5. **La photo est calculee avant l'etape 5 et ecrite apres.** La suspension au
- *    drawdown du §6 est une entree de la decision : elle ne peut pas attendre
- *    l'etape 7. L'ecriture, elle, reste en derniere position, ce qui donne
+ * 5. **La photo est calculee avant l'etape 5 et ecrite apres.** L'alerte de
+ *    drawdown du §6 est une entree des alertes et du rapport : elle ne peut pas
+ *    attendre l'etape 7. L'ecriture, elle, reste en derniere position, ce qui donne
  *    gratuitement la propriete que la spec attend d'un abandon — **un run
  *    abandonne n'ecrit aucune photo**, parce qu'il rend avant d'y arriver.
  *
@@ -291,12 +291,12 @@ type DailyOutcome =
       readonly runDate: IsoDate;
       readonly abort: DailyAbort;
       /**
-       * Ce que le run savait de la suspension au moment d'abandonner. `INACTIVE`
+       * Ce que le run savait de l'alerte de drawdown au moment d'abandonner. `INACTIVE`
        * pour un abandon anterieur a l'etape 4bis, qui la calcule ; l'abandon
        * d'une strategie indecidable, lui, survient apres, et un drawdown au
        * seuil ce jour-la doit alerter meme si le run s'arrete.
        */
-      readonly suspension: Suspension;
+      readonly drawdownAlert: DrawdownAlert;
       /**
        * Toujours connue, meme ici : les deux abandons restants sont posterieurs
        * a la reconciliation. Une resynchronisation suivie d'un abandon doit
@@ -366,8 +366,8 @@ type DailyOutcome =
       /** Les metriques qu'aucune valeur ne represente, et leur motif. */
       readonly benchmarkGaps: readonly BenchmarkGap[];
       readonly drawdown: DrawdownState;
-      /** §6 : la production est-elle suspendue ce jour-la. */
-      readonly suspension: Suspension;
+      /** §6 : le drawdown est-il au seuil d'alerte ce jour-la (aucun effet sur la decision). */
+      readonly drawdownAlert: DrawdownAlert;
       readonly snapshot: SnapshotWrite;
     };
 
@@ -513,35 +513,6 @@ function ladderIntent(decision: LadderDecision, weights: Weights): Intent {
 }
 
 /**
- * La ligne que la production laisse dans `decisions` un jour suspendu : meme
- * forme qu'un run sans declenchement — `trigger NONE`, zero jambe — mais une
- * `reason` qui porte le marqueur et le chiffre. C'est **la** difference entre un
- * jour suspendu et un jour ou rien n'a tire, et sans elle la base ne permet pas
- * de les distinguer.
- *
- * `weightsTarget` reprend la cible permanente et non les poids constates,
- * contrairement au ladder : la production vise toujours cette allocation, elle
- * ne l'atteint simplement pas aujourd'hui. C'est aussi ce qu'ecrit `decide()`
- * quand il rend `NONE`, donc la colonne reste lisible d'une ligne a l'autre.
- */
-function suspendedIntent(
-  run: DailyRun,
-  name: RebalanceStrategyName,
-  weights: Weights,
-  suspension: Extract<Suspension, { status: 'ACTIVE' }>,
-): Intent {
-  return {
-    runDate: run.clock.today(),
-    strategy: name,
-    trigger: 'NONE',
-    reason: suspension.reason,
-    weightsBefore: weights,
-    weightsTarget: rebalanceParams(name, run.config).targets,
-    legs: [],
-  };
-}
-
-/**
  * Le marqueur de resynchronisation, en tete de `decisions.reason`. **C'est la
  * trace durable du lot.** L'alerte reveille le jour meme, mais elle ne se relit
  * pas six mois plus tard ; la ligne de `decisions`, si. Un lecteur du journal
@@ -551,8 +522,8 @@ function suspendedIntent(
  *
  * Le texte vient de `reconcile.ts` et n'est pas reecrit ici : une seule source,
  * donc l'alerte et la base ne peuvent pas annoncer deux ecarts differents. Meme
- * choix, et meme motif, que le motif de suspension qui vient de `snapshot.ts` ;
- * la forme est la meme aussi, un marqueur en tete de la `reason`.
+ * choix que le motif d'alerte de drawdown qui vient de `snapshot.ts` ; la forme
+ * est la meme aussi, un marqueur en tete.
  *
  * **Les quatre strategies sont marquees**, pas seulement la production. L'etat
  * resynchronise est celui du portefeuille, pas d'une strategie : n'en marquer
@@ -560,8 +531,7 @@ function suspendedIntent(
  * ligne qu'on ne lit pas qui ment.
  *
  * Le marqueur **precede** le motif de la strategie et ne le remplace pas,
- * contrairement a la ligne d'un jour suspendu : la decision du jour a bien eu
- * lieu, sur les soldes reels, et son motif reste lisible tel que `decide()` l'a
+ * car la decision du jour a bien eu lieu, sur les soldes reels, et son motif reste lisible tel que `decide()` l'a
  * formule.
  */
 function marquer(intent: Intent, resync: Resynchronization): Intent {
@@ -750,9 +720,8 @@ type DecideAll = { readonly ok: true; readonly decided: readonly Decided[] } | {
  *
  * L'ordre compte : la premiere configuration de rebalance valide la date de run
  * et les flux avant que le DCA, qui leve au lieu de rendre un code, ne les voie.
- * Une suspension ne perce pas ce filet : elle ne peut porter que sur la
- * **production**, donc l'autre configuration de rebalance passe toujours par
- * `decide()`, avant le ladder et le DCA.
+ * L'alerte de drawdown n'y change rien : la production passe par `decide()`
+ * comme les autres, avant le ladder et le DCA.
  */
 function decideAll(
   run: DailyRun,
@@ -760,17 +729,12 @@ function decideAll(
   prices: Prices,
   weights: Weights,
   cashFlows: readonly CashFlow[],
-  suspension: Suspension,
 ): DecideAll {
   const { clock, config } = run;
   const decided: Decided[] = [];
   const shadow = (name: StrategyName): boolean => name !== config.rebalance.strategy;
 
   for (const name of ['rebalance', 'rebalance_ab'] as const) {
-    if (suspension.status === 'ACTIVE' && !shadow(name)) {
-      decided.push({ strategy: name, isShadow: false, intent: suspendedIntent(run, name, weights, suspension) });
-      continue;
-    }
     const decision = decideRebalance(
       {
         holdings,
@@ -1011,7 +975,7 @@ async function executeRun(run: DailyRun, parti: ExecutionDeStrategie[]): Promise
       status: 'ABORTED',
       runDate,
       abort: { step: 'VALUATION', code: valuation.code, reason: valuation.reason },
-      suspension: { status: 'INACTIVE' },
+      drawdownAlert: { status: 'INACTIVE' },
       resync,
     };
   }
@@ -1023,7 +987,7 @@ async function executeRun(run: DailyRun, parti: ExecutionDeStrategie[]): Promise
 
   /*
    * 4bis. La photo du jour, **calculee** ici et ecrite a l'etape 7 : la
-   * suspension du §6 est une entree de l'etape 5 et ne peut pas attendre.
+   * alerte de drawdown du §6 est connue des l'etape 5 : un abandon la porte.
    *
    * Seconde lecture de `latestSnapshot()` du run : la reconciliation lit la
    * meme ligne pour ses positions. Les faire partager une lecture demanderait de
@@ -1054,18 +1018,18 @@ async function executeRun(run: DailyRun, parti: ExecutionDeStrategie[]): Promise
     previous,
     flows,
   });
-  if (step.suspension.status === 'ACTIVE') log(step.suspension.reason);
+  if (step.drawdownAlert.status === 'ACTIVE') log(step.drawdownAlert.reason);
   for (const gap of step.gaps) log(`benchmark ${gap.key} indisponible (${gap.code}) : ${gap.reason}`);
 
   // 5. Les quatre strategies : decide(), validate(), puis persistance.
-  const decided = decideAll(run, holdings, prices, valuation.weights, cashFlows, step.suspension);
+  const decided = decideAll(run, holdings, prices, valuation.weights, cashFlows);
   if (!decided.ok) {
     log(`abandon : ${decided.abort.reason}`);
     /*
-     * Seul abandon posterieur a l'etape 4bis : la suspension est connue, et un
+     * Seul abandon posterieur a l'etape 4bis : l'alerte est connue, et un
      * drawdown au seuil ce jour-la doit alerter meme si le run s'arrete la.
      */
-    return { status: 'ABORTED', runDate, abort: decided.abort, suspension: step.suspension, resync };
+    return { status: 'ABORTED', runDate, abort: decided.abort, drawdownAlert: step.drawdownAlert, resync };
   }
 
   /*
@@ -1228,7 +1192,7 @@ async function executeRun(run: DailyRun, parti: ExecutionDeStrategie[]): Promise
     benchmarks: step.benchmarks,
     benchmarkGaps: step.gaps,
     drawdown: step.drawdown,
-    suspension: step.suspension,
+    drawdownAlert: step.drawdownAlert,
     snapshot: step.write,
   };
 }
@@ -1259,7 +1223,7 @@ function alertInputOf(outcome: DailyOutcome): AlertInput {
         code: outcome.abort.code,
         reason: outcome.abort.reason,
       },
-      suspension: outcome.suspension,
+      drawdownAlert: outcome.drawdownAlert,
       resync: outcome.resync,
       // Aucun verdict : un abandon survient avant que la couche risque ne parle.
       outcomes: [],
@@ -1270,7 +1234,7 @@ function alertInputOf(outcome: DailyOutcome): AlertInput {
   return {
     runDate: outcome.runDate,
     ending: { status: 'COMPLETED' },
-    suspension: outcome.suspension,
+    drawdownAlert: outcome.drawdownAlert,
     resync: outcome.resync,
     outcomes: outcome.outcomes.map(({ strategy, isShadow, verdict }) => ({
       strategy,
@@ -1680,7 +1644,7 @@ export async function runDaily(run: DailyRun): Promise<DailyRunResult> {
     await announce(run, {
       runDate,
       ending: { status: 'FAILED', reason: texte(error) },
-      suspension: { status: 'INACTIVE' },
+      drawdownAlert: { status: 'INACTIVE' },
       /*
        * `NOT_NEEDED` faute de mieux : l'exception a pu tomber avant meme la
        * reconciliation, et `executeRun` n'a rien rendu dont on pourrait lire le
